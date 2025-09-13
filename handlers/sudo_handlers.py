@@ -179,18 +179,26 @@ async def import_admin_password(message: Message, state: FSMContext):
         return
     await state.update_data(marzban_password=password)
     await state.set_state(ImportAdminStates.waiting_for_traffic_volume)
-    await message.answer("محدودیت حجم (GB) را وارد کنید (مثلاً 100):")
+    await message.answer("محدودیت حجم (GB) را وارد کنید (مثلاً 100) یا «نامحدود» بفرستید:")
 
 @sudo_router.message(ImportAdminStates.waiting_for_traffic_volume, F.text)
 async def import_admin_traffic(message: Message, state: FSMContext):
     from utils.notify import gb_to_bytes
     try:
-        gb = float(message.text.strip().replace(',', '.'))
+        raw = message.text.strip()
+        lower = raw.lower()
+        # Accept unlimited keywords
+        if lower in ["نامحدود", "بدون محدودیت", "unlimited", "∞", "بي نهايت", "بی نهایت", "بی‌نهایت"]:
+            await state.update_data(max_total_traffic=0, traffic_unlimited=True)
+            await state.set_state(ImportAdminStates.waiting_for_validity_period)
+            await message.answer("محدودیت زمان (روز) را وارد کنید (مثلاً 30) یا «نامحدود» بفرستید:")
+            return
+        gb = float(raw.replace(',', '.'))
         if gb < 0:
             raise ValueError()
         await state.update_data(max_total_traffic=gb_to_bytes(gb))
         await state.set_state(ImportAdminStates.waiting_for_validity_period)
-        await message.answer("محدودیت زمان (روز) را وارد کنید (مثلاً 30):")
+        await message.answer("محدودیت زمان (روز) را وارد کنید (مثلاً 30) یا «نامحدود» بفرستید:")
     except Exception:
         await message.answer("فرمت حجم نامعتبر است. یک عدد مثل 100 وارد کنید:")
 
@@ -198,31 +206,53 @@ async def import_admin_traffic(message: Message, state: FSMContext):
 async def import_admin_time(message: Message, state: FSMContext):
     from utils.notify import days_to_seconds
     try:
-        days = int(message.text.strip())
+        raw = message.text.strip()
+        lower = raw.lower()
+        if lower in ["نامحدود", "بدون محدودیت", "unlimited", "∞", "بي نهايت", "بی نهایت", "بی‌نهایت"]:
+            # Use a large sentinel (100 years) for unlimited time
+            days = 36500
+            await state.update_data(max_total_time=days_to_seconds(days), validity_days=days, time_unlimited=True)
+            await state.set_state(ImportAdminStates.waiting_for_max_users)
+            await message.answer("حداکثر تعداد کاربران را وارد کنید (مثلاً 100) یا «نامحدود» بفرستید:")
+            return
+        days = int(raw)
         if days <= 0:
             raise ValueError()
         await state.update_data(max_total_time=days_to_seconds(days), validity_days=days)
         await state.set_state(ImportAdminStates.waiting_for_max_users)
-        await message.answer("حداکثر تعداد کاربران را وارد کنید (مثلاً 100):")
+        await message.answer("حداکثر تعداد کاربران را وارد کنید (مثلاً 100) یا «نامحدود» بفرستید:")
     except Exception:
         await message.answer("فرمت زمان نامعتبر است. یک عدد صحیح مثل 30 وارد کنید:")
 
 @sudo_router.message(ImportAdminStates.waiting_for_max_users, F.text)
 async def import_admin_max_users(message: Message, state: FSMContext):
     try:
-        max_users = int(message.text.strip())
+        raw = message.text.strip()
+        lower = raw.lower()
+        if lower in ["نامحدود", "بدون محدودیت", "unlimited", "∞", "بي نهايت", "بی نهایت", "بی‌نهایت"]:
+            max_users = 1000000  # Sentinel for unlimited users
+            await state.update_data(max_users=max_users, users_unlimited=True)
+        else:
+            max_users = int(raw)
         if max_users <= 0:
             raise ValueError()
-        await state.update_data(max_users=max_users)
+        if not lower in ["نامحدود", "بدون محدودیت", "unlimited", "∞", "بي نهايت", "بی نهایت", "بی‌نهایت"]:
+            await state.update_data(max_users=max_users)
         data = await state.get_data()
+        # Build human-readable summary respecting unlimited selections
+        traffic_b = data.get('max_total_traffic')
+        validity_days = data.get('validity_days')
+        traffic_txt = "نامحدود" if data.get('traffic_unlimited') or (traffic_b == 0) else f"{traffic_b} بایت"
+        time_txt = "نامحدود" if data.get('time_unlimited') or (validity_days and validity_days >= 36500) else f"{validity_days} روز"
+        users_txt = "نامحدود" if data.get('users_unlimited') or (max_users >= 1000000) else f"{max_users}"
         text = (
             "✅ تایید افزودن ادمین قبلی\n\n"
             f"نام: {data.get('admin_name') or '-'}\n"
             f"آیدی کاربر مقصد: {data.get('target_user_id','-')}\n"
             f"نام کاربری مرزبان: {data.get('marzban_username')}\n"
-            f"کاربر: {max_users}\n"
-            f"حجم: {data.get('max_total_traffic')} بایت\n"
-            f"زمان: {data.get('validity_days')} روز\n\n"
+            f"کاربر: {users_txt}\n"
+            f"حجم: {traffic_txt}\n"
+            f"زمان: {time_txt}\n\n"
             "برای ادامه تایید کنید."
         )
         kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -1733,7 +1763,7 @@ async def confirm_deactivate_panel(callback: CallbackQuery):
         return
     
     # Completely delete the panel and all users for manual deactivation
-    success = await delete_admin_panel_completely(admin_id, "غیرفعالسازی دستی توسط سودو")
+    success, err = await delete_admin_panel_completely(admin_id, "غیرفعالسازی دستی توسط سودو")
     
     if success:
         panel_name = admin.admin_name or admin.marzban_username or f"Panel-{admin.id}"
@@ -1747,7 +1777,7 @@ async def confirm_deactivate_panel(callback: CallbackQuery):
         )
     else:
         await callback.message.edit_text(
-            "❌ خطا در حذف پنل.",
+            ("❌ خطا در حذف پنل." + (f"\n\nجزئیات: {err}" if err else "")),
             reply_markup=get_sudo_keyboard()
         )
     
@@ -2139,8 +2169,10 @@ async def get_admin_status_text() -> str:
                     elapsed_seconds = max(0, (_dt.utcnow() - created_at).total_seconds())
                     time_percentage = (elapsed_seconds / admin.max_total_time * 100) if admin.max_total_time > 0 else 0
                     
-                    text += f"      👥 کاربران: {admin_stats.total_users}/{admin.max_users} ({user_percentage:.1f}%)\n"
-                    # Show detailed breakdown and peak
+                    max_traffic_txt = "نامحدود" if (admin.max_total_traffic or 0) == 0 else await format_traffic_size(admin.max_total_traffic)
+                    max_time_txt = "نامحدود" if (admin.max_total_time or 0) == 0 else await format_time_duration(admin.max_total_time)
+                    max_users_txt = "نامحدود" if ((admin.max_users or 0) >= 1000000) else f"{admin.max_users}"
+                    text += f"      👥 کاربران: {admin_stats.total_users}/{max_users_txt} ({user_percentage:.1f}%)\n"
                     try:
                         expired_c = (admin_stats.counts_extra or {}).get("expired", 0)
                         quota_full_c = (admin_stats.counts_extra or {}).get("quota_full", 0)
@@ -2150,8 +2182,8 @@ async def get_admin_status_text() -> str:
                         text += f"      └ اوج تاریخی: {peak_users}\n"
                     except Exception:
                         pass
-                    text += f"      📊 ترافیک: {await format_traffic_size(admin_stats.total_traffic_used)}/{await format_traffic_size(admin.max_total_traffic)} ({traffic_percentage:.1f}%)\n"
-                    text += f"      ⏱️ زمان: {await format_time_duration(int(elapsed_seconds))}/{await format_time_duration(admin.max_total_time)} ({time_percentage:.1f}%)\n"
+                    text += f"      📊 ترافیک: {await format_traffic_size(admin_stats.total_traffic_used)}/{max_traffic_txt} ({traffic_percentage:.1f}%)\n"
+                    text += f"      ⏱️ زمان: {await format_time_duration(int(elapsed_seconds))}/{max_time_txt} ({time_percentage:.1f}%)\n"
                     
                     # Show warning if approaching limits
                     if any(p >= 80 for p in [user_percentage, traffic_percentage, time_percentage]):
@@ -2199,15 +2231,133 @@ async def admin_status_callback(callback: CallbackQuery):
     if callback.from_user.id not in config.SUDO_ADMINS:
         await callback.answer("غیرمجاز", show_alert=True)
         return
-    
-    text = await get_admin_status_text()
-    
-    await callback.message.edit_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="back_to_main")]
-        ])
-    )
+    await show_admin_status_page(callback, 1)
+    await callback.answer()
+
+
+async def show_admin_status_page(message_or_callback: Message | CallbackQuery, page: int = 1):
+    if isinstance(message_or_callback, CallbackQuery):
+        chat = message_or_callback.message
+    else:
+        chat = message_or_callback
+    admins = await db.get_all_admins()
+    if not admins:
+        await chat.edit_text(
+            "❌ هیچ ادمینی یافت نشد.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="back_to_main")]])
+        )
+        return
+    per_page = 30
+    total = len(admins)
+    max_page = (total + per_page - 1) // per_page
+    page = max(1, min(page, max_page))
+    start = (page - 1) * per_page
+    end = min(start + per_page, total)
+    page_admins = admins[start:end]
+
+    rows = []
+    for a in page_admins:
+        panel_name = a.admin_name or a.marzban_username or f"Panel {a.id}"
+        # Use last recorded traffic from usage_reports (per user_id)
+        try:
+            report = await db.get_latest_usage_report(a.user_id)
+            used_bytes = int(getattr(report, 'current_total_traffic', 0) or 0) if report else 0
+        except Exception:
+            used_bytes = 0
+        used_txt = await format_traffic_size(used_bytes)
+        btn_text = f"{panel_name} — {used_txt}"
+        rows.append([InlineKeyboardButton(text=btn_text, callback_data=f"admin_status_detail_{a.id}_p{page}")])
+
+    nav_row = []
+    if page > 1:
+        nav_row.append(InlineKeyboardButton(text="⬅️ قبلی", callback_data=f"admin_status_page_{page-1}"))
+    if page < max_page:
+        nav_row.append(InlineKeyboardButton(text="بعدی ➡️", callback_data=f"admin_status_page_{page+1}"))
+    rows.append(nav_row or [InlineKeyboardButton(text=str(page), callback_data=f"admin_status_page_{page}")])
+    rows.append([InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="back_to_main")])
+
+    header = f"📊 لیست ادمین‌ها (صفحه {page}/{max_page})\n\nبرای مشاهده جزئیات، یکی را انتخاب کنید:"
+    try:
+        await chat.edit_text(header, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    except Exception:
+        # Fallback to send new message if edit fails
+        await chat.answer(header, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@sudo_router.callback_query(F.data.startswith("admin_status_page_"))
+async def admin_status_page_nav(callback: CallbackQuery):
+    if callback.from_user.id not in config.SUDO_ADMINS:
+        await callback.answer("غیرمجاز", show_alert=True)
+        return
+    try:
+        page = int(callback.data.split("_")[-1])
+    except Exception:
+        page = 1
+    await show_admin_status_page(callback, page)
+    await callback.answer()
+
+
+@sudo_router.callback_query(F.data.startswith("admin_status_detail_"))
+async def admin_status_detail(callback: CallbackQuery):
+    if callback.from_user.id not in config.SUDO_ADMINS:
+        await callback.answer("غیرمجاز", show_alert=True)
+        return
+    parts = callback.data.split("_")
+    try:
+        admin_id_part = parts[-2]
+        page_part = parts[-1]
+        admin_id = int(admin_id_part)
+        page = int(page_part[1:]) if page_part.startswith('p') else 1
+    except Exception:
+        await callback.answer("درک دستور نامعتبر است", show_alert=True)
+        return
+    admin = await db.get_admin_by_id(admin_id)
+    if not admin:
+        await callback.answer("پنل یافت نشد.", show_alert=True)
+        return
+    panel_name = admin.admin_name or admin.marzban_username or f"Panel {admin.id}"
+    try:
+        admin_api = await marzban_api.create_admin_api(admin.marzban_username, admin.marzban_password)
+        admin_stats = await admin_api.get_admin_stats()
+        from datetime import datetime as _dt
+        created_at = admin.created_at or _dt.utcnow()
+        elapsed_seconds = max(0, (_dt.utcnow() - created_at).total_seconds())
+        # Percentages (respect unlimited sentinels)
+        user_percentage = (max(int(getattr(admin, 'users_historical_peak', 0) or 0), int(admin_stats.total_users or 0)) / admin.max_users * 100) if admin.max_users > 0 else 0
+        traffic_percentage = (admin_stats.total_traffic_used / admin.max_total_traffic * 100) if admin.max_total_traffic > 0 else 0
+        time_percentage = (elapsed_seconds / admin.max_total_time * 100) if admin.max_total_time > 0 else 0
+        # Display helpers
+        max_users_txt = "نامحدود" if ((admin.max_users or 0) >= 1000000 or (admin.max_users or 0) == 0) else f"{admin.max_users}"
+        max_traffic_txt = "نامحدود" if (admin.max_total_traffic or 0) == 0 else await format_traffic_size(admin.max_total_traffic)
+        max_time_txt = "نامحدود" if (admin.max_total_time or 0) == 0 or (admin.max_total_time or 0) >= (36500 * 24 * 60 * 60) else await format_time_duration(admin.max_total_time)
+        # Breakdown
+        try:
+            expired_c = (admin_stats.counts_extra or {}).get("expired", 0)
+            quota_full_c = (admin_stats.counts_extra or {}).get("quota_full", 0)
+            disabled_c = (admin_stats.counts_extra or {}).get("disabled", 0)
+            active_c = (admin_stats.counts_by_status or {}).get("active", 0)
+            users_breakdown = f"(فعال: {active_c}, منقضی: {expired_c}, پرحجم: {quota_full_c}, غیرفعال: {disabled_c})"
+        except Exception:
+            users_breakdown = ""
+        detail_text = (
+            f"👤 **اطلاعات پنل: {panel_name}**\n\n"
+            f"- **نام کاربری مرزبان:** `{admin.marzban_username}`\n"
+            f"- **وضعیت:** {'✅ فعال' if admin.is_active else '❌ غیرفعال'}\n"
+            f"- **تاریخ ایجاد:** {created_at.strftime('%Y-%m-%d')}\n\n"
+            f"📊 **محدودیت‌ها و استفاده:**\n"
+            f"- **کاربران:** {getattr(admin_stats, 'consumed_users', 0)}/{max_users_txt} ({user_percentage:.1f}%)\n"
+            f"  ├ فعلی: {admin_stats.total_users} {users_breakdown}\n"
+            f"- **ترافیک:** {await format_traffic_size(admin_stats.total_traffic_used)} / {max_traffic_txt} ({traffic_percentage:.1f}%)\n"
+            f"- **اعتبار زمانی:** {await format_time_duration(int(elapsed_seconds))} سپری‌شده ({time_percentage:.1f}%)\n"
+            f"  └ سقف: {max_time_txt}"
+        )
+    except Exception as e:
+        detail_text = f"❌ خطا در دریافت اطلاعات پنل: {e}"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 بازگشت به لیست", callback_data=f"admin_status_page_{page}")],
+        [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="back_to_main")]
+    ])
+    await callback.message.edit_text(detail_text, reply_markup=kb)
     await callback.answer()
 
 
@@ -2311,9 +2461,7 @@ async def admin_status_command(message: Message):
         from handlers.public_handlers import get_public_main_keyboard
         await message.answer("به ربات خوش آمدید!", reply_markup=get_public_main_keyboard())
         return
-    
-    text = await get_admin_status_text()
-    await message.answer(text, reply_markup=get_sudo_keyboard())
+    await show_admin_status_page(message, 1)
 
 
 @sudo_router.callback_query(F.data == "activate_admin")
@@ -2655,38 +2803,61 @@ async def deactivate_admin_and_users(admin_user_id: int, reason: str = "Limit ex
         return False
 
 
-async def delete_admin_panel_completely(admin_id: int, reason: str = "غیرفعالسازی دستی توسط سودو") -> bool:
-    """Completely delete admin panel and all their users from both Marzban and database (for manual deactivation)."""
+async def delete_admin_panel_completely(admin_id: int, reason: str = "غیرفعالسازی دستی توسط سودو"):
+    """Completely delete admin panel and all their users from both Marzban and database (atomic with retry).
+
+    Returns:
+        (success: bool, error_message: str | None)
+    """
     try:
         admin = await db.get_admin_by_id(admin_id)
         if not admin:
-            return False
+            return False, "پنل در دیتابیس یافت نشد."
         
         # Store details for logging
         admin_username = admin.marzban_username
         user_count = 0
+        last_error: str | None = None
         
         # Step 1: Completely delete admin and all users from Marzban panel
+        marzban_success = True if not admin.marzban_username else False
         if admin.marzban_username:
+            # Try fetching user count (best-effort)
             try:
-                # Get user count before deletion for logging
                 if admin.marzban_password:
                     admin_api = await marzban_api.create_admin_api(admin.marzban_username, admin.marzban_password)
                     users = await admin_api.get_users()
                     user_count = len(users)
-                
-                # Completely delete admin and all users from Marzban
-                marzban_success = await marzban_api.delete_admin_completely(admin.marzban_username)
-                
-                if marzban_success:
-                    logger.info(f"Admin {admin.marzban_username} and {user_count} users deleted from Marzban")
-                else:
-                    logger.warning(f"Failed to delete admin {admin.marzban_username} from Marzban")
-                    
-            except Exception as e:
-                logger.error(f"Error deleting admin {admin.marzban_username} from Marzban: {e}")
+            except Exception:
+                pass
+
+            # Retry deletion up to 3 times
+            attempts = 3
+            for attempt in range(1, attempts + 1):
+                try:
+                    marzban_success = await marzban_api.delete_admin_completely(admin.marzban_username)
+                    if marzban_success:
+                        logger.info(f"Admin {admin.marzban_username} and {user_count} users deleted from Marzban (attempt {attempt})")
+                        last_error = None
+                        break
+                    else:
+                        last_error = f"API returned failure on attempt {attempt}"
+                        logger.warning(f"Failed to delete admin {admin.marzban_username} from Marzban (attempt {attempt})")
+                except Exception as e:
+                    last_error = f"Exception on attempt {attempt}: {type(e).__name__}: {e}"
+                    logger.error(f"Error deleting admin {admin.marzban_username} from Marzban: {e}")
+                # Small backoff between attempts
+                try:
+                    await asyncio.sleep(0.7 * attempt)
+                except Exception:
+                    pass
+
+        # If Marzban deletion failed, do not remove from DB
+        if not marzban_success:
+            message = "حذف ادمین در مرزبان ناموفق بود. دیتابیس تغییری نکرد." + (f"\nجزئیات: {last_error}" if last_error else "")
+            return False, message
         
-        # Step 2: Remove admin from database completely
+        # Step 2 (atomic): Remove admin from database completely only if Marzban deletion succeeded
         db_success = await db.remove_admin_by_id(admin_id)
         
         if db_success:
@@ -2703,14 +2874,14 @@ async def delete_admin_panel_completely(admin_id: int, reason: str = "غیرفع
             await db.add_log(log)
             
             logger.info(f"Admin panel {admin_id} ({admin_username}) completely deleted from both Marzban and database")
-            return True
+            return True, None
         else:
             logger.error(f"Failed to delete admin panel {admin_id} from database")
-            return False
+            return False, "حذف رکورد پنل در دیتابیس ناموفق بود."
         
     except Exception as e:
         logger.error(f"Error completely deleting admin panel {admin_id}: {e}")
-        return False
+        return False, f"خطای غیرمنتظره: {type(e).__name__}: {e}"
 
 
 async def deactivate_admin_panel_by_id(admin_id: int, reason: str = "Limit exceeded") -> bool:
@@ -2971,9 +3142,10 @@ async def manage_action_info(callback: CallbackQuery):
         if admin.marzban_username and admin.marzban_password:
             admin_api = await marzban_api.create_admin_api(admin.marzban_username, admin.marzban_password)
             stats = await admin_api.get_admin_stats()
+            max_traffic_txt = "نامحدود" if (admin.max_total_traffic or 0) == 0 else await format_traffic_size(admin.max_total_traffic)
             text += (
                 f"👥 کاربران فعال/کل: {stats.active_users}/{stats.total_users}\n"
-                f"📊 ترافیک مصرفی: {await format_traffic_size(stats.total_traffic_used)} / {await format_traffic_size(admin.max_total_traffic)}\n"
+                f"📊 ترافیک مصرفی: {await format_traffic_size(stats.total_traffic_used)} / {max_traffic_txt}\n"
             )
         else:
             text += "اطلاعات مرزبان کامل نیست.\n"
@@ -3069,8 +3241,8 @@ async def manage_action_delete(callback: CallbackQuery):
         return
     admin_id = int(callback.data.split("_")[-1])
     try:
-        success = await delete_admin_panel_completely(admin_id, "حذف دستی توسط سودو")
-        text = "✅ پنل حذف شد." if success else "❌ خطا در حذف پنل."
+        success, err = await delete_admin_panel_completely(admin_id, "حذف دستی توسط سودو")
+        text = "✅ پنل حذف شد." if success else ("❌ خطا در حذف پنل." + (f"\n\nجزئیات: {err}" if err else ""))
     except Exception as e:
         text = f"❌ خطا در حذف پنل: {e}"
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="sudo_manage_admins")]]))
@@ -3475,7 +3647,7 @@ async def order_approve(callback: CallbackQuery):
     from models.schemas import AdminModel
     admin_model = AdminModel(
         user_id=o['user_id'],
-        admin_name=f"Reseller #{oid}",
+        admin_name=(plan.name or f"Reseller #{oid}"),
         marzban_username=new_username,
         marzban_password=new_password,
         max_users=(plan.max_users if plan.max_users is not None else 1000000),
@@ -3497,7 +3669,9 @@ async def order_approve(callback: CallbackQuery):
         login_url = await db.get_setting("global_login_url")
         if not login_url:
             login_url = issued_admin.login_url if issued_admin and issued_admin.login_url else config.MARZBAN_URL
+        plan_name_display = plan.name if plan and getattr(plan, 'name', None) else (o.get('plan_name_snapshot') or f"پلن #{o.get('plan_id')}")
         msg = config.MESSAGES["order_approved_user"].format(username=new_username, password=new_password, login_url=login_url)
+        msg += f"\n📦 پلن: {plan_name_display}"
         await bot.send_message(chat_id=o['user_id'], text=msg)
     except Exception as e:
         logger.error(f"Failed to notify user {o['user_id']} for order {oid}: {e}")
