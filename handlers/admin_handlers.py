@@ -155,7 +155,7 @@ async def show_admin_info(message_or_callback: Message | CallbackQuery, admin: A
             users_breakdown = ""
 
         # Handle display for unlimited values (traffic 0 => unlimited, time 0 => unlimited, users 0 => unlimited)
-        max_users_txt = "نامحدود" if (admin.max_users or 0) == 0 else f"{admin.max_users}"
+        max_users_txt = "نامحدود" if ((admin.max_users or 0) == 0 or (admin.max_users or 0) >= 1000000) else f"{admin.max_users}"
         max_traffic_txt = "نامحدود" if (admin.max_total_traffic or 0) == 0 else await format_traffic_size(admin.max_total_traffic)
         max_time_seconds = admin.max_total_time or 0
         # Treat very large durations (>=100 years) as unlimited for display
@@ -167,7 +167,7 @@ async def show_admin_info(message_or_callback: Message | CallbackQuery, admin: A
             f"- <b>تاریخ ایجاد:</b> {admin.created_at.strftime('%Y-%m-%d')}\n\n"
             f"📊 <b>محدودیت‌ها و استفاده:</b>\n"
             f"- <b>کاربران:</b> {getattr(admin_stats, 'consumed_users', 0)}/{max_users_txt} ({user_percentage:.1f}%)\n"
-            f"  ├ فعلی: {admin_stats.total_users} {users_breakdown}\n"
+            f"  ├ کل: {admin_stats.total_users} {users_breakdown}\n"
             f"  └ اوج تاریخی: {peak_users}\n"
             f"- <b>ترافیک:</b> {await format_traffic_size(admin_stats.total_traffic_used)} / {max_traffic_txt} ({traffic_percentage:.1f}%)\n"
             f"- <b>اعتبار زمانی:</b> {await format_time_duration(remaining_time_seconds)} مانده ({time_percentage:.1f}%)\n"
