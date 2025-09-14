@@ -2178,7 +2178,7 @@ async def get_admin_status_text() -> str:
                         quota_full_c = (admin_stats.counts_extra or {}).get("quota_full", 0)
                         disabled_c = (admin_stats.counts_extra or {}).get("disabled", 0)
                         active_c = (admin_stats.counts_by_status or {}).get("active", 0)
-                        text += f"      ├ فعلی: {admin_stats.total_users} (فعال: {active_c}, منقضی: {expired_c}, پرحجم: {quota_full_c}, غیرفعال: {disabled_c})\n"
+                        text += f"      ├ فعلی: {admin_stats.total_users} (فعال: {active_c}, منقضی: {expired_c}, اتمام حجم: {quota_full_c}, غیرفعال: {disabled_c})\n"
                         text += f"      └ اوج تاریخی: {peak_users}\n"
                     except Exception:
                         pass
@@ -2340,7 +2340,7 @@ async def admin_status_detail(callback: CallbackQuery):
             quota_full_c = (admin_stats.counts_extra or {}).get("quota_full", 0)
             disabled_c = (admin_stats.counts_extra or {}).get("disabled", 0)
             active_c = (admin_stats.counts_by_status or {}).get("active", 0)
-            users_breakdown = f"(فعال: {active_c}, منقضی: {expired_c}, پرحجم: {quota_full_c}, غیرفعال: {disabled_c})"
+            users_breakdown = f"(فعال: {active_c}, منقضی: {expired_c}, اتمام حجم: {quota_full_c}, غیرفعال: {disabled_c})"
         except Exception:
             users_breakdown = ""
         detail_text = (
@@ -2349,7 +2349,7 @@ async def admin_status_detail(callback: CallbackQuery):
             f"- **وضعیت:** {'✅ فعال' if admin.is_active else '❌ غیرفعال'}\n"
             f"- **تاریخ ایجاد:** {created_at.strftime('%Y-%m-%d')}\n\n"
             f"📊 **محدودیت‌ها و استفاده:**\n"
-            f"- **کاربران:** {getattr(admin_stats, 'consumed_users', 0)}/{max_users_txt} ({user_percentage:.1f}%)\n"
+            f"- **کاربران:** {getattr(admin_stats, 'active_users', 0)}/{max_users_txt} ({user_percentage:.1f}%)\n"
             f"  ├ فعلی: {admin_stats.total_users} {users_breakdown}\n"
             f"- **ترافیک:** {await format_traffic_size(admin_stats.total_traffic_used)} / {max_traffic_txt} ({traffic_percentage:.1f}%)\n"
             f"- **اعتبار زمانی:** {await format_time_duration(int(elapsed_seconds))} سپری‌شده ({time_percentage:.1f}%)\n"
