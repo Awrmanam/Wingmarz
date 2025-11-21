@@ -4,10 +4,11 @@ from aiogram.types import FSInputFile
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from typing import List
+from typing import List, Dict, Any
 import logging
 import asyncio
 from pathlib import Path
+import math
 import config
 from database import db
 from models.schemas import AdminModel, LogModel
@@ -87,6 +88,128 @@ class BroadcastStates(StatesGroup):
     waiting_for_text = State()
 
 
+class AutoImportStates(StatesGroup):
+    browsing = State()
+
+
+AUTO_IMPORT_PAGE_SIZE = 6
+
+
+def _build_auto_import_keyboard(candidates: List[Dict[str, Any]], page: int) -> InlineKeyboardMarkup:
+    total = len(candidates)
+    total_pages = max(1, math.ceil(total / AUTO_IMPORT_PAGE_SIZE)) if total else 1
+    page = max(0, min(page, total_pages - 1))
+    start = page * AUTO_IMPORT_PAGE_SIZE
+    end = start + AUTO_IMPORT_PAGE_SIZE
+    rows: List[List[InlineKeyboardButton]] = []
+
+    for candidate in candidates[start:end]:
+        prefix_parts = []
+        if candidate.get("already_registered"):
+            prefix_parts.append("✅")
+        else:
+            prefix_parts.append("➕")
+        if candidate.get("is_sudo"):
+            prefix_parts.append("⭐")
+        prefix = "".join(prefix_parts) or "➕"
+        label = f"{prefix} {candidate.get('username', '-')}"
+        rows.append([InlineKeyboardButton(text=label, callback_data=f"auto_import_select:{candidate.get('idx')}")])
+
+    if total_pages > 1:
+        nav_row: List[InlineKeyboardButton] = []
+        if page > 0:
+            nav_row.append(InlineKeyboardButton(text="⬅️ قبلی", callback_data=f"auto_import_page:{page-1}"))
+        nav_row.append(InlineKeyboardButton(text=f"{page+1}/{total_pages}", callback_data="auto_import_page_info"))
+        if page < total_pages - 1:
+            nav_row.append(InlineKeyboardButton(text="➡️ بعدی", callback_data=f"auto_import_page:{page+1}"))
+        rows.append(nav_row)
+
+    rows.append([InlineKeyboardButton(text="🔄 بروزرسانی", callback_data="auto_import_refresh")])
+    rows.append([InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="sudo_menu_panels")])
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _render_auto_import_menu(
+    callback: CallbackQuery,
+    state: FSMContext,
+    *,
+    page: int = 0,
+    refresh: bool = False
+) -> None:
+    data = await state.get_data()
+    candidates: List[Dict[str, Any]]
+
+    if refresh or "auto_import_candidates" not in data:
+        try:
+            raw_admins = await marzban_api.list_admins()
+        except Exception as exc:
+            logger.error("Failed to fetch admins list from Marzban API: %s", exc)
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="sudo_menu_panels")]
+            ])
+            await callback.message.edit_text("❌ خطا در دریافت لیست ادمین‌ها از مرزبان.", reply_markup=kb)
+            await callback.answer()
+            return
+
+        if not isinstance(raw_admins, list):
+            raw_admins = []
+
+        existing_admins = await db.get_all_admins()
+        existing_usernames = {adm.marzban_username for adm in existing_admins if adm.marzban_username}
+
+        processed: List[Dict[str, Any]] = []
+        for item in raw_admins:
+            if not isinstance(item, dict):
+                continue
+            username = item.get("username")
+            if not username:
+                continue
+            processed.append({
+                "username": username,
+                "is_sudo": bool(item.get("is_sudo")),
+                "telegram_id": item.get("telegram_id") or None,
+                "users_usage": item.get("users_usage"),
+                "already_registered": username in existing_usernames
+            })
+
+        processed.sort(key=lambda c: (c["already_registered"], c["username"].lower()))
+        for idx, candidate in enumerate(processed):
+            candidate["idx"] = idx
+
+        candidates = processed
+        await state.update_data(auto_import_candidates=candidates)
+    else:
+        candidates = data["auto_import_candidates"]
+
+    total = len(candidates)
+    total_pages = max(1, math.ceil(total / AUTO_IMPORT_PAGE_SIZE)) if total else 1
+    page = max(0, min(page, total_pages - 1))
+    await state.update_data(auto_import_page=page)
+    await state.set_state(AutoImportStates.browsing)
+
+    new_count = sum(1 for c in candidates if not c.get("already_registered"))
+    existing_count = total - new_count
+
+    lines = [
+        "🤖 کشف خودکار ادمین‌های مرزبان",
+        "",
+        f"کل ادمین‌ها در پنل: {total}",
+        f"ثبت نشده در ربات: {new_count}",
+        f"ثبت شده: {existing_count}",
+        "",
+        "ادمین‌های موجود با نماد ✅ مشخص شده‌اند.",
+        "برای افزودن، یکی را انتخاب کنید.",
+    ]
+    if total == 0:
+        lines.append("")
+        lines.append("هیچ ادمینی توسط API گزارش نشد.")
+
+    kb = _build_auto_import_keyboard(candidates, page)
+
+    await callback.message.edit_text("\n".join(lines), reply_markup=kb)
+    await callback.answer()
+
 sudo_router = Router()
 
 
@@ -137,12 +260,119 @@ async def sudo_menu_panels(callback: CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=config.BUTTONS["add_admin"], callback_data="add_admin"), InlineKeyboardButton(text=config.BUTTONS["edit_panel"], callback_data="edit_panel")],
         [InlineKeyboardButton(text=config.BUTTONS["activate_admin"], callback_data="activate_admin"), InlineKeyboardButton(text=config.BUTTONS["manage_admins"], callback_data="sudo_manage_admins")],
-        [InlineKeyboardButton(text=config.BUTTONS["import_admin"], callback_data="import_admin")],
+        [
+            InlineKeyboardButton(text=config.BUTTONS["auto_import_admin"], callback_data="auto_import_admins"),
+            InlineKeyboardButton(text=config.BUTTONS["import_admin"], callback_data="import_admin")
+        ],
         [InlineKeyboardButton(text=config.BUTTONS["remove_admin"], callback_data="remove_admin")],
         [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="back_to_main")]
     ])
     await callback.message.edit_text("🧩 مدیریت پنل‌ها:", reply_markup=kb)
     await callback.answer()
+
+
+@sudo_router.callback_query(F.data == "auto_import_admins")
+async def auto_import_admins(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in config.SUDO_ADMINS:
+        await callback.answer("غیرمجاز", show_alert=True)
+        return
+    await state.clear()
+    await _render_auto_import_menu(callback, state, page=0, refresh=True)
+
+
+@sudo_router.callback_query(F.data == "auto_import_refresh")
+async def auto_import_refresh(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in config.SUDO_ADMINS:
+        await callback.answer("غیرمجاز", show_alert=True)
+        return
+    await _render_auto_import_menu(callback, state, page=0, refresh=True)
+
+
+@sudo_router.callback_query(F.data.startswith("auto_import_page:"))
+async def auto_import_page(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in config.SUDO_ADMINS:
+        await callback.answer("غیرمجاز", show_alert=True)
+        return
+    try:
+        page = int(callback.data.split(":")[1])
+    except (IndexError, ValueError):
+        page = 0
+    await _render_auto_import_menu(callback, state, page=page, refresh=False)
+
+
+@sudo_router.callback_query(F.data == "auto_import_page_info")
+async def auto_import_page_info(callback: CallbackQuery):
+    await callback.answer("از دکمه‌های قبلی و بعدی برای جابجایی استفاده کنید.")
+
+
+@sudo_router.callback_query(F.data.startswith("auto_import_select:"))
+async def auto_import_select(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in config.SUDO_ADMINS:
+        await callback.answer("غیرمجاز", show_alert=True)
+        return
+    try:
+        idx = int(callback.data.split(":")[1])
+    except (IndexError, ValueError):
+        await callback.answer("انتخاب نامعتبر است.", show_alert=True)
+        return
+    data = await state.get_data()
+    candidates = data.get("auto_import_candidates", [])
+    selected = next((c for c in candidates if c.get("idx") == idx), None)
+    if not selected:
+        await callback.answer("ادمین پیدا نشد.", show_alert=True)
+        return
+    if selected.get("already_registered"):
+        await callback.answer("این ادمین قبلاً در ربات ثبت شده است.", show_alert=True)
+        return
+
+    await state.update_data(
+        auto_import=True,
+        auto_candidate=selected,
+        admin_name=selected.get("username"),
+        marzban_username=selected.get("username"),
+        origin_plan_id=None,
+        allow_incremental_renewal=None
+    )
+    await state.set_state(ImportAdminStates.waiting_for_target_user_id)
+
+    telegram_hint = selected.get("telegram_id")
+    usage_hint = selected.get("users_usage")
+    usage_line = ""
+    if isinstance(usage_hint, (int, float)):
+        usage_line = f"مصرف گزارش‌شده: {usage_hint}\n"
+    elif usage_hint:
+        usage_line = f"مصرف گزارش‌شده: {usage_hint}\n"
+
+    lines = [
+        f"ادمین انتخاب شد: {selected.get('username')}",
+        f"نوع دسترسی: {'سودو' if selected.get('is_sudo') else 'عادی'}",
+    ]
+    if telegram_hint:
+        lines.append(f"آیدی تلگرام ثبت‌شده: {telegram_hint}")
+    else:
+        lines.append("آیدی تلگرام در پنل ثبت نشده است.")
+    if usage_line:
+        lines.append(usage_line.strip())
+    lines.append("")
+    lines.append("آیدی عددی تلگرام نماینده را ارسال کنید.")
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=config.BUTTONS["cancel"], callback_data="auto_import_cancel")]
+    ])
+    await callback.message.edit_text("\n".join(lines), reply_markup=kb)
+    await callback.answer()
+
+
+@sudo_router.callback_query(F.data == "auto_import_cancel")
+async def auto_import_cancel(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in config.SUDO_ADMINS:
+        await callback.answer("غیرمجاز", show_alert=True)
+        return
+    data = await state.get_data()
+    page = data.get("auto_import_page", 0)
+    await state.update_data(auto_import=None, auto_candidate=None)
+    await _render_auto_import_menu(callback, state, page=page, refresh=False)
+
 
 @sudo_router.callback_query(F.data == "import_admin")
 async def import_admin_entry(callback: CallbackQuery, state: FSMContext):
@@ -301,8 +531,13 @@ async def import_admin_target_user_id(message: Message, state: FSMContext):
     try:
         target_user_id = int(message.text.strip())
         await state.update_data(target_user_id=target_user_id)
-        await state.set_state(ImportAdminStates.waiting_for_marzban_username)
-        await message.answer("نام کاربری پنل در مرزبان را ارسال کنید:")
+        data = await state.get_data()
+        if data.get("auto_import"):
+            await state.set_state(ImportAdminStates.waiting_for_marzban_password)
+            await message.answer("رمز عبور پنل در مرزبان را ارسال کنید:")
+        else:
+            await state.set_state(ImportAdminStates.waiting_for_marzban_username)
+            await message.answer("نام کاربری پنل در مرزبان را ارسال کنید:")
     except Exception:
         await message.answer("آیدی عددی نامعتبر است. یک عدد صحیح ارسال کنید:")
 

@@ -100,6 +100,7 @@ BUTTONS = {
     "admin_status": "📊 وضعیت ادمین‌ها",
     "activate_admin": "🔄 فعالسازی پنل",
     "import_admin": "⬇️ افزودن ادمین قبلی",
+    "auto_import_admin": "🤖 کشف خودکار ادمین",
     "my_info": "👤 اطلاعات من",
     "my_users": "👥 کاربران من",
     "my_report": "📈 گزارش من",
