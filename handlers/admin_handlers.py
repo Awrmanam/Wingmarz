@@ -10,7 +10,7 @@ import config
 from database import db
 from models.schemas import AdminModel, UsageReportModel
 from utils.notify import format_traffic_size, format_time_duration
-from marzban_api import marzban_api
+from panel_api import marzban_api
 from datetime import datetime
 from aiogram.exceptions import TelegramBadRequest
 
@@ -192,7 +192,7 @@ async def show_admin_report(message_or_callback: Message | CallbackQuery, admin:
         users = await admin_api.get_users()
         # Use sudo-based admin usage cumulative
         try:
-            from marzban_api import marzban_api as _sudo_api
+            from panel_api import marzban_api as _sudo_api
             total_traffic = await _sudo_api.get_admin_usage_cumulative(admin.marzban_username or admin.username or "")
         except Exception:
             total_traffic = sum(u.used_traffic for u in users)

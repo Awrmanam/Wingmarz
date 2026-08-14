@@ -17,6 +17,14 @@ MARZBAN_URL = os.getenv("MARZBAN_URL", "https://your-marzban-panel.com")
 MARZBAN_USERNAME = os.getenv("MARZBAN_USERNAME", "admin")
 MARZBAN_PASSWORD = os.getenv("MARZBAN_PASSWORD", "admin_password")
 
+# Panel provider (Marzban remains the backwards-compatible default)
+PANEL_PROVIDER = os.getenv("PANEL_PROVIDER", "marzban").strip().lower()
+if PANEL_PROVIDER not in {"marzban", "rebecca"}:
+    PANEL_PROVIDER = "marzban"
+REBECCA_URL = os.getenv("REBECCA_URL", "").strip()
+REBECCA_BEARER_TOKEN = os.getenv("REBECCA_BEARER_TOKEN", "").strip()
+REBECCA_LOGIN_URL = os.getenv("REBECCA_LOGIN_URL", "").strip()
+
 # Sudo Admins (User IDs)
 SUDO_ADMINS: List[int] = [
     int(x) for x in os.getenv("SUDO_ADMINS", "123456789").split(",") if x.strip()

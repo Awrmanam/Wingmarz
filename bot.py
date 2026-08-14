@@ -13,7 +13,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 import config
 from database import db
-from marzban_api import marzban_api
+from panel_api import marzban_api
 from handlers.sudo_handlers import sudo_router
 from handlers.admin_handlers import admin_router
 from handlers.public_handlers import public_router

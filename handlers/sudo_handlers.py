@@ -9,6 +9,9 @@ import logging
 import asyncio
 from pathlib import Path
 import math
+import re
+import secrets
+import time
 import config
 from database import db
 from models.schemas import AdminModel, LogModel
@@ -17,13 +20,21 @@ from utils.notify import (
     gb_to_bytes, days_to_seconds, bytes_to_gb, seconds_to_days,
 )
 from utils.notify import notify_admin_reactivation as notify_admin_reactivation_utils
-from marzban_api import marzban_api
+from panel_api import marzban_api
 from datetime import datetime
 from handlers.admin_handlers import show_cleanup_menu, perform_cleanup
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 logger = logging.getLogger(__name__)
+
+
+def _rebecca_username_base(telegram_username: str | None, telegram_id: int) -> str:
+    """Return an ASCII-only base; display names are intentionally never used."""
+    raw = (telegram_username or "").lstrip("@").lower()
+    safe = re.sub(r"[^a-z0-9_]", "_", raw)
+    safe = re.sub(r"_+", "_", safe).strip("_")
+    return safe or f"user_{telegram_id}"
 
 
 class AddAdminStates(StatesGroup):
@@ -4386,55 +4397,98 @@ async def order_approve(callback: CallbackQuery):
     if not plan:
         await callback.answer("پلن مربوطه یافت نشد.", show_alert=True)
         return
-    import secrets
-    # Username pattern: panel{user_id}, if exists then panel{user_id}-1, -2, ...
-    base_username = f"panel{o['user_id']}"
-    # Find an available username deterministically
-    candidate = base_username
-    try:
-        exists = await marzban_api.admin_exists(candidate)
-    except Exception:
-        exists = False
-    suffix = 0
-    if exists:
-        suffix = 1
-        while suffix < 500:
-            candidate = f"{base_username}-{suffix}"
+    # Keep the original Marzban issuance behavior byte-for-byte in its provider path.
+    telegram_username = first_name = last_name = None
+    if config.PANEL_PROVIDER == "rebecca":
+        try:
+            customer = await callback.bot.get_chat(o['user_id'])
+            telegram_username = getattr(customer, "username", None)
+            first_name = getattr(customer, "first_name", None)
+            last_name = getattr(customer, "last_name", None)
+        except Exception:
+            # Telegram profile enrichment is optional; order user_id is authoritative.
+            pass
+        base_username = _rebecca_username_base(telegram_username, o['user_id'])
+        new_password = secrets.token_urlsafe(18)
+        created = None
+        for _ in range(6):
+            new_username = f"{base_username}_{secrets.randbelow(9000) + 1000}"
+            expire = int(time.time()) + plan.time_limit_seconds if plan.time_limit_seconds is not None else None
             try:
-                exists = await marzban_api.admin_exists(candidate)
-            except Exception:
-                exists = False
-            if not exists:
+                created = await marzban_api.create_admin_verified(
+                    new_username, new_password, o['user_id'],
+                    data_limit=plan.traffic_limit_bytes,
+                    expire=expire,
+                    users_limit=plan.max_users,
+                )
                 break
-            suffix += 1
-    new_username = candidate
-    new_password = secrets.token_hex(5)
-    # Try create; if still fails (race), try next few suffixes
-    created = await marzban_api.create_admin(new_username, new_password, telegram_id=o['user_id'], is_sudo=False)
-    if not created:
-        attempts = 0
-        while attempts < 5 and not created:
-            suffix = (suffix + 1) if suffix else 1
-            new_username = f"{base_username}-{suffix}"
-            created = await marzban_api.create_admin(new_username, new_password, telegram_id=o['user_id'], is_sudo=False)
-            attempts += 1
+            except Exception as exc:
+                from rebecca_api import RebeccaConflict
+                if isinstance(exc, RebeccaConflict):
+                    continue
+                logger.error("Rebecca admin issuance failed for order %s", oid)
+                await callback.answer("خطا در صدور پنل در Rebecca.", show_alert=True)
+                return
         if not created:
-            await callback.answer("خطا در صدور پنل در مرزبان.", show_alert=True)
+            await callback.answer("نام کاربری یکتا برای Rebecca یافت نشد.", show_alert=True)
             return
+    else:
+        # Username pattern: panel{user_id}, if exists then panel{user_id}-1, -2, ...
+        base_username = f"panel{o['user_id']}"
+        candidate = base_username
+        try:
+            exists = await marzban_api.admin_exists(candidate)
+        except Exception:
+            exists = False
+        suffix = 0
+        if exists:
+            suffix = 1
+            while suffix < 500:
+                candidate = f"{base_username}-{suffix}"
+                try:
+                    exists = await marzban_api.admin_exists(candidate)
+                except Exception:
+                    exists = False
+                if not exists:
+                    break
+                suffix += 1
+        new_username = candidate
+        new_password = secrets.token_hex(5)
+        created = await marzban_api.create_admin(new_username, new_password, telegram_id=o['user_id'], is_sudo=False)
+        if not created:
+            attempts = 0
+            while attempts < 5 and not created:
+                suffix = (suffix + 1) if suffix else 1
+                new_username = f"{base_username}-{suffix}"
+                created = await marzban_api.create_admin(new_username, new_password, telegram_id=o['user_id'], is_sudo=False)
+                attempts += 1
+            if not created:
+                await callback.answer("خطا در صدور پنل در مرزبان.", show_alert=True)
+                return
     from models.schemas import AdminModel
+    full_name = " ".join(part for part in (first_name, last_name) if part).strip()
+    identity_name = full_name or (f"@{telegram_username}" if telegram_username else f"User {o['user_id']}")
     admin_model = AdminModel(
         user_id=o['user_id'],
-        admin_name=(plan.name or f"Reseller #{oid}"),
+        admin_name=(identity_name if config.PANEL_PROVIDER == "rebecca" else (plan.name or f"Reseller #{oid}")),
         marzban_username=new_username,
         marzban_password=new_password,
+        username=telegram_username,
+        first_name=first_name,
+        last_name=last_name,
         max_users=(plan.max_users if plan.max_users is not None else 1000000),
         max_total_time=(plan.time_limit_seconds if plan.time_limit_seconds is not None else days_to_seconds(36500)),
         max_total_traffic=plan.traffic_limit_bytes or 0,
         validity_days=(plan.time_limit_seconds // 86400) if plan.time_limit_seconds else 36500,
         is_active=True,
-        origin_plan_id=plan.id
+        origin_plan_id=plan.id,
+        allow_incremental_renewal=plan.allow_incremental_renewal,
     )
     ok = await db.add_admin(admin_model)
+    if not ok:
+        # In particular, never mark a Rebecca order issued without local persistence.
+        await callback.answer("خطا در ذخیره پنل صادرشده.", show_alert=True)
+        return
     issued_admin = None
     if ok:
         admins = await db.get_admins_for_user(o['user_id'])
@@ -4445,7 +4499,12 @@ async def order_approve(callback: CallbackQuery):
         # Prefer global setting for login URL; fallback to per-admin or MARZBAN_URL
         login_url = await db.get_setting("global_login_url")
         if not login_url:
-            login_url = issued_admin.login_url if issued_admin and issued_admin.login_url else config.MARZBAN_URL
+            if issued_admin and issued_admin.login_url:
+                login_url = issued_admin.login_url
+            elif config.PANEL_PROVIDER == "rebecca":
+                login_url = config.REBECCA_LOGIN_URL or config.REBECCA_URL
+            else:
+                login_url = config.MARZBAN_URL
         plan_name_display = plan.name if plan and getattr(plan, 'name', None) else (o.get('plan_name_snapshot') or f"پلن #{o.get('plan_id')}")
         msg = config.MESSAGES["order_approved_user"].format(username=new_username, password=new_password, login_url=login_url)
         msg += f"\n📦 پلن: {plan_name_display}"
