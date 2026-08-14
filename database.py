@@ -232,6 +232,9 @@ class Database:
                     receipt_file_id TEXT,
                     approved_by INTEGER,
                     issued_admin_id INTEGER,
+                    rebecca_username TEXT,
+                    rebecca_password TEXT,
+                    rebecca_provision_state TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -278,6 +281,15 @@ class Database:
                 await db.execute("ALTER TABLE orders ADD COLUMN delta_users INTEGER")
             except aiosqlite.OperationalError:
                 pass
+            for column in (
+                "rebecca_username TEXT",
+                "rebecca_password TEXT",
+                "rebecca_provision_state TEXT",
+            ):
+                try:
+                    await db.execute(f"ALTER TABLE orders ADD COLUMN {column}")
+                except aiosqlite.OperationalError:
+                    pass
 
             # Create cards table (manual payment destinations)
             await db.execute("""
@@ -863,6 +875,79 @@ class Database:
                 return True
         except Exception as e:
             print(f"Error updating order: {e}")
+            return False
+
+    async def reserve_rebecca_provisioning(self, order_id: int, username: str, password: str) -> Optional[Dict[str, Any]]:
+        """Atomically grant exactly one caller permission to contact Rebecca.
+
+        Once an attempt begins it is deliberately never retried automatically: an
+        interrupted request may have succeeded remotely, and creating again would
+        be less safe than requiring manual recovery.
+        """
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("BEGIN IMMEDIATE")
+            async with conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)) as cur:
+                row = await cur.fetchone()
+            if not row or (row["status"] or "").lower() == "approved":
+                await conn.rollback()
+                return None
+            if row["rebecca_provision_state"]:
+                await conn.rollback()
+                result = dict(row)
+                result["should_create"] = False
+                return result
+            await conn.execute(
+                """UPDATE orders SET rebecca_username=?, rebecca_password=?,
+                   rebecca_provision_state='creating', updated_at=CURRENT_TIMESTAMP
+                   WHERE id=? AND rebecca_provision_state IS NULL""",
+                (username, password, order_id),
+            )
+            await conn.commit()
+            result = dict(row)
+            result.update(rebecca_username=username, rebecca_password=password,
+                          rebecca_provision_state="creating", should_create=True)
+            return result
+
+    async def finalize_rebecca_provisioning(self, order_id: int, admin: AdminModel, approved_by: int) -> bool:
+        """Persist the verified admin and approve its order in one transaction."""
+        try:
+            async with aiosqlite.connect(self.db_path) as conn:
+                await conn.execute("BEGIN IMMEDIATE")
+                cur = await conn.execute(
+                    """INSERT INTO admins
+                    (user_id, admin_name, marzban_username, marzban_password, username,
+                     first_name, last_name, max_users, max_total_time, max_total_traffic,
+                     validity_days, is_active, origin_plan_id, allow_incremental_renewal)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (admin.user_id, admin.admin_name, admin.marzban_username,
+                     admin.marzban_password, admin.username, admin.first_name,
+                     admin.last_name, admin.max_users, admin.max_total_time,
+                     admin.max_total_traffic, admin.validity_days, 1,
+                     admin.origin_plan_id, admin.allow_incremental_renewal),
+                )
+                await conn.execute(
+                    """UPDATE orders SET status='approved', approved_by=?, issued_admin_id=?,
+                       rebecca_provision_state='completed', updated_at=CURRENT_TIMESTAMP
+                       WHERE id=? AND rebecca_provision_state='creating'""",
+                    (approved_by, cur.lastrowid, order_id),
+                )
+                await conn.commit()
+                return True
+        except Exception:
+            return False
+
+    async def update_rebecca_reserved_username(self, order_id: int, username: str) -> bool:
+        """Replace a reserved username only after a definitive 409 response."""
+        try:
+            async with aiosqlite.connect(self.db_path) as conn:
+                cur = await conn.execute(
+                    "UPDATE orders SET rebecca_username=? WHERE id=? AND rebecca_provision_state='creating'",
+                    (username, order_id),
+                )
+                await conn.commit()
+                return cur.rowcount == 1
+        except Exception:
             return False
 
     # ===== Cards CRUD =====

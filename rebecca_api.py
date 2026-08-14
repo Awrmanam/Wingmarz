@@ -26,14 +26,6 @@ class RebeccaAPI:
     def _headers(self) -> Dict[str, str]:
         return {"Authorization": f"Bearer {self._token}", "Content-Type": "application/json"}
 
-    async def test_connection(self) -> bool:
-        # There is no safely documented connection-test route in this integration.
-        return bool(self.base_url and self._token)
-
-    async def admin_exists(self, username: str) -> bool:
-        # Creation is the authoritative uniqueness check (HTTP 409).
-        return False
-
     async def create_admin_verified(
         self, username: str, password: str, telegram_id: int, *,
         data_limit: Optional[int], expire: Optional[int], users_limit: Optional[int]
@@ -74,11 +66,5 @@ class RebeccaAPI:
             if key in admin and admin[key] != expected:
                 raise RebeccaAPIError(f"Rebecca {key} verification failed")
         return admin
-
-    def __getattr__(self, name: str):
-        async def unsupported(*args, **kwargs):
-            raise RebeccaAPIError(f"Rebecca operation '{name}' has no safely mapped API route")
-        return unsupported
-
 
 rebecca_api = RebeccaAPI()

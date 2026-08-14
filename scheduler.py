@@ -8,7 +8,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 import config
 from database import db
-from panel_api import marzban_api
+from marzban_api import marzban_api
 from models.schemas import UsageReportModel, LogModel, LimitCheckResult
 from utils.notify import notify_limit_warning, notify_limit_exceeded
 
