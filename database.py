@@ -236,6 +236,8 @@ class Database:
                     rebecca_password TEXT,
                     rebecca_provision_state TEXT,
                     rebecca_expire INTEGER,
+                    rebecca_lease_token TEXT,
+                    rebecca_lease_at INTEGER,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -287,6 +289,8 @@ class Database:
                 "rebecca_password TEXT",
                 "rebecca_provision_state TEXT",
                 "rebecca_expire INTEGER",
+                "rebecca_lease_token TEXT",
+                "rebecca_lease_at INTEGER",
             ):
                 try:
                     await db.execute(f"ALTER TABLE orders ADD COLUMN {column}")
@@ -879,12 +883,14 @@ class Database:
             print(f"Error updating order: {e}")
             return False
 
-    async def reserve_rebecca_provisioning(self, order_id: int, username: str, password: str, expire: Optional[int]) -> Optional[Dict[str, Any]]:
+    async def reserve_rebecca_provisioning(self, order_id: int, username: str, password: str,
+                                            expire: Optional[int], lease_token: str,
+                                            now: int, lease_seconds: int) -> Optional[Dict[str, Any]]:
         """Atomically grant exactly one caller permission to contact Rebecca.
 
-        Once an attempt begins it is deliberately never retried automatically: an
-        interrupted request may have succeeded remotely, and creating again would
-        be less safe than requiring manual recovery.
+        A live lease blocks concurrent callbacks. A stale lease may be claimed
+        after restart, but the caller must reconcile the reserved username before
+        attempting the same credentials again.
         """
         async with aiosqlite.connect(self.db_path) as conn:
             conn.row_factory = aiosqlite.Row
@@ -895,24 +901,44 @@ class Database:
                 await conn.rollback()
                 return None
             if row["rebecca_provision_state"]:
-                await conn.rollback()
                 result = dict(row)
-                result["should_create"] = False
+                lease_at = int(row["rebecca_lease_at"] or 0)
+                if lease_at > now - lease_seconds:
+                    await conn.rollback()
+                    result.update(should_create=False, in_progress=True, recovery=True)
+                    return result
+                claimed = await conn.execute(
+                    """UPDATE orders SET rebecca_lease_token=?, rebecca_lease_at=?
+                       WHERE id=? AND rebecca_provision_state='creating'
+                       AND COALESCE(rebecca_lease_at, 0)=?""",
+                    (lease_token, now, order_id, lease_at),
+                )
+                if claimed.rowcount != 1:
+                    await conn.rollback()
+                    result.update(should_create=False, in_progress=True, recovery=True)
+                    return result
+                await conn.commit()
+                result.update(should_create=True, in_progress=False, recovery=True,
+                              rebecca_lease_token=lease_token, rebecca_lease_at=now)
                 return result
             await conn.execute(
                 """UPDATE orders SET rebecca_username=?, rebecca_password=?, rebecca_expire=?,
-                   rebecca_provision_state='creating', updated_at=CURRENT_TIMESTAMP
+                   rebecca_provision_state='creating', rebecca_lease_token=?, rebecca_lease_at=?,
+                   updated_at=CURRENT_TIMESTAMP
                    WHERE id=? AND rebecca_provision_state IS NULL""",
-                (username, password, expire, order_id),
+                (username, password, expire, lease_token, now, order_id),
             )
             await conn.commit()
             result = dict(row)
             result.update(rebecca_username=username, rebecca_password=password,
-                          rebecca_provision_state="creating", should_create=True)
+                          rebecca_provision_state="creating", should_create=True,
+                          in_progress=False, recovery=False,
+                          rebecca_lease_token=lease_token, rebecca_lease_at=now)
             result["rebecca_expire"] = expire
             return result
 
-    async def finalize_rebecca_provisioning(self, order_id: int, admin: AdminModel, approved_by: int) -> bool:
+    async def finalize_rebecca_provisioning(self, order_id: int, admin: AdminModel,
+                                             approved_by: int, lease_token: str) -> bool:
         """Persist the verified admin and approve its order in one transaction."""
         try:
             async with aiosqlite.connect(self.db_path) as conn:
@@ -934,8 +960,8 @@ class Database:
                        rebecca_provision_state='completed', rebecca_password=NULL,
                        updated_at=CURRENT_TIMESTAMP
                        WHERE id=? AND rebecca_provision_state='creating'
-                       AND rebecca_username=?""",
-                    (approved_by, cur.lastrowid, order_id, admin.marzban_username),
+                       AND rebecca_username=? AND rebecca_lease_token=?""",
+                    (approved_by, cur.lastrowid, order_id, admin.marzban_username, lease_token),
                 )
                 if updated.rowcount != 1:
                     await conn.rollback()
@@ -964,7 +990,8 @@ class Database:
             async with aiosqlite.connect(self.db_path) as conn:
                 cur = await conn.execute(
                     """UPDATE orders SET rebecca_username=NULL, rebecca_password=NULL,
-                       rebecca_expire=NULL, rebecca_provision_state=NULL
+                       rebecca_expire=NULL, rebecca_provision_state=NULL,
+                       rebecca_lease_token=NULL, rebecca_lease_at=NULL
                        WHERE id=? AND rebecca_username=? AND rebecca_provision_state='creating'""",
                     (order_id, username),
                 )

@@ -4419,11 +4419,16 @@ async def order_approve(callback: CallbackQuery):
         candidate = f"{base_username}_{secrets.randbelow(9000) + 1000}"
         candidate_password = secrets.token_urlsafe(18)
         candidate_expire = int(time.time()) + plan.time_limit_seconds if plan.time_limit_seconds is not None else None
+        lease_token = secrets.token_urlsafe(16)
         reservation = await db.reserve_rebecca_provisioning(
-            oid, candidate, candidate_password, candidate_expire
+            oid, candidate, candidate_password, candidate_expire,
+            lease_token, int(time.time()), 300,
         )
         if not reservation:
             await callback.answer("این سفارش قبلاً پردازش شده است.", show_alert=True)
+            return
+        if reservation.get("in_progress"):
+            await callback.answer("صدور در حال انجام است.", show_alert=True)
             return
         new_username = reservation["rebecca_username"]
         new_password = reservation["rebecca_password"]
@@ -4431,7 +4436,7 @@ async def order_approve(callback: CallbackQuery):
         created = None
 
         # A prior/ambiguous attempt must always be reconciled before another POST.
-        if not reservation["should_create"]:
+        if reservation["recovery"]:
             try:
                 existing = await rebecca_api.find_admin(new_username)
                 if existing is not None:
@@ -4458,9 +4463,34 @@ async def order_approve(callback: CallbackQuery):
                     users_limit=plan.max_users, services=services,
                 )
             except RebeccaConflict:
-                if attempt == 5:
+                # Reconcile again: the account may have appeared after the pre-POST GET.
+                try:
+                    conflict_admin = await rebecca_api.find_admin(new_username)
+                except Exception:
+                    await callback.answer("وضعیت صدور Rebecca نامشخص است؛ دوباره تلاش کنید.", show_alert=True)
+                    return
+                if conflict_admin is None:
+                    await callback.answer("وضعیت صدور Rebecca نامشخص است؛ دوباره تلاش کنید.", show_alert=True)
+                    return
+                try:
+                    created = rebecca_api.verify_admin(
+                        conflict_admin, new_username, o['user_id'],
+                        data_limit=plan.traffic_limit_bytes, expire=expire,
+                        users_limit=plan.max_users, services=services,
+                    )
                     break
-                # Exact lookup proved this name was not this order; rotate boundedly.
+                except Exception:
+                    # Rotate only when the exact conflicting account is provably another owner.
+                    conflict_tid = conflict_admin.get("telegram_id")
+                    if conflict_tid is None or int(conflict_tid) == int(o['user_id']):
+                        await callback.answer("حساب Rebecca نیاز به بررسی دارد.", show_alert=True)
+                        return
+                if attempt == 5:
+                    if not await db.clear_rebecca_reservation(oid, new_username):
+                        await callback.answer("وضعیت محلی صدور نیاز به بررسی دارد.", show_alert=True)
+                        return
+                    await callback.answer("تداخل نام کاربری؛ لطفاً دوباره تلاش کنید.", show_alert=True)
+                    return
                 new_username = f"{base_username}_{secrets.randbelow(9000) + 1000}"
                 if not await db.update_rebecca_reserved_username(oid, new_username):
                     await callback.answer("خطا در ذخیره رزرو Rebecca.", show_alert=True)
@@ -4468,12 +4498,14 @@ async def order_approve(callback: CallbackQuery):
             except Exception as exc:
                 from rebecca_api import RebeccaAPIError
                 if isinstance(exc, RebeccaAPIError) and exc.definitive:
-                    await db.clear_rebecca_reservation(oid, new_username)
+                    if not await db.clear_rebecca_reservation(oid, new_username):
+                        await callback.answer("وضعیت محلی صدور نیاز به بررسی دارد.", show_alert=True)
+                        return
                 logger.error("Rebecca admin issuance failed for order %s", oid)
                 await callback.answer("خطا در صدور پنل در Rebecca.", show_alert=True)
                 return
         if not created:
-            await callback.answer("نام کاربری یکتا برای Rebecca یافت نشد.", show_alert=True)
+            await callback.answer("وضعیت صدور Rebecca نامشخص است؛ دوباره تلاش کنید.", show_alert=True)
             return
     else:
         # Username pattern: panel{user_id}, if exists then panel{user_id}-1, -2, ...
@@ -4528,7 +4560,9 @@ async def order_approve(callback: CallbackQuery):
         allow_incremental_renewal=(plan.allow_incremental_renewal if config.PANEL_PROVIDER == "rebecca" else None),
     )
     if config.PANEL_PROVIDER == "rebecca":
-        ok = await db.finalize_rebecca_provisioning(oid, admin_model, callback.from_user.id)
+        ok = await db.finalize_rebecca_provisioning(
+            oid, admin_model, callback.from_user.id, lease_token
+        )
     else:
         ok = await db.add_admin(admin_model)
         issued_admin = None

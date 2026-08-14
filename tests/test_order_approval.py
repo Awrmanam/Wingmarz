@@ -28,7 +28,7 @@ class FakeCallback:
 
 
 class FakeDB:
-    def __init__(self, *, finalize=True, already_reserved=False, order_type="new"):
+    def __init__(self, *, finalize=True, already_reserved=False, order_type="new", stale=True):
         self.order = {"id": 1, "user_id": 42, "plan_id": 2, "status": "pending", "order_type": order_type}
         self.plan = PlanModel(id=2, name="Gold", traffic_limit_bytes=123, time_limit_seconds=86400,
                               max_users=7, allow_incremental_renewal=True)
@@ -37,18 +37,35 @@ class FakeDB:
         self.admin = None
         self.reserved = None
         self.cleared = 0
+        self.username_updates = 0
+        self.clear_ok = True
+        self.stale = stale
+        import asyncio
+        self.lock = asyncio.Lock()
     async def get_order_by_id(self, oid): return self.order
     async def get_plan_by_id(self, pid): return self.plan
-    async def reserve_rebecca_provisioning(self, oid, username, password, expire):
-        self.reservations += 1
-        if self.reserved is None:
-            self.reserved = (username, password, expire)
-        saved_username, saved_password, saved_expire = self.reserved
-        return {"should_create": not self.already_reserved, "rebecca_username": saved_username,
-                "rebecca_password": saved_password, "rebecca_expire": saved_expire, "rebecca_provision_state": "creating"}
-    async def update_rebecca_reserved_username(self, *args): return True
-    async def clear_rebecca_reservation(self, *args): self.already_reserved = False; self.cleared += 1; return True
-    async def finalize_rebecca_provisioning(self, oid, admin, approved_by):
+    async def reserve_rebecca_provisioning(self, oid, username, password, expire, lease_token, now, lease_seconds):
+        async with self.lock:
+            self.reservations += 1
+            was_reserved = self.already_reserved
+            if self.reserved is None:
+                self.reserved = (username, password, expire)
+            saved_username, saved_password, saved_expire = self.reserved
+            if was_reserved and not self.stale:
+                return {"should_create": False, "in_progress": True, "recovery": True,
+                        "rebecca_username": saved_username, "rebecca_password": saved_password,
+                        "rebecca_expire": saved_expire}
+            self.already_reserved, self.stale = True, False
+            return {"should_create": True, "in_progress": False, "recovery": was_reserved,
+                    "rebecca_username": saved_username, "rebecca_password": saved_password,
+                    "rebecca_expire": saved_expire, "rebecca_provision_state": "creating"}
+    async def update_rebecca_reserved_username(self, *args): self.username_updates += 1; return True
+    async def clear_rebecca_reservation(self, *args):
+        self.cleared += 1
+        if self.clear_ok:
+            self.already_reserved = False
+        return self.clear_ok
+    async def finalize_rebecca_provisioning(self, oid, admin, approved_by, lease_token):
         self.finalized += 1
         if self.finalize_ok:
             self.order["status"], self.admin = "approved", admin
@@ -216,3 +233,60 @@ def test_marzban_new_order_keeps_original_create_path(monkeypatch):
     assert calls == [("panel42", 42, False)]
     assert db.order["status"] == "approved"
     assert db.admin.marzban_username == "panel42"
+
+
+def test_two_simultaneous_approvals_only_one_posts(monkeypatch, rebecca):
+    import asyncio
+    db, first, second, posts = FakeDB(), FakeCallback(), FakeCallback(), []
+    monkeypatch.setattr(sudo, "db", db)
+    started, release = asyncio.Event(), asyncio.Event()
+    async def create(username, password, telegram_id, **kwargs):
+        posts.append(username); started.set(); await release.wait()
+        return {"username": username, "role": "standard", "status": "active"}
+    monkeypatch.setattr(sudo.rebecca_api, "create_admin_verified", create)
+    async def scenario():
+        task = asyncio.create_task(sudo.order_approve(first))
+        await started.wait()
+        await sudo.order_approve(second)
+        release.set()
+        await task
+    asyncio.run(scenario())
+    assert len(posts) == 1
+    assert "صدور در حال انجام است" in second.answers[-1][0]
+
+
+def test_ambiguous_409_reconciles_without_rotation(monkeypatch, rebecca):
+    from rebecca_api import RebeccaConflict
+    db, callback = FakeDB(), FakeCallback()
+    monkeypatch.setattr(sudo, "db", db)
+    async def conflict(*args, **kwargs): raise RebeccaConflict("conflict")
+    async def absent(username): return None
+    monkeypatch.setattr(sudo.rebecca_api, "create_admin_verified", conflict)
+    monkeypatch.setattr(sudo.rebecca_api, "find_admin", absent)
+    run(sudo.order_approve(callback))
+    assert db.username_updates == 0 and db.cleared == 0
+    assert "نامشخص" in callback.answers[-1][0]
+
+
+def test_six_definite_fresh_conflicts_release_order(monkeypatch, rebecca):
+    from rebecca_api import RebeccaConflict
+    db, callback, posts = FakeDB(), FakeCallback(), []
+    monkeypatch.setattr(sudo, "db", db)
+    async def conflict(*args, **kwargs): posts.append(1); raise RebeccaConflict("conflict")
+    async def other(username):
+        return {"username": username, "role": "standard", "status": "active", "telegram_id": 999}
+    monkeypatch.setattr(sudo.rebecca_api, "create_admin_verified", conflict)
+    monkeypatch.setattr(sudo.rebecca_api, "find_admin", other)
+    run(sudo.order_approve(callback))
+    assert len(posts) == 6 and db.username_updates == 5 and db.cleared == 1
+    assert not db.already_reserved
+
+
+def test_failed_definitive_clear_reports_local_attention(monkeypatch, rebecca):
+    from rebecca_api import RebeccaAPIError
+    db, callback = FakeDB(), FakeCallback(); db.clear_ok = False
+    monkeypatch.setattr(sudo, "db", db)
+    async def reject(*args, **kwargs): raise RebeccaAPIError("bad", status_code=400)
+    monkeypatch.setattr(sudo.rebecca_api, "create_admin_verified", reject)
+    run(sudo.order_approve(callback))
+    assert db.cleared == 1 and "محلی" in callback.answers[-1][0]
