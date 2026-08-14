@@ -35,13 +35,19 @@ class FakeDB:
         self.finalize_ok, self.already_reserved = finalize, already_reserved
         self.finalized = self.reservations = 0
         self.admin = None
+        self.reserved = None
+        self.cleared = 0
     async def get_order_by_id(self, oid): return self.order
     async def get_plan_by_id(self, pid): return self.plan
-    async def reserve_rebecca_provisioning(self, oid, username, password):
+    async def reserve_rebecca_provisioning(self, oid, username, password, expire):
         self.reservations += 1
-        return {"should_create": not self.already_reserved, "rebecca_username": username,
-                "rebecca_password": password, "rebecca_provision_state": "creating"}
+        if self.reserved is None:
+            self.reserved = (username, password, expire)
+        saved_username, saved_password, saved_expire = self.reserved
+        return {"should_create": not self.already_reserved, "rebecca_username": saved_username,
+                "rebecca_password": saved_password, "rebecca_expire": saved_expire, "rebecca_provision_state": "creating"}
     async def update_rebecca_reserved_username(self, *args): return True
+    async def clear_rebecca_reservation(self, *args): self.already_reserved = False; self.cleared += 1; return True
     async def finalize_rebecca_provisioning(self, oid, admin, approved_by):
         self.finalized += 1
         if self.finalize_ok:
@@ -64,6 +70,7 @@ def rebecca(monkeypatch):
     monkeypatch.setattr(config, "BOT_TOKEN", "bot-secret")
     monkeypatch.setattr(config, "MARZBAN_PASSWORD", "marzban-secret")
     monkeypatch.setattr(config, "REBECCA_BEARER_TOKEN", "rebecca-secret")
+    monkeypatch.setattr(config, "REBECCA_SERVICE_IDS", (1, 2))
 
 
 def run(coro):
@@ -85,7 +92,7 @@ def test_real_rebecca_approval_maps_identity_plan_and_notifies_after_verificatio
     username, password, telegram_id, limits, sent_before_verify = calls[0]
     assert username.startswith("arman_madani_") and username.replace("arman_madani_", "").isdigit()
     assert telegram_id == 42
-    assert limits == {"data_limit": 123, "expire": 1_086_400, "users_limit": 7}
+    assert limits == {"data_limit": 123, "expire": 1_086_400, "users_limit": 7, "services": [1, 2]}
     assert password not in {config.BOT_TOKEN, config.MARZBAN_PASSWORD, config.REBECCA_BEARER_TOKEN}
     assert len(password) >= 16 and sent_before_verify == 0
     assert (db.admin.user_id, db.admin.username, db.admin.first_name, db.admin.last_name) == (42, "Arman_Madani", "Arman", "Madani")
@@ -104,7 +111,7 @@ def test_rebecca_fallback_username_and_unlimited_mapping(monkeypatch, rebecca):
     monkeypatch.setattr(sudo.rebecca_api, "create_admin_verified", create)
     run(sudo.order_approve(callback))
     assert calls[0][0].startswith("user_42_")
-    assert calls[0][1] == {"data_limit": None, "expire": None, "users_limit": None}
+    assert calls[0][1] == {"data_limit": None, "expire": None, "users_limit": None, "services": [1, 2]}
     assert db.admin.admin_name == "User 42"
 
 
@@ -116,6 +123,8 @@ def test_rebecca_failure_and_save_failure_are_not_retried(monkeypatch, rebecca):
     run(sudo.order_approve(callback))
     assert db.order["status"] == "pending" and not callback.bot.sent and len(calls) == 1
     db.already_reserved = True
+    async def find(username): return {"username": username, "role": "standard", "status": "active", "telegram_id": 42}
+    monkeypatch.setattr(sudo.rebecca_api, "find_admin", find)
     run(sudo.order_approve(FakeCallback()))
     assert len(calls) == 1  # durable reservation prevents a second remote create
 
@@ -127,6 +136,54 @@ def test_rebecca_api_failure_leaves_order_pending(monkeypatch, rebecca):
     monkeypatch.setattr(sudo.rebecca_api, "create_admin_verified", fail)
     run(sudo.order_approve(callback))
     assert db.order["status"] == "pending" and db.finalized == 0 and not callback.bot.sent
+
+
+def test_missing_services_blocks_before_remote_call(monkeypatch, rebecca):
+    db, callback, calls = FakeDB(), FakeCallback(), []
+    monkeypatch.setattr(config, "REBECCA_SERVICE_IDS", ())
+    monkeypatch.setattr(sudo, "db", db)
+    async def create(*args, **kwargs): calls.append(1)
+    monkeypatch.setattr(sudo.rebecca_api, "create_admin_verified", create)
+    run(sudo.order_approve(callback))
+    assert not calls and db.reservations == 0 and db.order["status"] == "pending"
+
+
+def test_recovery_absent_retries_same_reserved_credentials(monkeypatch, rebecca):
+    db, callback, calls = FakeDB(already_reserved=True), FakeCallback(), []
+    db.reserved = ("reserved_1234", "reserved-password-123", 2_000_000)
+    monkeypatch.setattr(sudo, "db", db)
+    async def find(username): return None
+    async def create(username, password, telegram_id, **kwargs):
+        calls.append((username, password)); return {"username": username, "role": "standard", "status": "active"}
+    monkeypatch.setattr(sudo.rebecca_api, "find_admin", find)
+    monkeypatch.setattr(sudo.rebecca_api, "create_admin_verified", create)
+    run(sudo.order_approve(callback))
+    assert calls == [("reserved_1234", "reserved-password-123")]
+
+
+def test_recovery_existing_finalizes_without_post(monkeypatch, rebecca):
+    db, callback, posts = FakeDB(already_reserved=True), FakeCallback(), []
+    db.reserved = ("reserved_1234", "reserved-password-123", 2_000_000)
+    monkeypatch.setattr(sudo, "db", db)
+    async def find(username):
+        return {"username": username, "role": "standard", "status": "active", "telegram_id": 42,
+                "data_limit": 123, "expire": 2_000_000, "users_limit": 7, "services": [1, 2]}
+    async def create(*args, **kwargs): posts.append(1)
+    monkeypatch.setattr(sudo.rebecca_api, "find_admin", find)
+    monkeypatch.setattr(sudo.rebecca_api, "create_admin_verified", create)
+    run(sudo.order_approve(callback))
+    assert not posts and db.finalized == 1 and db.order["status"] == "approved"
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 422])
+def test_definitive_rejection_releases_reservation(monkeypatch, rebecca, status):
+    from rebecca_api import RebeccaAPIError
+    db, callback = FakeDB(), FakeCallback()
+    monkeypatch.setattr(sudo, "db", db)
+    async def reject(*args, **kwargs): raise RebeccaAPIError("rejected", status_code=status)
+    monkeypatch.setattr(sudo.rebecca_api, "create_admin_verified", reject)
+    run(sudo.order_approve(callback))
+    assert db.cleared == 1 and db.order["status"] == "pending"
 
 
 def test_rebecca_renewal_is_blocked(monkeypatch, rebecca):

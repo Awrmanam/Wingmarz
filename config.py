@@ -25,6 +25,20 @@ REBECCA_URL = os.getenv("REBECCA_URL", "").strip()
 REBECCA_BEARER_TOKEN = os.getenv("REBECCA_BEARER_TOKEN", "").strip()
 REBECCA_LOGIN_URL = os.getenv("REBECCA_LOGIN_URL", "").strip()
 
+
+def _parse_rebecca_service_ids(value: str):
+    try:
+        parts = [part.strip() for part in value.split(",") if part.strip()]
+        parsed = [int(part) for part in parts]
+        if not parsed or any(item <= 0 for item in parsed):
+            return ()
+        return tuple(dict.fromkeys(parsed))
+    except (TypeError, ValueError):
+        return ()
+
+
+REBECCA_SERVICE_IDS = _parse_rebecca_service_ids(os.getenv("REBECCA_SERVICE_IDS", ""))
+
 # Sudo Admins (User IDs)
 SUDO_ADMINS: List[int] = [
     int(x) for x in os.getenv("SUDO_ADMINS", "123456789").split(",") if x.strip()

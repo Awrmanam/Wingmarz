@@ -157,8 +157,11 @@ PANEL_PROVIDER=rebecca
 REBECCA_URL=https://panel.example.com
 REBECCA_BEARER_TOKEN=your-personal-api-key
 REBECCA_LOGIN_URL=https://panel.example.com
+REBECCA_SERVICE_IDS=1,2,3
 ```
 
 Rebecca issuance uses `POST /api/admin` with a bearer personal API key and
 always explicitly requests the `standard` role. Existing global login URL
 configuration, when present, continues to take precedence.
+At least one positive service ID is required. Only the explicitly configured,
+comma-separated service IDs are assigned; Wingmarz never grants all services.

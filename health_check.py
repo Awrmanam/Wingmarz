@@ -153,6 +153,20 @@ async def test_marzban_api() -> tuple[bool, str]:
         return False, f"خطا در اتصال به API: {str(e)}"
 
 
+async def test_panel_api() -> tuple[bool, str]:
+    """Keep Marzban health behavior, using a read-only check for Rebecca."""
+    import config
+    if config.PANEL_PROVIDER != "rebecca":
+        return await test_marzban_api()
+    try:
+        from rebecca_api import rebecca_api
+        if await rebecca_api.health_check():
+            return True, "اتصال به پنل Rebecca موفق"
+        return False, "اتصال به پنل Rebecca ناموفق"
+    except Exception:
+        return False, "خطا در اتصال به API Rebecca"
+
+
 async def cleanup_test_data():
     """Clean up any remaining test data."""
     try:
@@ -209,7 +223,7 @@ async def main():
     # Test 3: Marzban API Connection
     print_header(HEALTH_MESSAGES["api_test"])
     try:
-        api_success, api_details = await test_marzban_api()
+        api_success, api_details = await test_panel_api()
         print_test_result(HEALTH_MESSAGES["api_test"], api_success, api_details)
         results.append(("Marzban API", api_success))
         

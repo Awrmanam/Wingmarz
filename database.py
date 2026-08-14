@@ -235,6 +235,7 @@ class Database:
                     rebecca_username TEXT,
                     rebecca_password TEXT,
                     rebecca_provision_state TEXT,
+                    rebecca_expire INTEGER,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -285,6 +286,7 @@ class Database:
                 "rebecca_username TEXT",
                 "rebecca_password TEXT",
                 "rebecca_provision_state TEXT",
+                "rebecca_expire INTEGER",
             ):
                 try:
                     await db.execute(f"ALTER TABLE orders ADD COLUMN {column}")
@@ -877,7 +879,7 @@ class Database:
             print(f"Error updating order: {e}")
             return False
 
-    async def reserve_rebecca_provisioning(self, order_id: int, username: str, password: str) -> Optional[Dict[str, Any]]:
+    async def reserve_rebecca_provisioning(self, order_id: int, username: str, password: str, expire: Optional[int]) -> Optional[Dict[str, Any]]:
         """Atomically grant exactly one caller permission to contact Rebecca.
 
         Once an attempt begins it is deliberately never retried automatically: an
@@ -898,15 +900,16 @@ class Database:
                 result["should_create"] = False
                 return result
             await conn.execute(
-                """UPDATE orders SET rebecca_username=?, rebecca_password=?,
+                """UPDATE orders SET rebecca_username=?, rebecca_password=?, rebecca_expire=?,
                    rebecca_provision_state='creating', updated_at=CURRENT_TIMESTAMP
                    WHERE id=? AND rebecca_provision_state IS NULL""",
-                (username, password, order_id),
+                (username, password, expire, order_id),
             )
             await conn.commit()
             result = dict(row)
             result.update(rebecca_username=username, rebecca_password=password,
                           rebecca_provision_state="creating", should_create=True)
+            result["rebecca_expire"] = expire
             return result
 
     async def finalize_rebecca_provisioning(self, order_id: int, admin: AdminModel, approved_by: int) -> bool:
@@ -926,12 +929,17 @@ class Database:
                      admin.max_total_traffic, admin.validity_days, 1,
                      admin.origin_plan_id, admin.allow_incremental_renewal),
                 )
-                await conn.execute(
+                updated = await conn.execute(
                     """UPDATE orders SET status='approved', approved_by=?, issued_admin_id=?,
-                       rebecca_provision_state='completed', updated_at=CURRENT_TIMESTAMP
-                       WHERE id=? AND rebecca_provision_state='creating'""",
-                    (approved_by, cur.lastrowid, order_id),
+                       rebecca_provision_state='completed', rebecca_password=NULL,
+                       updated_at=CURRENT_TIMESTAMP
+                       WHERE id=? AND rebecca_provision_state='creating'
+                       AND rebecca_username=?""",
+                    (approved_by, cur.lastrowid, order_id, admin.marzban_username),
                 )
+                if updated.rowcount != 1:
+                    await conn.rollback()
+                    return False
                 await conn.commit()
                 return True
         except Exception:
@@ -944,6 +952,21 @@ class Database:
                 cur = await conn.execute(
                     "UPDATE orders SET rebecca_username=? WHERE id=? AND rebecca_provision_state='creating'",
                     (username, order_id),
+                )
+                await conn.commit()
+                return cur.rowcount == 1
+        except Exception:
+            return False
+
+    async def clear_rebecca_reservation(self, order_id: int, username: str) -> bool:
+        """Release a reservation only after a definite remote rejection."""
+        try:
+            async with aiosqlite.connect(self.db_path) as conn:
+                cur = await conn.execute(
+                    """UPDATE orders SET rebecca_username=NULL, rebecca_password=NULL,
+                       rebecca_expire=NULL, rebecca_provision_state=NULL
+                       WHERE id=? AND rebecca_username=? AND rebecca_provision_state='creating'""",
+                    (order_id, username),
                 )
                 await conn.commit()
                 return cur.rowcount == 1

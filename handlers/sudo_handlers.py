@@ -4404,47 +4404,71 @@ async def order_approve(callback: CallbackQuery):
     # Keep the original Marzban issuance behavior byte-for-byte in its provider path.
     telegram_username = first_name = last_name = None
     if config.PANEL_PROVIDER == "rebecca":
+        services = list(config.REBECCA_SERVICE_IDS)
+        if not services:
+            await callback.answer("تنظیم REBECCA_SERVICE_IDS نامعتبر یا خالی است.", show_alert=True)
+            return
         try:
             customer = await callback.bot.get_chat(o['user_id'])
             telegram_username = getattr(customer, "username", None)
             first_name = getattr(customer, "first_name", None)
             last_name = getattr(customer, "last_name", None)
         except Exception:
-            # Telegram profile enrichment is optional; order user_id is authoritative.
             pass
         base_username = _rebecca_username_base(telegram_username, o['user_id'])
-        new_password = secrets.token_urlsafe(18)
-        new_username = f"{base_username}_{secrets.randbelow(9000) + 1000}"
-        reservation = await db.reserve_rebecca_provisioning(oid, new_username, new_password)
+        candidate = f"{base_username}_{secrets.randbelow(9000) + 1000}"
+        candidate_password = secrets.token_urlsafe(18)
+        candidate_expire = int(time.time()) + plan.time_limit_seconds if plan.time_limit_seconds is not None else None
+        reservation = await db.reserve_rebecca_provisioning(
+            oid, candidate, candidate_password, candidate_expire
+        )
         if not reservation:
             await callback.answer("این سفارش قبلاً پردازش شده است.", show_alert=True)
             return
-        if not reservation["should_create"]:
-            await callback.answer(
-                "صدور Rebecca قبلاً آغاز شده است؛ برای جلوگیری از صدور تکراری نیاز به بررسی دارد.",
-                show_alert=True,
-            )
-            return
+        new_username = reservation["rebecca_username"]
+        new_password = reservation["rebecca_password"]
+        expire = reservation.get("rebecca_expire")
         created = None
+
+        # A prior/ambiguous attempt must always be reconciled before another POST.
+        if not reservation["should_create"]:
+            try:
+                existing = await rebecca_api.find_admin(new_username)
+                if existing is not None:
+                    if existing.get("telegram_id") is None:
+                        raise ValueError("Rebecca recovery response omitted telegram_id")
+                    created = rebecca_api.verify_admin(
+                        existing, new_username, o['user_id'],
+                        data_limit=plan.traffic_limit_bytes, expire=expire,
+                        users_limit=plan.max_users, services=services,
+                    )
+            except Exception:
+                logger.error("Rebecca admin recovery lookup failed for order %s", oid)
+                await callback.answer("بررسی وضعیت صدور Rebecca ناموفق بود؛ دوباره تلاش کنید.", show_alert=True)
+                return
+
+        # A confirmed absence, or a brand-new reservation, may safely create.
         for attempt in range(6):
-            expire = int(time.time()) + plan.time_limit_seconds if plan.time_limit_seconds is not None else None
+            if created:
+                break
             try:
                 created = await rebecca_api.create_admin_verified(
                     new_username, new_password, o['user_id'],
-                    data_limit=plan.traffic_limit_bytes,
-                    expire=expire,
-                    users_limit=plan.max_users,
+                    data_limit=plan.traffic_limit_bytes, expire=expire,
+                    users_limit=plan.max_users, services=services,
                 )
-                break
+            except RebeccaConflict:
+                if attempt == 5:
+                    break
+                # Exact lookup proved this name was not this order; rotate boundedly.
+                new_username = f"{base_username}_{secrets.randbelow(9000) + 1000}"
+                if not await db.update_rebecca_reserved_username(oid, new_username):
+                    await callback.answer("خطا در ذخیره رزرو Rebecca.", show_alert=True)
+                    return
             except Exception as exc:
-                if isinstance(exc, RebeccaConflict):
-                    if attempt == 5:
-                        break
-                    new_username = f"{base_username}_{secrets.randbelow(9000) + 1000}"
-                    if not await db.update_rebecca_reserved_username(oid, new_username):
-                        await callback.answer("خطا در ذخیره رزرو Rebecca.", show_alert=True)
-                        return
-                    continue
+                from rebecca_api import RebeccaAPIError
+                if isinstance(exc, RebeccaAPIError) and exc.definitive:
+                    await db.clear_rebecca_reservation(oid, new_username)
                 logger.error("Rebecca admin issuance failed for order %s", oid)
                 await callback.answer("خطا در صدور پنل در Rebecca.", show_alert=True)
                 return
