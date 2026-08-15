@@ -1642,7 +1642,8 @@ async def process_admin_name(message: Message, state: FSMContext):
             "⚠️ <b>نکات مهم:</b>\n"
             "• فقط از حروف انگلیسی، اعداد و خط تیره استفاده کنید\n"
             "• Username نباید قبلاً در مرزبان وجود داشته باشد\n"
-            "• حداقل ۳ کاراکتر باشد"
+            "• حداقل ۳ کاراکتر باشد",
+            parse_mode="HTML",
         )
         
         # Change state to waiting for marzban username
@@ -4129,12 +4130,14 @@ async def manage_action_quota_add(callback: CallbackQuery):
 
 
 def _sales_menu_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ افزودن پلن", callback_data="sales_add")],
-        [InlineKeyboardButton(text="✏️ سرویس Rebecca پلن", callback_data="sales_edit_services")],
+    rows = [[InlineKeyboardButton(text="➕ افزودن پلن", callback_data="sales_add")]]
+    if config.PANEL_PROVIDER == "rebecca":
+        rows.append([InlineKeyboardButton(text="✏️ سرویس Rebecca پلن", callback_data="sales_edit_services")])
+    rows.extend([
         [InlineKeyboardButton(text="🗑️ حذف پلن", callback_data="sales_delete")],
-        [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="sudo_manage_admins")]
+        [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="sudo_manage_admins")],
     ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 @sudo_router.callback_query(F.data == "sales_manage")
@@ -4938,6 +4941,8 @@ async def _save_sales_plan(callback: CallbackQuery, state: FSMContext):
 
 @sudo_router.message(CreatePlanStates.waiting_for_rebecca_services, F.text)
 async def sales_plan_services(message: Message, state: FSMContext):
+    if message.from_user.id not in config.SUDO_ADMINS or config.PANEL_PROVIDER != "rebecca":
+        return
     try:
         canonical = ",".join(map(str, parse_service_ids(message.text)))
     except ValueError:
@@ -4973,6 +4978,9 @@ async def sales_edit_services(callback: CallbackQuery):
 
 @sudo_router.callback_query(F.data.startswith("sales_edit_service_"))
 async def sales_edit_service_selected(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in config.SUDO_ADMINS or config.PANEL_PROVIDER != "rebecca":
+        await callback.answer("غیرمجاز", show_alert=True)
+        return
     plan_id = int(callback.data.rsplit("_", 1)[-1])
     await state.update_data(edit_service_plan_id=plan_id)
     await state.set_state(EditPlanServicesStates.waiting_for_services)
@@ -4982,6 +4990,8 @@ async def sales_edit_service_selected(callback: CallbackQuery, state: FSMContext
 
 @sudo_router.message(EditPlanServicesStates.waiting_for_services, F.text)
 async def sales_edit_service_value(message: Message, state: FSMContext):
+    if message.from_user.id not in config.SUDO_ADMINS or config.PANEL_PROVIDER != "rebecca":
+        return
     try:
         canonical = ",".join(map(str, parse_service_ids(message.text)))
     except ValueError:
