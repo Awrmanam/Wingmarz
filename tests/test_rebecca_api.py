@@ -123,3 +123,34 @@ def test_admin_recovery_lookup_filters_and_exact_matches(monkeypatch):
     assert found["username"] == "reserved_1234"
     assert requests[0].method == "GET" and requests[0].url.path == "/api/admins"
     assert requests[0].url.params["username"] == "reserved_1234"
+
+
+def test_official_admin_management_routes_and_url_encoding(monkeypatch):
+    monkeypatch.setattr(config, "REBECCA_URL", "https://rebecca.example")
+    monkeypatch.setattr(config, "REBECCA_BEARER_TOKEN", "secret")
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        if request.url.path.startswith("/api/admin/usage/"):
+            return httpx.Response(200, json={"usage": {"used_traffic": 12}})
+        return httpx.Response(200, json={"status": "ok"})
+
+    transport, real_client = httpx.MockTransport(handler), httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: real_client(transport=transport, **kw))
+    api = RebeccaAPI()
+    username = "support/name with space"
+    assert asyncio.run(api.get_admin_usage(username))["used_traffic"] == 12
+    asyncio.run(api.disable_admin(username, "manual_sudo"))
+    asyncio.run(api.enable_admin(username))
+    assert asyncio.run(api.delete_admin(username)) is True
+
+    encoded_path = "/api/admin/support%2Fname%20with%20space"
+    assert [(r.method, r.url.raw_path.decode().split("?")[0]) for r in requests] == [
+        ("GET", encoded_path.replace("/admin/support", "/admin/usage/support")),
+        ("POST", f"{encoded_path}/disable"),
+        ("POST", f"{encoded_path}/enable"),
+        ("DELETE", encoded_path),
+    ]
+    assert __import__("json").loads(requests[1].content) == {"reason": "manual_sudo"}
+    assert all(r.headers["authorization"] == "Bearer secret" for r in requests)

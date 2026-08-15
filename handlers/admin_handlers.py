@@ -4,6 +4,7 @@ from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from typing import List
+from html import escape
 import json
 import logging
 import config
@@ -11,6 +12,7 @@ from database import db
 from models.schemas import AdminModel, UsageReportModel
 from utils.notify import format_traffic_size, format_time_duration
 from marzban_api import marzban_api
+from rebecca_api import rebecca_api, RebeccaAPIError
 from datetime import datetime
 from aiogram.exceptions import TelegramBadRequest
 
@@ -118,6 +120,51 @@ async def admin_start(message: Message):
 async def show_admin_info(message_or_callback: Message | CallbackQuery, admin: AdminModel):
     """Show information for a specific admin panel."""
     try:
+        if config.PANEL_PROVIDER == "rebecca":
+            remote = await rebecca_api.find_admin(admin.marzban_username)
+            if remote is None:
+                raise RebeccaAPIError("Rebecca admin was not found")
+            usage = await rebecca_api.get_admin_usage(admin.marzban_username)
+            panel_name = escape(str(admin.admin_name or admin.marzban_username or "-"))
+            username = escape(str(admin.marzban_username or "-"))
+            status = "فعال" if str(remote.get("status", "")).lower() == "active" else "غیرفعال"
+            used = usage.get("used_traffic", usage.get("traffic_used", remote.get("used_traffic", 0)))
+            limit = usage.get("data_limit", remote.get("data_limit", admin.max_total_traffic))
+            text = (
+                f"<b>👤 اطلاعات پنل</b>\n\n"
+                f"🏷 نام: {panel_name}\n🔐 نام کاربری:\n<code>{username}</code>\n\n"
+                f"🟢 وضعیت: {escape(status)}\n\n"
+                f"<b>👥 کاربران</b>\n"
+                f"• کل: {int(remote.get('users_count', 0))}\n"
+                f"• فعال: {int(remote.get('active_users', 0))}\n"
+                f"• آنلاین: {int(remote.get('online_users', 0))}\n"
+                f"• غیرفعال: {int(remote.get('disabled_users', 0))}\n"
+                f"• منقضی: {int(remote.get('expired_users', 0))}\n\n"
+                f"<b>📊 ترافیک</b>\n"
+                f"• مصرف‌شده: {escape(await format_traffic_size(int(used or 0)))}\n"
+                f"• سقف: {escape(await format_traffic_size(int(limit or 0))) if limit else 'نامحدود'}"
+            )
+        else:
+            text = await _marzban_admin_info_text(admin)
+    except Exception as e:
+        logger.error(f"Error getting info for admin panel {admin.id}: {e}")
+        text = "⚠️ ارتباط با Rebecca موقتاً در دسترس نیست. لطفاً دوباره تلاش کنید." if config.PANEL_PROVIDER == "rebecca" else f"❌ خطا در دریافت اطلاعات پنل {admin.admin_name or admin.marzban_username}."
+
+    kwargs = {
+        "reply_markup": InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="back_to_admin_main")]]),
+        "parse_mode": "HTML",
+    }
+    if isinstance(message_or_callback, CallbackQuery):
+        await message_or_callback.message.edit_text(text, **kwargs)
+        await message_or_callback.answer()
+    else:
+        kwargs["reply_markup"] = get_admin_keyboard()
+        await message_or_callback.answer(text, **kwargs)
+
+
+async def _marzban_admin_info_text(admin: AdminModel) -> str:
+    """Original Marzban account presentation, isolated from Rebecca mode."""
+    try:
         admin_api = await marzban_api.create_admin_api(admin.marzban_username, admin.marzban_password)
         admin_stats = await admin_api.get_admin_stats()
         
@@ -140,7 +187,8 @@ async def show_admin_info(message_or_callback: Message | CallbackQuery, admin: A
         remaining_time_seconds = max(0, total_validity_period - elapsed_seconds)
         time_percentage = (elapsed_seconds / total_validity_period) * 100 if total_validity_period > 0 else 0
         
-        panel_name = admin.admin_name or admin.marzban_username
+        panel_name = escape(str(admin.admin_name or admin.marzban_username))
+        username = escape(str(admin.marzban_username or "-"))
         
         # Compose detailed users breakdown
         try:
@@ -162,7 +210,7 @@ async def show_admin_info(message_or_callback: Message | CallbackQuery, admin: A
         max_time_txt = "نامحدود" if max_time_seconds == 0 or max_time_seconds >= (36500 * 24 * 60 * 60) else await format_time_duration(max_time_seconds)
         text = (
             f"👤 <b>اطلاعات پنل: {panel_name}</b>\n\n"
-            f"- <b>نام کاربری مرزبان:</b> <code>{admin.marzban_username}</code>\n"
+            f"- <b>نام کاربری مرزبان:</b> <code>{username}</code>\n"
             f"- <b>وضعیت:</b> {'✅ فعال' if admin.is_active else '❌ غیرفعال'}\n"
             f"- <b>تاریخ ایجاد:</b> {admin.created_at.strftime('%Y-%m-%d')}\n\n"
             f"📊 <b>محدودیت‌ها و استفاده:</b>\n"
@@ -174,15 +222,9 @@ async def show_admin_info(message_or_callback: Message | CallbackQuery, admin: A
             f"  └ سقف: {max_time_txt}"
         )
 
-    except Exception as e:
-        logger.error(f"Error getting info for admin panel {admin.id}: {e}")
-        text = f"❌ خطا در دریافت اطلاعات پنل {admin.admin_name or admin.marzban_username}."
-
-    if isinstance(message_or_callback, CallbackQuery):
-        await message_or_callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="back_to_admin_main")]]))
-        await message_or_callback.answer()
-    else:
-        await message_or_callback.answer(text, reply_markup=get_admin_keyboard())
+        return text
+    except Exception:
+        raise
 
 
 async def show_admin_report(message_or_callback: Message | CallbackQuery, admin: AdminModel):

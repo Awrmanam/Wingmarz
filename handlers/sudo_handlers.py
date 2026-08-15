@@ -22,7 +22,7 @@ from utils.notify import (
 )
 from utils.notify import notify_admin_reactivation as notify_admin_reactivation_utils
 from marzban_api import marzban_api
-from rebecca_api import rebecca_api, RebeccaConflict
+from rebecca_api import rebecca_api, RebeccaConflict, RebeccaAPIError
 from utils.rebecca import parse_service_ids, credential_message
 from datetime import datetime
 from handlers.admin_handlers import show_cleanup_menu, perform_cleanup
@@ -3592,6 +3592,23 @@ async def delete_admin_panel_completely(admin_id: int, reason: str = "غیرفع
         admin_username = admin.marzban_username
         user_count = 0
         last_error: str | None = None
+
+        if config.PANEL_PROVIDER == "rebecca":
+            try:
+                await rebecca_api.delete_admin(admin_username)
+            except RebeccaAPIError as exc:
+                return False, f"حذف ادمین در Rebecca ناموفق بود. دیتابیس تغییری نکرد. ({exc})"
+            db_success = await db.remove_admin_by_id(admin_id)
+            if not db_success:
+                return False, "حذف رکورد پنل در دیتابیس ناموفق بود."
+            log = LogModel(
+                admin_user_id=admin.user_id,
+                action="admin_panel_completely_deleted",
+                details=f"Rebecca admin panel {admin_id} ({admin_username}) deleted. Reason: {reason}.",
+            )
+            await db.add_log(log)
+            logger.info("Rebecca admin panel %s deleted remotely and locally", admin_id)
+            return True, None
         
         # Step 1: Completely delete admin and all users from Marzban panel
         marzban_success = True if not admin.marzban_username else False
@@ -3859,7 +3876,7 @@ async def manage_panel_selected(callback: CallbackQuery):
     info = (
         f"👤 کاربر: {admin.user_id}\n"
         f"🏷️ پنل: {panel_name}\n"
-        f"🔐 مرزبان: {admin.marzban_username or '-'}\n"
+        f"🔐 {'نام کاربری' if config.PANEL_PROVIDER == 'rebecca' else 'مرزبان'}: {admin.marzban_username or '-'}\n"
         f"✅ وضعیت: {'فعال' if admin.is_active else 'غیرفعال'}\n"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -3912,17 +3929,38 @@ async def manage_action_info(callback: CallbackQuery):
         await callback.answer("پنل یافت نشد.", show_alert=True)
         return
     try:
-        text = f"ℹ️ اطلاعات پنل {admin.admin_name or admin.marzban_username or admin.id}\n\n"
-        if admin.marzban_username and admin.marzban_password:
-            admin_api = await marzban_api.create_admin_api(admin.marzban_username, admin.marzban_password)
-            stats = await admin_api.get_admin_stats()
-            max_traffic_txt = "نامحدود" if (admin.max_total_traffic or 0) == 0 else await format_traffic_size(admin.max_total_traffic)
-            text += (
-                f"👥 کاربران فعال/کل: {stats.active_users}/{stats.total_users}\n"
-                f"📊 ترافیک مصرفی: {await format_traffic_size(stats.total_traffic_used)} / {max_traffic_txt}\n"
+        if config.PANEL_PROVIDER == "rebecca":
+            remote = await rebecca_api.find_admin(admin.marzban_username)
+            if remote is None:
+                raise RebeccaAPIError("Rebecca admin was not found")
+            usage = await rebecca_api.get_admin_usage(admin.marzban_username)
+            used = int(usage.get("used_traffic", usage.get("traffic_used", 0)) or 0)
+            limit = usage.get("data_limit", remote.get("data_limit", admin.max_total_traffic))
+            text = (
+                f"👤 اطلاعات پنل\n\n🏷 نام: {admin.admin_name or admin.marzban_username}\n"
+                f"🔐 نام کاربری:\n{admin.marzban_username}\n\n"
+                f"🟢 وضعیت: {'فعال' if str(remote.get('status', '')).lower() == 'active' else 'غیرفعال'}\n\n"
+                f"👥 کاربران\n• کل: {int(remote.get('users_count', 0))}\n"
+                f"• فعال: {int(remote.get('active_users', 0))}\n"
+                f"• آنلاین: {int(remote.get('online_users', 0))}\n"
+                f"• غیرفعال: {int(remote.get('disabled_users', 0))}\n"
+                f"• منقضی: {int(remote.get('expired_users', 0))}\n\n"
+                f"📊 ترافیک\n• مصرف‌شده: {await format_traffic_size(used)}\n"
+                f"• سقف: {await format_traffic_size(int(limit)) if limit else 'نامحدود'}"
             )
         else:
-            text += "اطلاعات مرزبان کامل نیست.\n"
+            text = f"ℹ️ اطلاعات پنل {admin.admin_name or admin.marzban_username or admin.id}\n\n"
+        if config.PANEL_PROVIDER == "marzban":
+            if admin.marzban_username and admin.marzban_password:
+                admin_api = await marzban_api.create_admin_api(admin.marzban_username, admin.marzban_password)
+                stats = await admin_api.get_admin_stats()
+                max_traffic_txt = "نامحدود" if (admin.max_total_traffic or 0) == 0 else await format_traffic_size(admin.max_total_traffic)
+                text += (
+                    f"👥 کاربران فعال/کل: {stats.active_users}/{stats.total_users}\n"
+                    f"📊 ترافیک مصرفی: {await format_traffic_size(stats.total_traffic_used)} / {max_traffic_txt}\n"
+                )
+            else:
+                text += "اطلاعات مرزبان کامل نیست.\n"
     except Exception as e:
         text = f"❌ خطا در دریافت اطلاعات: {e}"
     await callback.message.edit_text(text, reply_markup=_manage_back_keyboard(admin_id))
@@ -3940,6 +3978,17 @@ async def manage_action_activate(callback: CallbackQuery):
         await callback.answer("پنل یافت نشد.", show_alert=True)
         return
     try:
+        if config.PANEL_PROVIDER == "rebecca":
+            await rebecca_api.enable_admin(admin.marzban_username)
+            await db.reactivate_admin(admin.id)
+            text = "✅ پنل فعال شد."
+            try:
+                await notify_admin_reactivation_utils(callback.bot, admin.user_id, callback.from_user.id)
+            except Exception as e:
+                logger.warning("Failed to notify admin %s about reactivation: %s", admin.user_id, e)
+            await callback.message.edit_text(text, reply_markup=_manage_back_keyboard(admin_id))
+            await callback.answer()
+            return
         db_success = await db.reactivate_admin(admin.id)
         password_restored = False
         if db_success and admin.original_password:
@@ -3977,8 +4026,23 @@ async def manage_action_deactivate(callback: CallbackQuery):
         return
     admin_id = int(callback.data.split("_")[-1])
     try:
-        # قبل از غیرفعالسازی، پسورد را رندوم کن و برای سودو نمایش بده
         admin = await db.get_admin_by_id(admin_id)
+        if config.PANEL_PROVIDER == "rebecca":
+            remote = await rebecca_api.find_admin(admin.marzban_username)
+            if remote is None:
+                raise RebeccaAPIError("Rebecca admin was not found")
+            if str(remote.get("status", "")).lower() != "disabled":
+                await rebecca_api.disable_admin(admin.marzban_username, "manual_sudo")
+            await db.deactivate_admin(admin.id, "غیرفعالسازی دستی توسط سودو")
+            text = "✅ پنل غیرفعال شد."
+            try:
+                await notify_admin_deactivated(callback.bot, admin.user_id, "غیرفعالسازی دستی توسط سودو")
+            except Exception as e:
+                logger.warning("Failed to notify admin %s about deactivation: %s", admin.user_id, e)
+            await callback.message.edit_text(text, reply_markup=_manage_back_keyboard(admin_id))
+            await callback.answer()
+            return
+        # Marzban keeps its existing password-rotation and user-disable behavior.
         import secrets
         new_password = secrets.token_hex(5)
         # ذخیره پسورد اصلی اگر نبود
@@ -4010,6 +4074,21 @@ async def manage_action_deactivate(callback: CallbackQuery):
 
 @sudo_router.callback_query(F.data.startswith("manage_action_delete_"))
 async def manage_action_delete(callback: CallbackQuery):
+    if callback.from_user.id not in config.SUDO_ADMINS:
+        await callback.answer("غیرمجاز", show_alert=True)
+        return
+    admin_id = int(callback.data.split("_")[-1])
+    text = "⚠️ حذف کامل پنل\n\nاین عملیات برگشت‌ناپذیر است و پنل و کاربران آن را حذف می‌کند."
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🗑 تأیید حذف کامل", callback_data=f"manage_confirm_delete_{admin_id}")],
+        [InlineKeyboardButton(text="🔙 انصراف", callback_data=f"manage_panel_{admin_id}")],
+    ])
+    await callback.message.edit_text(text, reply_markup=keyboard)
+    await callback.answer()
+
+
+@sudo_router.callback_query(F.data.startswith("manage_confirm_delete_"))
+async def manage_confirm_delete(callback: CallbackQuery):
     if callback.from_user.id not in config.SUDO_ADMINS:
         await callback.answer("غیرمجاز", show_alert=True)
         return
@@ -4078,6 +4157,20 @@ async def manage_action_users(callback: CallbackQuery):
     admin_id = int(callback.data.split("_")[-1])
     admin = await db.get_admin_by_id(admin_id)
     try:
+        if config.PANEL_PROVIDER == "rebecca":
+            remote = await rebecca_api.find_admin(admin.marzban_username)
+            if remote is None:
+                raise RebeccaAPIError("Rebecca admin was not found")
+            text = (
+                f"👥 تعداد کاربران: {int(remote.get('users_count', 0))}\n"
+                f"🟢 فعال: {int(remote.get('active_users', 0))}\n"
+                f"🟣 آنلاین: {int(remote.get('online_users', 0))}\n"
+                f"🔴 غیرفعال: {int(remote.get('disabled_users', 0))}\n"
+                f"⌛ منقضی: {int(remote.get('expired_users', 0))}"
+            )
+            await callback.message.edit_text(text, reply_markup=_manage_back_keyboard(admin_id))
+            await callback.answer()
+            return
         total = 0
         active = 0
         if admin.marzban_username and admin.marzban_password:
