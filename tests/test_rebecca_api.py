@@ -5,7 +5,7 @@ import httpx
 import pytest
 
 import config
-from rebecca_api import RebeccaAPI, RebeccaConflict
+from rebecca_api import RebeccaAPI, RebeccaConflict, RebeccaAPIError
 from handlers.sudo_handlers import _rebecca_username_base
 
 
@@ -133,14 +133,14 @@ def test_official_admin_management_routes_and_url_encoding(monkeypatch):
     async def handler(request):
         requests.append(request)
         if request.url.path.startswith("/api/admin/usage/"):
-            return httpx.Response(200, json={"usage": {"used_traffic": 12}})
+            return httpx.Response(200, json=12)
         return httpx.Response(200, json={"status": "ok"})
 
     transport, real_client = httpx.MockTransport(handler), httpx.AsyncClient
     monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: real_client(transport=transport, **kw))
     api = RebeccaAPI()
     username = "support/name with space"
-    assert asyncio.run(api.get_admin_usage(username))["used_traffic"] == 12
+    assert asyncio.run(api.get_admin_usage(username)) == 12
     asyncio.run(api.disable_admin(username, "manual_sudo"))
     asyncio.run(api.enable_admin(username))
     assert asyncio.run(api.delete_admin(username)) is True
@@ -154,3 +154,14 @@ def test_official_admin_management_routes_and_url_encoding(monkeypatch):
     ]
     assert __import__("json").loads(requests[1].content) == {"reason": "manual_sudo"}
     assert all(r.headers["authorization"] == "Bearer secret" for r in requests)
+
+
+@pytest.mark.parametrize("payload", [True, -1, "12", None, {}, {"usage": {"used_traffic": 12}}])
+def test_admin_usage_rejects_invalid_response(monkeypatch, payload):
+    monkeypatch.setattr(config, "REBECCA_URL", "https://rebecca.example")
+    async def handler(request):
+        return httpx.Response(200, json=payload)
+    transport, real_client = httpx.MockTransport(handler), httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: real_client(transport=transport, **kw))
+    with pytest.raises(RebeccaAPIError, match="invalid admin usage"):
+        asyncio.run(RebeccaAPI().get_admin_usage("admin"))

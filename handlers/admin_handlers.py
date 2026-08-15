@@ -127,13 +127,29 @@ async def show_admin_info(message_or_callback: Message | CallbackQuery, admin: A
             usage = await rebecca_api.get_admin_usage(admin.marzban_username)
             panel_name = escape(str(admin.admin_name or admin.marzban_username or "-"))
             username = escape(str(admin.marzban_username or "-"))
-            status = "فعال" if str(remote.get("status", "")).lower() == "active" else "غیرفعال"
-            used = usage.get("used_traffic", usage.get("traffic_used", remote.get("used_traffic", 0)))
-            limit = usage.get("data_limit", remote.get("data_limit", admin.max_total_traffic))
+            remote_status = str(remote.get("status", "")).lower()
+            if remote_status not in {"active", "disabled"}:
+                raise RebeccaAPIError("Rebecca returned an invalid admin status")
+            status = "فعال" if remote_status == "active" else "غیرفعال"
+            limit = remote.get("data_limit")
+            plan_line = ""
+            if admin.origin_plan_id:
+                plan = await db.get_plan_by_id(admin.origin_plan_id)
+                if plan:
+                    plan_line = f"📦 پلن: {escape(str(plan.name))}\n"
+            expiry_line = ""
+            expire = remote.get("expire")
+            if isinstance(expire, (int, float)) and not isinstance(expire, bool) and expire > 0:
+                expiry = datetime.utcfromtimestamp(expire)
+                remaining = max(0, int((expiry - datetime.utcnow()).total_seconds()))
+                expiry_line = (
+                    f"\n<b>⏳ اعتبار</b>\n• باقی‌مانده: {escape(await format_time_duration(remaining))}"
+                    f"\n• تاریخ انقضا: {expiry.strftime('%Y-%m-%d')}"
+                )
             text = (
                 f"<b>👤 اطلاعات پنل</b>\n\n"
                 f"🏷 نام: {panel_name}\n🔐 نام کاربری:\n<code>{username}</code>\n\n"
-                f"🟢 وضعیت: {escape(status)}\n\n"
+                f"🟢 وضعیت: {escape(status)}\n{plan_line}\n"
                 f"<b>👥 کاربران</b>\n"
                 f"• کل: {int(remote.get('users_count', 0))}\n"
                 f"• فعال: {int(remote.get('active_users', 0))}\n"
@@ -141,8 +157,9 @@ async def show_admin_info(message_or_callback: Message | CallbackQuery, admin: A
                 f"• غیرفعال: {int(remote.get('disabled_users', 0))}\n"
                 f"• منقضی: {int(remote.get('expired_users', 0))}\n\n"
                 f"<b>📊 ترافیک</b>\n"
-                f"• مصرف‌شده: {escape(await format_traffic_size(int(used or 0)))}\n"
-                f"• سقف: {escape(await format_traffic_size(int(limit or 0))) if limit else 'نامحدود'}"
+                f"• مصرف‌شده: {escape(await format_traffic_size(usage))}\n"
+                f"• سقف: {escape(await format_traffic_size(int(limit))) if isinstance(limit, int) and limit > 0 else 'نامحدود'}"
+                f"{expiry_line}"
             )
         else:
             text = await _marzban_admin_info_text(admin)

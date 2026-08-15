@@ -3600,7 +3600,16 @@ async def delete_admin_panel_completely(admin_id: int, reason: str = "غیرفع
                 return False, f"حذف ادمین در Rebecca ناموفق بود. دیتابیس تغییری نکرد. ({exc})"
             db_success = await db.remove_admin_by_id(admin_id)
             if not db_success:
-                return False, "حذف رکورد پنل در دیتابیس ناموفق بود."
+                logger.error("Rebecca admin %s deleted remotely but local removal failed", admin_id)
+                try:
+                    await db.add_log(LogModel(
+                        admin_user_id=admin.user_id,
+                        action="rebecca_delete_local_sync_failed",
+                        details=f"Rebecca panel {admin_id} was deleted remotely; local removal failed.",
+                    ))
+                except Exception:
+                    logger.exception("Failed to persist Rebecca delete synchronization log for panel %s", admin_id)
+                return False, "پنل از Rebecca حذف شد، اما حذف رکورد محلی ناموفق بود؛ نیاز به همگام‌سازی دستی دارد."
             log = LogModel(
                 admin_user_id=admin.user_id,
                 action="admin_panel_completely_deleted",
@@ -3873,12 +3882,19 @@ async def manage_panel_selected(callback: CallbackQuery):
         await callback.answer()
         return
     panel_name = admin.admin_name or admin.marzban_username or f"Panel {admin.id}"
-    info = (
-        f"👤 کاربر: {admin.user_id}\n"
-        f"🏷️ پنل: {panel_name}\n"
-        f"🔐 {'نام کاربری' if config.PANEL_PROVIDER == 'rebecca' else 'مرزبان'}: {admin.marzban_username or '-'}\n"
-        f"✅ وضعیت: {'فعال' if admin.is_active else 'غیرفعال'}\n"
-    )
+    if config.PANEL_PROVIDER == "rebecca":
+        info = (
+            f"👤 کاربر: {admin.user_id}\n"
+            f"🏷️ پنل: {escape(str(panel_name))}\n"
+            f"🔐 نام کاربری: <code>{escape(str(admin.marzban_username or '-'))}</code>\n"
+            f"✅ وضعیت: {'فعال' if admin.is_active else 'غیرفعال'}\n"
+        )
+    else:
+        info = (
+            f"👤 کاربر: {admin.user_id}\n🏷️ پنل: {panel_name}\n"
+            f"🔐 مرزبان: {admin.marzban_username or '-'}\n"
+            f"✅ وضعیت: {'فعال' if admin.is_active else 'غیرفعال'}\n"
+        )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="ℹ️ اطلاعات", callback_data=f"manage_action_info_{admin.id}")],
         [InlineKeyboardButton(text="🔄 فعالسازی", callback_data=f"manage_action_activate_{admin.id}"), InlineKeyboardButton(text="⛔ غیرفعالسازی", callback_data=f"manage_action_deactivate_{admin.id}")],
@@ -3887,7 +3903,7 @@ async def manage_panel_selected(callback: CallbackQuery):
         [InlineKeyboardButton(text="👥 تعداد کاربر", callback_data=f"manage_action_users_{admin.id}")],
         [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="sudo_manage_admins")]
     ])
-    await callback.message.edit_text(info, reply_markup=kb)
+    await callback.message.edit_text(info, reply_markup=kb, **({"parse_mode": "HTML"} if config.PANEL_PROVIDER == "rebecca" else {}))
     await callback.answer()
 
 
@@ -3934,19 +3950,18 @@ async def manage_action_info(callback: CallbackQuery):
             if remote is None:
                 raise RebeccaAPIError("Rebecca admin was not found")
             usage = await rebecca_api.get_admin_usage(admin.marzban_username)
-            used = int(usage.get("used_traffic", usage.get("traffic_used", 0)) or 0)
-            limit = usage.get("data_limit", remote.get("data_limit", admin.max_total_traffic))
+            limit = remote.get("data_limit")
             text = (
-                f"👤 اطلاعات پنل\n\n🏷 نام: {admin.admin_name or admin.marzban_username}\n"
-                f"🔐 نام کاربری:\n{admin.marzban_username}\n\n"
+                f"<b>👤 اطلاعات پنل</b>\n\n🏷 نام: {escape(str(admin.admin_name or admin.marzban_username))}\n"
+                f"🔐 نام کاربری:\n<code>{escape(str(admin.marzban_username))}</code>\n\n"
                 f"🟢 وضعیت: {'فعال' if str(remote.get('status', '')).lower() == 'active' else 'غیرفعال'}\n\n"
                 f"👥 کاربران\n• کل: {int(remote.get('users_count', 0))}\n"
                 f"• فعال: {int(remote.get('active_users', 0))}\n"
                 f"• آنلاین: {int(remote.get('online_users', 0))}\n"
                 f"• غیرفعال: {int(remote.get('disabled_users', 0))}\n"
                 f"• منقضی: {int(remote.get('expired_users', 0))}\n\n"
-                f"📊 ترافیک\n• مصرف‌شده: {await format_traffic_size(used)}\n"
-                f"• سقف: {await format_traffic_size(int(limit)) if limit else 'نامحدود'}"
+                f"📊 ترافیک\n• مصرف‌شده: {await format_traffic_size(usage)}\n"
+                f"• سقف: {await format_traffic_size(int(limit)) if isinstance(limit, int) and limit > 0 else 'نامحدود'}"
             )
         else:
             text = f"ℹ️ اطلاعات پنل {admin.admin_name or admin.marzban_username or admin.id}\n\n"
@@ -3963,7 +3978,7 @@ async def manage_action_info(callback: CallbackQuery):
                 text += "اطلاعات مرزبان کامل نیست.\n"
     except Exception as e:
         text = f"❌ خطا در دریافت اطلاعات: {e}"
-    await callback.message.edit_text(text, reply_markup=_manage_back_keyboard(admin_id))
+    await callback.message.edit_text(text, reply_markup=_manage_back_keyboard(admin_id), **({"parse_mode": "HTML"} if config.PANEL_PROVIDER == "rebecca" else {}))
     await callback.answer()
 
 
@@ -3979,8 +3994,20 @@ async def manage_action_activate(callback: CallbackQuery):
         return
     try:
         if config.PANEL_PROVIDER == "rebecca":
-            await rebecca_api.enable_admin(admin.marzban_username)
-            await db.reactivate_admin(admin.id)
+            remote = await rebecca_api.find_admin(admin.marzban_username)
+            if remote is None:
+                raise RebeccaAPIError("Rebecca admin was not found")
+            status = str(remote.get("status", "")).lower()
+            if status == "disabled":
+                await rebecca_api.enable_admin(admin.marzban_username)
+            elif status != "active":
+                raise RebeccaAPIError("Rebecca admin has an unexpected status")
+            if not await db.reactivate_admin(admin.id):
+                logger.error("Rebecca admin %s enabled remotely but local activation failed", admin.id)
+                text = "⚠️ پنل در Rebecca فعال است، اما همگام‌سازی دیتابیس محلی ناموفق بود."
+                await callback.message.edit_text(text, reply_markup=_manage_back_keyboard(admin_id))
+                await callback.answer()
+                return
             text = "✅ پنل فعال شد."
             try:
                 await notify_admin_reactivation_utils(callback.bot, admin.user_id, callback.from_user.id)
@@ -4031,9 +4058,17 @@ async def manage_action_deactivate(callback: CallbackQuery):
             remote = await rebecca_api.find_admin(admin.marzban_username)
             if remote is None:
                 raise RebeccaAPIError("Rebecca admin was not found")
-            if str(remote.get("status", "")).lower() != "disabled":
+            status = str(remote.get("status", "")).lower()
+            if status == "active":
                 await rebecca_api.disable_admin(admin.marzban_username, "manual_sudo")
-            await db.deactivate_admin(admin.id, "غیرفعالسازی دستی توسط سودو")
+            elif status != "disabled":
+                raise RebeccaAPIError("Rebecca admin has an unexpected status")
+            if not await db.deactivate_admin(admin.id, "غیرفعالسازی دستی توسط سودو"):
+                logger.error("Rebecca admin %s disabled remotely but local deactivation failed", admin.id)
+                text = "⚠️ پنل در Rebecca غیرفعال است، اما همگام‌سازی دیتابیس محلی ناموفق بود."
+                await callback.message.edit_text(text, reply_markup=_manage_back_keyboard(admin_id))
+                await callback.answer()
+                return
             text = "✅ پنل غیرفعال شد."
             try:
                 await notify_admin_deactivated(callback.bot, admin.user_id, "غیرفعالسازی دستی توسط سودو")

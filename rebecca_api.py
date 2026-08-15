@@ -112,9 +112,15 @@ class RebeccaAPI:
                 return admin
         return None
 
-    async def get_admin_usage(self, username: str) -> Dict[str, Any]:
+    async def get_admin_usage(self, username: str) -> int:
+        """Return Rebecca's effective usage, whose official response is a JSON integer."""
         data = await self._request("GET", f"/api/admin/usage/{quote(username, safe='')}")
-        return data.get("usage", data) if isinstance(data, dict) else {}
+        # Tolerate the older single numeric wrapper, but never coerce malformed data.
+        if isinstance(data, dict) and set(data) == {"usage"}:
+            data = data["usage"]
+        if isinstance(data, bool) or not isinstance(data, int) or data < 0:
+            raise RebeccaAPIError("Rebecca returned invalid admin usage")
+        return data
 
     async def disable_admin(self, username: str, reason: str) -> Dict[str, Any]:
         data = await self._request(
