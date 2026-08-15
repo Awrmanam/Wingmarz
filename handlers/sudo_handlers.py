@@ -9,6 +9,9 @@ import logging
 import asyncio
 from pathlib import Path
 import math
+import re
+import secrets
+import time
 import config
 from database import db
 from models.schemas import AdminModel, LogModel
@@ -18,12 +21,21 @@ from utils.notify import (
 )
 from utils.notify import notify_admin_reactivation as notify_admin_reactivation_utils
 from marzban_api import marzban_api
+from rebecca_api import rebecca_api, RebeccaConflict
 from datetime import datetime
 from handlers.admin_handlers import show_cleanup_menu, perform_cleanup
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 logger = logging.getLogger(__name__)
+
+
+def _rebecca_username_base(telegram_username: str | None, telegram_id: int) -> str:
+    """Return an ASCII-only base; display names are intentionally never used."""
+    raw = (telegram_username or "").lstrip("@").lower()
+    safe = re.sub(r"[^a-z0-9_]", "_", raw)
+    safe = re.sub(r"_+", "_", safe).strip("_")
+    return safe or f"user_{telegram_id}"
 
 
 class AddAdminStates(StatesGroup):
@@ -4302,6 +4314,9 @@ async def order_approve(callback: CallbackQuery):
 
     order_type = (o.get("order_type") or "").lower()
     if order_type == "renew":
+        if config.PANEL_PROVIDER == "rebecca":
+            await callback.answer("تمدید Rebecca در این نسخه پشتیبانی نمی‌شود.", show_alert=True)
+            return
         # Apply renewal on target admin
         target_admin_id = o.get("target_admin_id")
         admin = await db.get_admin_by_id(int(target_admin_id)) if target_admin_id else None
@@ -4386,66 +4401,194 @@ async def order_approve(callback: CallbackQuery):
     if not plan:
         await callback.answer("پلن مربوطه یافت نشد.", show_alert=True)
         return
-    import secrets
-    # Username pattern: panel{user_id}, if exists then panel{user_id}-1, -2, ...
-    base_username = f"panel{o['user_id']}"
-    # Find an available username deterministically
-    candidate = base_username
-    try:
-        exists = await marzban_api.admin_exists(candidate)
-    except Exception:
-        exists = False
-    suffix = 0
-    if exists:
-        suffix = 1
-        while suffix < 500:
-            candidate = f"{base_username}-{suffix}"
-            try:
-                exists = await marzban_api.admin_exists(candidate)
-            except Exception:
-                exists = False
-            if not exists:
-                break
-            suffix += 1
-    new_username = candidate
-    new_password = secrets.token_hex(5)
-    # Try create; if still fails (race), try next few suffixes
-    created = await marzban_api.create_admin(new_username, new_password, telegram_id=o['user_id'], is_sudo=False)
-    if not created:
-        attempts = 0
-        while attempts < 5 and not created:
-            suffix = (suffix + 1) if suffix else 1
-            new_username = f"{base_username}-{suffix}"
-            created = await marzban_api.create_admin(new_username, new_password, telegram_id=o['user_id'], is_sudo=False)
-            attempts += 1
-        if not created:
-            await callback.answer("خطا در صدور پنل در مرزبان.", show_alert=True)
+    # Keep the original Marzban issuance behavior byte-for-byte in its provider path.
+    telegram_username = first_name = last_name = None
+    if config.PANEL_PROVIDER == "rebecca":
+        services = list(config.REBECCA_SERVICE_IDS)
+        if not services:
+            await callback.answer("تنظیم REBECCA_SERVICE_IDS نامعتبر یا خالی است.", show_alert=True)
             return
+        try:
+            customer = await callback.bot.get_chat(o['user_id'])
+            telegram_username = getattr(customer, "username", None)
+            first_name = getattr(customer, "first_name", None)
+            last_name = getattr(customer, "last_name", None)
+        except Exception:
+            pass
+        base_username = _rebecca_username_base(telegram_username, o['user_id'])
+        candidate = f"{base_username}_{secrets.randbelow(9000) + 1000}"
+        candidate_password = secrets.token_urlsafe(18)
+        candidate_expire = int(time.time()) + plan.time_limit_seconds if plan.time_limit_seconds is not None else None
+        lease_token = secrets.token_urlsafe(16)
+        reservation = await db.reserve_rebecca_provisioning(
+            oid, candidate, candidate_password, candidate_expire,
+            lease_token, int(time.time()), 300,
+        )
+        if not reservation:
+            await callback.answer("این سفارش قبلاً پردازش شده است.", show_alert=True)
+            return
+        if reservation.get("in_progress"):
+            await callback.answer("صدور در حال انجام است.", show_alert=True)
+            return
+        new_username = reservation["rebecca_username"]
+        new_password = reservation["rebecca_password"]
+        expire = reservation.get("rebecca_expire")
+        created = None
+
+        # A prior/ambiguous attempt must always be reconciled before another POST.
+        if reservation["recovery"]:
+            try:
+                existing = await rebecca_api.find_admin(new_username)
+                if existing is not None:
+                    if existing.get("telegram_id") is None:
+                        raise ValueError("Rebecca recovery response omitted telegram_id")
+                    created = rebecca_api.verify_admin(
+                        existing, new_username, o['user_id'],
+                        data_limit=plan.traffic_limit_bytes, expire=expire,
+                        users_limit=plan.max_users, services=services,
+                    )
+            except Exception:
+                logger.error("Rebecca admin recovery lookup failed for order %s", oid)
+                await callback.answer("بررسی وضعیت صدور Rebecca ناموفق بود؛ دوباره تلاش کنید.", show_alert=True)
+                return
+
+        # A confirmed absence, or a brand-new reservation, may safely create.
+        for attempt in range(6):
+            if created:
+                break
+            try:
+                created = await rebecca_api.create_admin_verified(
+                    new_username, new_password, o['user_id'],
+                    data_limit=plan.traffic_limit_bytes, expire=expire,
+                    users_limit=plan.max_users, services=services,
+                )
+            except RebeccaConflict:
+                # Reconcile again: the account may have appeared after the pre-POST GET.
+                try:
+                    conflict_admin = await rebecca_api.find_admin(new_username)
+                except Exception:
+                    await callback.answer("وضعیت صدور Rebecca نامشخص است؛ دوباره تلاش کنید.", show_alert=True)
+                    return
+                if conflict_admin is None:
+                    await callback.answer("وضعیت صدور Rebecca نامشخص است؛ دوباره تلاش کنید.", show_alert=True)
+                    return
+                try:
+                    created = rebecca_api.verify_admin(
+                        conflict_admin, new_username, o['user_id'],
+                        data_limit=plan.traffic_limit_bytes, expire=expire,
+                        users_limit=plan.max_users, services=services,
+                    )
+                    break
+                except Exception:
+                    # Rotate only when the exact conflicting account is provably another owner.
+                    conflict_tid = conflict_admin.get("telegram_id")
+                    if conflict_tid is None or int(conflict_tid) == int(o['user_id']):
+                        await callback.answer("حساب Rebecca نیاز به بررسی دارد.", show_alert=True)
+                        return
+                if attempt == 5:
+                    if not await db.clear_rebecca_reservation(oid, new_username, lease_token):
+                        await callback.answer("وضعیت محلی صدور نیاز به بررسی دارد.", show_alert=True)
+                        return
+                    await callback.answer("تداخل نام کاربری؛ لطفاً دوباره تلاش کنید.", show_alert=True)
+                    return
+                old_username = new_username
+                new_username = f"{base_username}_{secrets.randbelow(9000) + 1000}"
+                if not await db.update_rebecca_reserved_username(
+                    oid, old_username, new_username, lease_token
+                ):
+                    await callback.answer("خطا در ذخیره رزرو Rebecca.", show_alert=True)
+                    return
+            except Exception as exc:
+                from rebecca_api import RebeccaAPIError
+                if isinstance(exc, RebeccaAPIError) and exc.definitive:
+                    if not await db.clear_rebecca_reservation(oid, new_username, lease_token):
+                        await callback.answer("وضعیت محلی صدور نیاز به بررسی دارد.", show_alert=True)
+                        return
+                logger.error("Rebecca admin issuance failed for order %s", oid)
+                await callback.answer("خطا در صدور پنل در Rebecca.", show_alert=True)
+                return
+        if not created:
+            await callback.answer("وضعیت صدور Rebecca نامشخص است؛ دوباره تلاش کنید.", show_alert=True)
+            return
+    else:
+        # Username pattern: panel{user_id}, if exists then panel{user_id}-1, -2, ...
+        base_username = f"panel{o['user_id']}"
+        candidate = base_username
+        try:
+            exists = await marzban_api.admin_exists(candidate)
+        except Exception:
+            exists = False
+        suffix = 0
+        if exists:
+            suffix = 1
+            while suffix < 500:
+                candidate = f"{base_username}-{suffix}"
+                try:
+                    exists = await marzban_api.admin_exists(candidate)
+                except Exception:
+                    exists = False
+                if not exists:
+                    break
+                suffix += 1
+        new_username = candidate
+        new_password = secrets.token_hex(5)
+        created = await marzban_api.create_admin(new_username, new_password, telegram_id=o['user_id'], is_sudo=False)
+        if not created:
+            attempts = 0
+            while attempts < 5 and not created:
+                suffix = (suffix + 1) if suffix else 1
+                new_username = f"{base_username}-{suffix}"
+                created = await marzban_api.create_admin(new_username, new_password, telegram_id=o['user_id'], is_sudo=False)
+                attempts += 1
+            if not created:
+                await callback.answer("خطا در صدور پنل در مرزبان.", show_alert=True)
+                return
     from models.schemas import AdminModel
+    full_name = " ".join(part for part in (first_name, last_name) if part).strip()
+    identity_name = full_name or (f"@{telegram_username}" if telegram_username else f"User {o['user_id']}")
     admin_model = AdminModel(
         user_id=o['user_id'],
-        admin_name=(plan.name or f"Reseller #{oid}"),
+        admin_name=(identity_name if config.PANEL_PROVIDER == "rebecca" else (plan.name or f"Reseller #{oid}")),
         marzban_username=new_username,
         marzban_password=new_password,
+        username=(telegram_username if config.PANEL_PROVIDER == "rebecca" else None),
+        first_name=(first_name if config.PANEL_PROVIDER == "rebecca" else None),
+        last_name=(last_name if config.PANEL_PROVIDER == "rebecca" else None),
         max_users=(plan.max_users if plan.max_users is not None else 1000000),
         max_total_time=(plan.time_limit_seconds if plan.time_limit_seconds is not None else days_to_seconds(36500)),
         max_total_traffic=plan.traffic_limit_bytes or 0,
         validity_days=(plan.time_limit_seconds // 86400) if plan.time_limit_seconds else 36500,
         is_active=True,
-        origin_plan_id=plan.id
+        origin_plan_id=plan.id,
+        allow_incremental_renewal=(plan.allow_incremental_renewal if config.PANEL_PROVIDER == "rebecca" else None),
     )
-    ok = await db.add_admin(admin_model)
-    issued_admin = None
-    if ok:
-        admins = await db.get_admins_for_user(o['user_id'])
-        issued_admin = next((a for a in admins if a.marzban_username == new_username), None)
-    await db.update_order(oid, status="approved", approved_by=callback.from_user.id, issued_admin_id=(issued_admin.id if issued_admin else None))
+    if config.PANEL_PROVIDER == "rebecca":
+        ok = await db.finalize_rebecca_provisioning(
+            oid, admin_model, callback.from_user.id, lease_token
+        )
+    else:
+        ok = await db.add_admin(admin_model)
+        issued_admin = None
+        if ok:
+            admins = await db.get_admins_for_user(o['user_id'])
+            issued_admin = next((a for a in admins if a.marzban_username == new_username), None)
+        await db.update_order(oid, status="approved", approved_by=callback.from_user.id, issued_admin_id=(issued_admin.id if issued_admin else None))
+    if config.PANEL_PROVIDER == "rebecca" and not ok:
+        await callback.answer("خطا در ذخیره پنل صادرشده؛ صدور مجدد خودکار متوقف شد.", show_alert=True)
+        return
+    if config.PANEL_PROVIDER == "rebecca":
+        issued_admin = await db.get_admin_by_marzban_username(new_username)
     try:
         bot = callback.bot
         # Prefer global setting for login URL; fallback to per-admin or MARZBAN_URL
         login_url = await db.get_setting("global_login_url")
         if not login_url:
-            login_url = issued_admin.login_url if issued_admin and issued_admin.login_url else config.MARZBAN_URL
+            if issued_admin and issued_admin.login_url:
+                login_url = issued_admin.login_url
+            elif config.PANEL_PROVIDER == "rebecca":
+                login_url = config.REBECCA_LOGIN_URL or config.REBECCA_URL
+            else:
+                login_url = config.MARZBAN_URL
         plan_name_display = plan.name if plan and getattr(plan, 'name', None) else (o.get('plan_name_snapshot') or f"پلن #{o.get('plan_id')}")
         msg = config.MESSAGES["order_approved_user"].format(username=new_username, password=new_password, login_url=login_url)
         msg += f"\n📦 پلن: {plan_name_display}"
