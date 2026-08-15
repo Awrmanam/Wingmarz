@@ -5,6 +5,7 @@ from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from typing import List, Dict, Any
+from html import escape
 import logging
 import asyncio
 from pathlib import Path
@@ -22,6 +23,7 @@ from utils.notify import (
 from utils.notify import notify_admin_reactivation as notify_admin_reactivation_utils
 from marzban_api import marzban_api
 from rebecca_api import rebecca_api, RebeccaConflict
+from utils.rebecca import parse_service_ids, credential_message
 from datetime import datetime
 from handlers.admin_handlers import show_cleanup_menu, perform_cleanup
 from aiogram.fsm.context import FSMContext
@@ -83,6 +85,11 @@ class CreatePlanStates(StatesGroup):
     waiting_for_max_users = State()
     waiting_for_price = State()
     waiting_for_renew_mode = State()
+    waiting_for_rebecca_services = State()
+
+
+class EditPlanServicesStates(StatesGroup):
+    waiting_for_services = State()
 
 
 class CardStates(StatesGroup):
@@ -154,13 +161,14 @@ async def _render_auto_import_menu(
 
     if refresh or "auto_import_candidates" not in data:
         try:
-            raw_admins = await marzban_api.list_admins()
+            raw_admins = (await rebecca_api.list_admins() if config.PANEL_PROVIDER == "rebecca"
+                          else await marzban_api.list_admins())
         except Exception as exc:
-            logger.error("Failed to fetch admins list from Marzban API: %s", exc)
+            logger.error("Failed to fetch %s admin list: %s", config.PANEL_PROVIDER, exc)
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="sudo_menu_panels")]
             ])
-            await callback.message.edit_text("❌ خطا در دریافت لیست ادمین‌ها از مرزبان.", reply_markup=kb)
+            await callback.message.edit_text(f"❌ خطا در دریافت لیست ادمین‌ها از {config.PANEL_PROVIDER}.", reply_markup=kb)
             await callback.answer()
             return
 
@@ -179,7 +187,9 @@ async def _render_auto_import_menu(
                 continue
             processed.append({
                 "username": username,
-                "is_sudo": bool(item.get("is_sudo")),
+                "is_sudo": bool(item.get("is_sudo")) if config.PANEL_PROVIDER == "marzban" else item.get("role") != "standard",
+                "role": item.get("role"),
+                "status": item.get("status"),
                 "telegram_id": item.get("telegram_id") or None,
                 "users_usage": item.get("users_usage"),
                 "already_registered": username in existing_usernames
@@ -204,18 +214,26 @@ async def _render_auto_import_menu(
     existing_count = total - new_count
 
     lines = [
-        "🤖 کشف خودکار ادمین‌های مرزبان",
+        f"🤖 کشف خودکار ادمین‌های {'Rebecca' if config.PANEL_PROVIDER == 'rebecca' else 'مرزبان'}",
         "",
         f"کل ادمین‌ها در پنل: {total}",
         f"ثبت نشده در ربات: {new_count}",
         f"ثبت شده: {existing_count}",
         "",
         "ادمین‌های موجود با نماد ✅ مشخص شده‌اند.",
-        "برای افزودن، یکی را انتخاب کنید.",
+        ("حالت Rebecca فقط خواندنی است؛ گذرواژه‌ها قابل بازیابی نیستند."
+         if config.PANEL_PROVIDER == "rebecca" else "برای افزودن، یکی را انتخاب کنید."),
     ]
     if total == 0:
         lines.append("")
         lines.append("هیچ ادمینی توسط API گزارش نشد.")
+    elif config.PANEL_PROVIDER == "rebecca":
+        lines.extend(["", "جزئیات:"])
+        for candidate in candidates:
+            lines.append(
+                f"• {candidate['username']} | role={candidate.get('role') or '-'} | "
+                f"status={candidate.get('status') or '-'} | telegram_id={candidate.get('telegram_id') or '-'}"
+            )
 
     kb = _build_auto_import_keyboard(candidates, page)
 
@@ -321,6 +339,9 @@ async def auto_import_page_info(callback: CallbackQuery):
 async def auto_import_select(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id not in config.SUDO_ADMINS:
         await callback.answer("غیرمجاز", show_alert=True)
+        return
+    if config.PANEL_PROVIDER == "rebecca":
+        await callback.answer("کشف Rebecca فقط خواندنی است؛ ورود امن بدون گذرواژه ممکن نیست.", show_alert=True)
         return
     try:
         idx = int(callback.data.split(":")[1])
@@ -1614,11 +1635,11 @@ async def process_admin_name(message: Message, state: FSMContext):
         
         # Move to next step
         await message.answer(
-            f"✅ **نام ادمین دریافت شد:** `{admin_name}`\n\n"
-            "📝 **مرحله ۳ از ۷: Username مرزبان**\n\n"
+            f"✅ <b>نام ادمین دریافت شد:</b> {escape(admin_name)}\n\n"
+            "📝 <b>مرحله ۳ از ۷: Username مرزبان</b>\n\n"
             "لطفاً Username برای پنل مرزبان وارد کنید:\n\n"
-            "📋 **مثال:** `admin_ahmad` یا `manager_north`\n\n"
-            "⚠️ **نکات مهم:**\n"
+            "📋 <b>مثال:</b> <code>admin_ahmad</code> یا <code>manager_north</code>\n\n"
+            "⚠️ <b>نکات مهم:</b>\n"
             "• فقط از حروف انگلیسی، اعداد و خط تیره استفاده کنید\n"
             "• Username نباید قبلاً در مرزبان وجود داشته باشد\n"
             "• حداقل ۳ کاراکتر باشد"
@@ -1637,7 +1658,7 @@ async def process_admin_name(message: Message, state: FSMContext):
             "❌ **خطا در پردازش نام ادمین**\n\n"
             "لطفاً مجدداً تلاش کنید یا /start را بزنید."
         )
-        await state.clear()
+        # Keep the user in this state so a transient formatting/send error is retryable.
 
 
 @sudo_router.message(AddAdminStates.waiting_for_marzban_username, F.text)
@@ -4110,6 +4131,7 @@ async def manage_action_quota_add(callback: CallbackQuery):
 def _sales_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ افزودن پلن", callback_data="sales_add")],
+        [InlineKeyboardButton(text="✏️ سرویس Rebecca پلن", callback_data="sales_edit_services")],
         [InlineKeyboardButton(text="🗑️ حذف پلن", callback_data="sales_delete")],
         [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="sudo_manage_admins")]
     ])
@@ -4138,6 +4160,8 @@ async def sales_manage_entry(callback: CallbackQuery, state: FSMContext):
             lines.append(f"⏱️ زمان: {time_txt}")
             lines.append(f"👥 کاربر: {users_txt}")
             lines.append(f"💰 قیمت: {price_txt} تومان")
+            if config.PANEL_PROVIDER == "rebecca":
+                lines.append(f"🔌 سرویس‌های Rebecca: {p.rebecca_service_ids or 'تنظیم نشده (legacy)'}")
             lines.append("—")
         text = "\n".join(lines).rstrip("—")
     await callback.message.edit_text(text, reply_markup=_sales_menu_keyboard())
@@ -4404,10 +4428,20 @@ async def order_approve(callback: CallbackQuery):
     # Keep the original Marzban issuance behavior byte-for-byte in its provider path.
     telegram_username = first_name = last_name = None
     if config.PANEL_PROVIDER == "rebecca":
-        services = list(config.REBECCA_SERVICE_IDS)
-        if not services:
-            await callback.answer("تنظیم REBECCA_SERVICE_IDS نامعتبر یا خالی است.", show_alert=True)
-            return
+        mapping = getattr(plan, "rebecca_service_ids", None)
+        if mapping is not None:
+            try:
+                services = parse_service_ids(mapping)
+            except ValueError:
+                await callback.answer("شناسه سرویس Rebecca این پلن نامعتبر است.", show_alert=True)
+                return
+        else:
+            services = list(config.REBECCA_SERVICE_IDS)
+            if services:
+                logger.warning("Plan %s has no Rebecca service mapping; using legacy global fallback", plan.id)
+            else:
+                await callback.answer("برای این پلن سرویس Rebecca تنظیم نشده است.", show_alert=True)
+                return
         try:
             customer = await callback.bot.get_chat(o['user_id'])
             telegram_username = getattr(customer, "username", None)
@@ -4590,9 +4624,8 @@ async def order_approve(callback: CallbackQuery):
             else:
                 login_url = config.MARZBAN_URL
         plan_name_display = plan.name if plan and getattr(plan, 'name', None) else (o.get('plan_name_snapshot') or f"پلن #{o.get('plan_id')}")
-        msg = config.MESSAGES["order_approved_user"].format(username=new_username, password=new_password, login_url=login_url)
-        msg += f"\n📦 پلن: {plan_name_display}"
-        await bot.send_message(chat_id=o['user_id'], text=msg)
+        msg = credential_message(new_username, new_password, login_url, plan_name_display)
+        await bot.send_message(chat_id=o['user_id'], text=msg, parse_mode="HTML")
     except Exception as e:
         logger.error(f"Failed to notify user {o['user_id']} for order {oid}: {e}")
     await callback.message.edit_text("✅ سفارش تأیید و پنل صادر شد.")
@@ -4872,6 +4905,16 @@ async def sales_renew_mode_selected(callback: CallbackQuery, state: FSMContext):
         return
     mode = callback.data.split("_")[-1]
     allow_incremental = True if mode == "incremental" else False
+    await state.update_data(allow_incremental_renewal=allow_incremental)
+    if config.PANEL_PROVIDER == "rebecca":
+        await state.set_state(CreatePlanStates.waiting_for_rebecca_services)
+        await callback.message.edit_text("شناسه سرویس‌های Rebecca را با کاما وارد کنید (مثال: 1,2):")
+        await callback.answer()
+        return
+    await _save_sales_plan(callback, state)
+
+
+async def _save_sales_plan(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     from models.schemas import PlanModel
     plan = PlanModel(
@@ -4881,7 +4924,8 @@ async def sales_renew_mode_selected(callback: CallbackQuery, state: FSMContext):
         max_users=data.get("max_users"),
         price=data.get("price"),
         is_active=True,
-        allow_incremental_renewal=allow_incremental
+        allow_incremental_renewal=data.get("allow_incremental_renewal", True),
+        rebecca_service_ids=data.get("rebecca_service_ids"),
     )
     ok = await db.add_plan(plan)
     await state.clear()
@@ -4890,6 +4934,63 @@ async def sales_renew_mode_selected(callback: CallbackQuery, state: FSMContext):
     else:
         await callback.message.edit_text("❌ خطا در افزودن پلن.")
     await callback.answer()
+
+
+@sudo_router.message(CreatePlanStates.waiting_for_rebecca_services, F.text)
+async def sales_plan_services(message: Message, state: FSMContext):
+    try:
+        canonical = ",".join(map(str, parse_service_ids(message.text)))
+    except ValueError:
+        await message.answer("فرمت نامعتبر است؛ فقط شناسه‌های عددی مثبت با کاما وارد کنید.")
+        return
+    await state.update_data(rebecca_service_ids=canonical)
+    # Reuse the save routine with the message's bot-facing callback operations.
+    data = await state.get_data()
+    from models.schemas import PlanModel
+    ok = await db.add_plan(PlanModel(
+        name=data["name"], plan_type=data.get("plan_type", "volume"),
+        traffic_limit_bytes=data.get("traffic_limit_bytes"), time_limit_seconds=data.get("time_limit_seconds"),
+        max_users=data.get("max_users"), price=data.get("price", 0), is_active=True,
+        allow_incremental_renewal=data.get("allow_incremental_renewal", True), rebecca_service_ids=canonical,
+    ))
+    await state.clear()
+    await message.answer("✅ پلن با موفقیت اضافه شد." if ok else "❌ خطا در افزودن پلن.")
+
+
+@sudo_router.callback_query(F.data == "sales_edit_services")
+async def sales_edit_services(callback: CallbackQuery):
+    if callback.from_user.id not in config.SUDO_ADMINS or config.PANEL_PROVIDER != "rebecca":
+        await callback.answer("این گزینه فقط در حالت Rebecca فعال است.", show_alert=True)
+        return
+    plans = await db.get_plans()
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"#{p.id} {p.name} ({p.rebecca_service_ids or 'بدون سرویس'})", callback_data=f"sales_edit_service_{p.id}")]
+        for p in plans
+    ])
+    await callback.message.edit_text("پلن را برای تنظیم سرویس انتخاب کنید:", reply_markup=kb)
+    await callback.answer()
+
+
+@sudo_router.callback_query(F.data.startswith("sales_edit_service_"))
+async def sales_edit_service_selected(callback: CallbackQuery, state: FSMContext):
+    plan_id = int(callback.data.rsplit("_", 1)[-1])
+    await state.update_data(edit_service_plan_id=plan_id)
+    await state.set_state(EditPlanServicesStates.waiting_for_services)
+    await callback.message.edit_text("شناسه سرویس‌های Rebecca را با کاما وارد کنید:")
+    await callback.answer()
+
+
+@sudo_router.message(EditPlanServicesStates.waiting_for_services, F.text)
+async def sales_edit_service_value(message: Message, state: FSMContext):
+    try:
+        canonical = ",".join(map(str, parse_service_ids(message.text)))
+    except ValueError:
+        await message.answer("فرمت نامعتبر است؛ فقط شناسه‌های عددی مثبت با کاما وارد کنید.")
+        return
+    data = await state.get_data()
+    ok = await db.update_plan(int(data["edit_service_plan_id"]), rebecca_service_ids=canonical)
+    await state.clear()
+    await message.answer("✅ سرویس‌های پلن بروزرسانی شد." if ok else "❌ خطا در بروزرسانی پلن.")
 
 
 @sudo_router.callback_query(F.data == "sales_delete")

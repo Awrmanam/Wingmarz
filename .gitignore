@@ -2,3 +2,10 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+
+# Runtime SQLite databases (mounted data survives deployments, but is never versioned)
+data/*.db
+*.db
+*.db-journal
+*.db-wal
+*.db-shm

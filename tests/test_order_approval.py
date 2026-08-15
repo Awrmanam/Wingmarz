@@ -15,7 +15,7 @@ class FakeMessage:
 class FakeBot:
     def __init__(self, chat): self.chat, self.sent = chat, []
     async def get_chat(self, user_id): return self.chat
-    async def send_message(self, chat_id, text): self.sent.append((chat_id, text))
+    async def send_message(self, chat_id, text, **kwargs): self.sent.append((chat_id, text, kwargs))
 
 
 class FakeCallback:
@@ -116,6 +116,7 @@ def test_real_rebecca_approval_maps_identity_plan_and_notifies_after_verificatio
     assert db.admin.admin_name == "Arman Madani"
     assert db.order["status"] == "approved"
     assert "https://login.rebecca.example" in callback.bot.sent[0][1]
+    assert callback.bot.sent[0][2]["parse_mode"] == "HTML"
     assert config.MARZBAN_URL not in callback.bot.sent[0][1]
 
 
@@ -290,3 +291,40 @@ def test_failed_definitive_clear_reports_local_attention(monkeypatch, rebecca):
     monkeypatch.setattr(sudo.rebecca_api, "create_admin_verified", reject)
     run(sudo.order_approve(callback))
     assert db.cleared == 1 and "محلی" in callback.answers[-1][0]
+
+@pytest.mark.parametrize("mapping, expected", [("1", [1]), ("2", [2]), ("1,2,1", [1, 2])])
+def test_rebecca_provisioning_uses_each_plans_mapping(monkeypatch, rebecca, mapping, expected):
+    db, callback, calls = FakeDB(), FakeCallback(), []
+    db.plan.rebecca_service_ids = mapping
+    monkeypatch.setattr(sudo, "db", db)
+    async def create(*args, **kwargs):
+        calls.append(kwargs["services"])
+        return {"username": args[0], "role": "standard", "status": "active"}
+    monkeypatch.setattr(sudo.rebecca_api, "create_admin_verified", create)
+    run(sudo.order_approve(callback))
+    assert calls == [expected]
+
+
+def test_invalid_plan_mapping_blocks_before_post(monkeypatch, rebecca):
+    db, callback = FakeDB(), FakeCallback()
+    db.plan.rebecca_service_ids = "1,bad"
+    monkeypatch.setattr(sudo, "db", db)
+    async def create(*args, **kwargs): pytest.fail("POST must not be attempted")
+    monkeypatch.setattr(sudo.rebecca_api, "create_admin_verified", create)
+    run(sudo.order_approve(callback))
+    assert "نامعتبر" in callback.answers[-1][0]
+
+
+def test_credential_username_with_underscores_reaches_telegram_exactly(monkeypatch, rebecca):
+    db = FakeDB()
+    callback = FakeCallback(chat=SimpleNamespace(username="armanstore2_support", first_name="Arman", last_name=None))
+    db.plan.rebecca_service_ids = "1"
+    monkeypatch.setattr(sudo, "db", db)
+    monkeypatch.setattr(sudo.secrets, "randbelow", lambda _: 7090)
+    async def create(*args, **kwargs):
+        return {"username": args[0], "role": "standard", "status": "active"}
+    monkeypatch.setattr(sudo.rebecca_api, "create_admin_verified", create)
+    run(sudo.order_approve(callback))
+    text = callback.bot.sent[0][1]
+    assert "armanstore2_support_8090" in text
+    assert "<pre>" not in text and "```" not in text and "Gold" in text

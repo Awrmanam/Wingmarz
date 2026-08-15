@@ -112,4 +112,17 @@ class RebeccaAPI:
         except httpx.HTTPError:
             return False
 
+    async def list_admins(self) -> list[Dict[str, Any]]:
+        """Return admins through Rebecca's official read-only list route."""
+        try:
+            async with httpx.AsyncClient(timeout=config.API_TIMEOUT) as client:
+                response = await client.get(f"{self.base_url}/api/admins", headers=self._headers())
+        except httpx.HTTPError as exc:
+            raise RebeccaAPIError("Rebecca admin list request failed") from exc
+        if response.status_code != 200:
+            raise RebeccaAPIError("Rebecca admin list failed", status_code=response.status_code)
+        data = response.json()
+        admins = data.get("admins", data) if isinstance(data, dict) else data
+        return [item for item in admins if isinstance(item, dict)] if isinstance(admins, list) else []
+
 rebecca_api = RebeccaAPI()
