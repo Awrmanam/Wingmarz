@@ -68,7 +68,7 @@ async def test_disable_orders_remote_then_local_and_is_idempotent(monkeypatch, r
     monkeypatch.setattr(sudo.rebecca_api, "find_admin", find)
     monkeypatch.setattr(sudo.rebecca_api, "disable_admin", disable)
     monkeypatch.setattr(sudo.db, "deactivate_admin", local)
-    monkeypatch.setattr(sudo, "notify_admin_deactivated", notify)
+    monkeypatch.setattr(sudo, "_notify_rebecca_deactivated", notify)
     callback = Callback("manage_action_deactivate_7")
     await sudo.manage_action_deactivate(callback)
     assert events.count("remote") == expected_calls
@@ -86,7 +86,7 @@ async def test_disable_remote_failure_keeps_local_and_does_not_notify(monkeypatc
     monkeypatch.setattr(sudo.rebecca_api, "find_admin", find)
     monkeypatch.setattr(sudo.rebecca_api, "disable_admin", fail)
     monkeypatch.setattr(sudo.db, "deactivate_admin", local)
-    monkeypatch.setattr(sudo, "notify_admin_deactivated", notify)
+    monkeypatch.setattr(sudo, "_notify_rebecca_deactivated", notify)
     callback = Callback("manage_action_deactivate_7")
     await sudo.manage_action_deactivate(callback)
     assert called == []
@@ -104,7 +104,7 @@ async def test_enable_orders_remote_then_local_and_is_idempotent(monkeypatch, re
     monkeypatch.setattr(sudo.rebecca_api, "find_admin", find)
     monkeypatch.setattr(sudo.rebecca_api, "enable_admin", enable)
     monkeypatch.setattr(sudo.db, "reactivate_admin", local)
-    monkeypatch.setattr(sudo, "notify_admin_reactivation_utils", notify)
+    monkeypatch.setattr(sudo, "_notify_rebecca_reactivated", notify)
     callback = Callback("manage_action_activate_7")
     await sudo.manage_action_activate(callback)
     assert events.count("remote") == expected_calls
@@ -122,7 +122,7 @@ async def test_local_sync_failure_is_not_success_and_not_notified(monkeypatch, a
     monkeypatch.setattr(sudo.rebecca_api, "find_admin", find)
     monkeypatch.setattr(sudo.rebecca_api, f"{action}_admin", remote)
     monkeypatch.setattr(sudo.db, "deactivate_admin" if action == "disable" else "reactivate_admin", local)
-    monkeypatch.setattr(sudo, "notify_admin_deactivated" if action == "disable" else "notify_admin_reactivation_utils", notify)
+    monkeypatch.setattr(sudo, "_notify_rebecca_deactivated" if action == "disable" else "_notify_rebecca_reactivated", notify)
     callback = Callback(f"manage_action_{'deactivate' if action == 'disable' else 'activate'}_7")
     await (sudo.manage_action_deactivate(callback) if action == "disable" else sudo.manage_action_activate(callback))
     assert notifications == []
@@ -144,11 +144,13 @@ async def test_delete_first_click_only_confirms(monkeypatch):
 @sync_test
 async def test_delete_confirmation_remote_controls_local_removal(monkeypatch, admin, remote_ok):
     removed = []
+    async def find(_): return {"username": "armanstore2_support_8090"}
     async def delete(_):
         if not remote_ok: raise RebeccaAPIError("offline")
         return True
     async def remove(_): removed.append(1); return True
     async def log(_): return True
+    monkeypatch.setattr(sudo.rebecca_api, "find_admin", find)
     monkeypatch.setattr(sudo.rebecca_api, "delete_admin", delete)
     monkeypatch.setattr(sudo.db, "remove_admin_by_id", remove)
     monkeypatch.setattr(sudo.db, "add_log", log)
@@ -160,9 +162,11 @@ async def test_delete_confirmation_remote_controls_local_removal(monkeypatch, ad
 
 @sync_test
 async def test_delete_reports_remote_local_inconsistency(monkeypatch):
+    async def find(_): return {"username": "armanstore2_support_8090"}
     async def delete(_): return True
     async def remove(_): return False
     async def log(_): return True
+    monkeypatch.setattr(sudo.rebecca_api, "find_admin", find)
     monkeypatch.setattr(sudo.rebecca_api, "delete_admin", delete)
     monkeypatch.setattr(sudo.db, "remove_admin_by_id", remove)
     monkeypatch.setattr(sudo.db, "add_log", log)
@@ -227,3 +231,96 @@ async def test_sudo_info_username_survives_actual_boldfix_layer(monkeypatch):
         await bot.session.close()
     assert captured["method"].text == text
     assert "armanstore2_support_8090" in captured["method"].text
+
+@sync_test
+async def test_delete_retry_recovers_stale_local_record(monkeypatch):
+    remote_exists = True
+    removals = 0
+    async def find(_):
+        return {"username": "armanstore2_support_8090"} if remote_exists else None
+    async def delete(_):
+        nonlocal remote_exists
+        remote_exists = False
+        return True
+    async def remove(_):
+        nonlocal removals
+        removals += 1
+        return removals == 2
+    async def log(_): return True
+    monkeypatch.setattr(sudo.rebecca_api, "find_admin", find)
+    monkeypatch.setattr(sudo.rebecca_api, "delete_admin", delete)
+    monkeypatch.setattr(sudo.db, "remove_admin_by_id", remove)
+    monkeypatch.setattr(sudo.db, "add_log", log)
+
+    first, first_error = await sudo.delete_admin_panel_completely(7)
+    second, second_error = await sudo.delete_admin_panel_completely(7)
+    assert first is False and "از Rebecca حذف شد" in first_error
+    assert second is True and second_error is None
+    assert removals == 2
+
+
+@pytest.mark.parametrize("status", [None, 401, 403, 500])
+@sync_test
+async def test_delete_api_uncertainty_preserves_local_record(monkeypatch, status):
+    removed = []
+    async def uncertain(_): raise RebeccaAPIError("unavailable", status_code=status)
+    async def remove(_): removed.append(1); return True
+    monkeypatch.setattr(sudo.rebecca_api, "find_admin", uncertain)
+    monkeypatch.setattr(sudo.db, "remove_admin_by_id", remove)
+    success, error = await sudo.delete_admin_panel_completely(7)
+    assert success is False
+    assert "دیتابیس تغییری نکرد" in error
+    assert removed == []
+
+
+class NotificationBot:
+    def __init__(self): self.messages = []
+    async def send_message(self, chat_id, text, **kwargs):
+        self.messages.append((chat_id, text, kwargs))
+
+
+@sync_test
+async def test_rebecca_deactivation_notification_has_no_rotation_claim(admin):
+    bot = NotificationBot()
+    await sudo._notify_rebecca_deactivated(bot, admin)
+    _, text, kwargs = bot.messages[0]
+    assert "armanstore2_support_8090" in text
+    assert "پسورد پنل تغییر کرده" not in text
+    assert "رمز عبور شما تغییر نکرده‌اند" in text
+    assert kwargs["parse_mode"] == "HTML"
+
+
+@sync_test
+async def test_rebecca_reactivation_notification_is_panel_specific(admin):
+    bot = NotificationBot()
+    await sudo._notify_rebecca_reactivated(bot, admin)
+    _, text, kwargs = bot.messages[0]
+    assert "<code>armanstore2_support_8090</code>" in text
+    assert "پسورد اصلی بازگردانی شد" not in text
+    assert "همه پنل‌های شما" not in text
+    assert "بدون تغییر" in text
+    assert kwargs["parse_mode"] == "HTML"
+
+
+@sync_test
+async def test_manage_panel_uses_remote_disabled_status(monkeypatch):
+    async def find(_): return {"status": "disabled"}
+    monkeypatch.setattr(sudo.rebecca_api, "find_admin", find)
+    callback = Callback("manage_panel_7")
+    await sudo.manage_panel_selected(callback)
+    text, kwargs = callback.message.edits[-1]
+    assert "وضعیت Rebecca: غیرفعال" in text
+    assert "وضعیت Rebecca: فعال" not in text
+    assert kwargs["parse_mode"] == "HTML"
+
+
+@sync_test
+async def test_manage_panel_api_failure_shows_unknown_status(monkeypatch):
+    async def fail(_): raise RebeccaAPIError("offline")
+    monkeypatch.setattr(sudo.rebecca_api, "find_admin", fail)
+    callback = Callback("manage_panel_7")
+    await sudo.manage_panel_selected(callback)
+    text, _ = callback.message.edits[-1]
+    assert "⚠️ وضعیت: نامشخص (خطای ارتباط با Rebecca)" in text
+    assert "وضعیت Rebecca: فعال" not in text
+    assert "وضعیت Rebecca: غیرفعال" not in text

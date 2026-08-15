@@ -32,6 +32,34 @@ from aiogram.fsm.state import State, StatesGroup
 logger = logging.getLogger(__name__)
 
 
+async def _notify_rebecca_deactivated(bot, admin: AdminModel) -> None:
+    """Notify about one Rebecca panel without legacy password-rotation claims."""
+    await bot.send_message(
+        admin.user_id,
+        "🔒 <b>پنل شما غیرفعال شد</b>\n\n"
+        f"🏷 {escape(str(admin.admin_name or admin.marzban_username or '-'))}\n"
+        f"🔐 <code>{escape(str(admin.marzban_username or '-'))}</code>\n\n"
+        "📝 دلیل: غیرفعالسازی توسط مدیریت\n\n"
+        "دسترسی پنل و کاربران آن موقتاً غیرفعال شده است.\n"
+        "نام کاربری و رمز عبور شما تغییر نکرده‌اند.\n\n"
+        "در صورت فعالسازی مجدد، می‌توانید با همان اطلاعات وارد شوید.",
+        parse_mode="HTML",
+    )
+
+
+async def _notify_rebecca_reactivated(bot, admin: AdminModel) -> None:
+    """Notify about one Rebecca panel without legacy password restoration claims."""
+    await bot.send_message(
+        admin.user_id,
+        "✅ <b>پنل شما مجدداً فعال شد</b>\n\n"
+        f"🏷 {escape(str(admin.admin_name or admin.marzban_username or '-'))}\n"
+        f"🔐 <code>{escape(str(admin.marzban_username or '-'))}</code>\n\n"
+        "دسترسی پنل مجدداً فعال شده است.\n"
+        "نام کاربری و رمز عبور قبلی شما بدون تغییر قابل استفاده هستند.",
+        parse_mode="HTML",
+    )
+
+
 def _rebecca_username_base(telegram_username: str | None, telegram_id: int) -> str:
     """Return an ASCII-only base; display names are intentionally never used."""
     raw = (telegram_username or "").lstrip("@").lower()
@@ -3595,9 +3623,21 @@ async def delete_admin_panel_completely(admin_id: int, reason: str = "غیرفع
 
         if config.PANEL_PROVIDER == "rebecca":
             try:
-                await rebecca_api.delete_admin(admin_username)
+                remote = await rebecca_api.find_admin(admin_username)
             except RebeccaAPIError as exc:
-                return False, f"حذف ادمین در Rebecca ناموفق بود. دیتابیس تغییری نکرد. ({exc})"
+                return False, f"بررسی ادمین در Rebecca ناموفق بود. دیتابیس تغییری نکرد. ({exc})"
+            if remote is not None:
+                try:
+                    await rebecca_api.delete_admin(admin_username)
+                except RebeccaAPIError as exc:
+                    if exc.status_code != 404:
+                        return False, f"حذف ادمین در Rebecca ناموفق بود. دیتابیس تغییری نکرد. ({exc})"
+                    # A concurrent delete is safe only after exact absence is confirmed.
+                    try:
+                        if await rebecca_api.find_admin(admin_username) is not None:
+                            return False, "وضعیت حذف ادمین در Rebecca نامشخص است. دیتابیس تغییری نکرد."
+                    except RebeccaAPIError as check_exc:
+                        return False, f"تأیید حذف در Rebecca ناموفق بود. دیتابیس تغییری نکرد. ({check_exc})"
             db_success = await db.remove_admin_by_id(admin_id)
             if not db_success:
                 logger.error("Rebecca admin %s deleted remotely but local removal failed", admin_id)
@@ -3883,11 +3923,21 @@ async def manage_panel_selected(callback: CallbackQuery):
         return
     panel_name = admin.admin_name or admin.marzban_username or f"Panel {admin.id}"
     if config.PANEL_PROVIDER == "rebecca":
+        try:
+            remote = await rebecca_api.find_admin(admin.marzban_username)
+            if remote is None:
+                remote_status = "حذف‌شده"
+            else:
+                status = str(remote.get("status", "")).lower()
+                remote_status = {"active": "فعال", "disabled": "غیرفعال"}.get(status, "نامشخص")
+            status_line = f"✅ وضعیت Rebecca: {remote_status}"
+        except RebeccaAPIError:
+            status_line = "⚠️ وضعیت: نامشخص (خطای ارتباط با Rebecca)"
         info = (
             f"👤 کاربر: {admin.user_id}\n"
             f"🏷️ پنل: {escape(str(panel_name))}\n"
             f"🔐 نام کاربری: <code>{escape(str(admin.marzban_username or '-'))}</code>\n"
-            f"✅ وضعیت: {'فعال' if admin.is_active else 'غیرفعال'}\n"
+            f"{status_line}\n"
         )
     else:
         info = (
@@ -4010,7 +4060,7 @@ async def manage_action_activate(callback: CallbackQuery):
                 return
             text = "✅ پنل فعال شد."
             try:
-                await notify_admin_reactivation_utils(callback.bot, admin.user_id, callback.from_user.id)
+                await _notify_rebecca_reactivated(callback.bot, admin)
             except Exception as e:
                 logger.warning("Failed to notify admin %s about reactivation: %s", admin.user_id, e)
             await callback.message.edit_text(text, reply_markup=_manage_back_keyboard(admin_id))
@@ -4071,7 +4121,7 @@ async def manage_action_deactivate(callback: CallbackQuery):
                 return
             text = "✅ پنل غیرفعال شد."
             try:
-                await notify_admin_deactivated(callback.bot, admin.user_id, "غیرفعالسازی دستی توسط سودو")
+                await _notify_rebecca_deactivated(callback.bot, admin)
             except Exception as e:
                 logger.warning("Failed to notify admin %s about deactivation: %s", admin.user_id, e)
             await callback.message.edit_text(text, reply_markup=_manage_back_keyboard(admin_id))
