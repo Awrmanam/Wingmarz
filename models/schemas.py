@@ -92,3 +92,4 @@ class PlanModel(BaseModel):
     price: int = 0  # in Toman
     is_active: bool = Field(default=True)
     allow_incremental_renewal: bool = Field(default=True)
+    rebecca_service_ids: Optional[str] = None

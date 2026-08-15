@@ -57,7 +57,9 @@ class MarzbanAdminBot:
         
         # Test Marzban API connection
         try:
-            if await marzban_api.test_connection():
+            if config.PANEL_PROVIDER == "rebecca":
+                logger.info("Marzban connection check disabled in Rebecca provider mode")
+            elif await marzban_api.test_connection():
                 logger.info("Marzban API connection successful")
             else:
                 logger.warning("Marzban API connection failed - bot will continue but some features may not work")

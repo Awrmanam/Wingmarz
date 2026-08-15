@@ -254,6 +254,12 @@ class MonitoringScheduler:
             print("Scheduler is already running")
             return
 
+        if config.PANEL_PROVIDER == "rebecca":
+            print("Marzban monitoring disabled in Rebecca provider mode")
+            # The scheduler may still contain provider-independent backup jobs.
+            self.scheduler.start()
+            self.is_running = True
+            return
         print("Starting monitoring scheduler...")
 
         self.scheduler.add_job(

@@ -173,7 +173,8 @@ class Database:
                     max_users INTEGER,
                     price INTEGER DEFAULT 0,
                     is_active BOOLEAN DEFAULT 1,
-                    allow_incremental_renewal BOOLEAN DEFAULT 1
+                    allow_incremental_renewal BOOLEAN DEFAULT 1,
+                    rebecca_service_ids TEXT NULL
                 )
             """)
 
@@ -210,6 +211,10 @@ class Database:
                 pass
             try:
                 await db.execute("ALTER TABLE plans ADD COLUMN allow_incremental_renewal BOOLEAN DEFAULT 1")
+            except aiosqlite.OperationalError:
+                pass
+            try:
+                await db.execute("ALTER TABLE plans ADD COLUMN rebecca_service_ids TEXT NULL")
             except aiosqlite.OperationalError:
                 pass
 
@@ -766,9 +771,9 @@ class Database:
         try:
             async with aiosqlite.connect(self.db_path) as db:
                 await db.execute("""
-                    INSERT INTO plans (name, traffic_limit_bytes, time_limit_seconds, max_users, price, is_active, allow_incremental_renewal)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (plan.name, plan.traffic_limit_bytes, plan.time_limit_seconds, plan.max_users, plan.price, plan.is_active, 1 if getattr(plan, 'allow_incremental_renewal', True) else 0))
+                    INSERT INTO plans (name, traffic_limit_bytes, time_limit_seconds, max_users, price, is_active, allow_incremental_renewal, rebecca_service_ids)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (plan.name, plan.traffic_limit_bytes, plan.time_limit_seconds, plan.max_users, plan.price, plan.is_active, 1 if getattr(plan, 'allow_incremental_renewal', True) else 0, plan.rebecca_service_ids))
                 await db.commit()
                 return True
         except Exception as e:
