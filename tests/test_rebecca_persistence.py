@@ -75,3 +75,47 @@ def test_active_lease_cannot_be_stolen_but_stale_lease_can_recover(tmp_path):
         assert stale["rebecca_password"] == "reserved-password"
         assert stale["rebecca_lease_token"] == "lease-c"
     run(scenario())
+
+
+def test_stale_worker_is_fenced_from_all_reservation_mutations(tmp_path):
+    async def scenario():
+        path = tmp_path / "db.sqlite"
+        db = await _prepared_db(path)
+        await db.reserve_rebecca_provisioning(
+            1, "reserved_1234", "reserved-password", 123456, "lease-a", 1000, 300
+        )
+        claimed = await db.reserve_rebecca_provisioning(
+            1, "ignored", "ignored", 999, "lease-b", 1401, 300
+        )
+        assert claimed["rebecca_lease_token"] == "lease-b"
+
+        assert not await db.update_rebecca_reserved_username(
+            1, "reserved_1234", "stale_9999", "lease-a"
+        )
+        assert not await db.clear_rebecca_reservation(1, "reserved_1234", "lease-a")
+        assert not await db.finalize_rebecca_provisioning(
+            1, _admin("reserved_1234"), 99, "lease-a"
+        )
+
+        assert await db.update_rebecca_reserved_username(
+            1, "reserved_1234", "current_5678", "lease-b"
+        )
+        assert await db.finalize_rebecca_provisioning(
+            1, _admin("current_5678"), 99, "lease-b"
+        )
+    run(scenario())
+
+
+def test_current_worker_can_clear_but_stale_worker_cannot(tmp_path):
+    async def scenario():
+        path = tmp_path / "db.sqlite"
+        db = await _prepared_db(path)
+        await db.reserve_rebecca_provisioning(
+            1, "reserved_1234", "reserved-password", None, "lease-a", 1000, 300
+        )
+        await db.reserve_rebecca_provisioning(
+            1, "ignored", "ignored", None, "lease-b", 1401, 300
+        )
+        assert not await db.clear_rebecca_reservation(1, "reserved_1234", "lease-a")
+        assert await db.clear_rebecca_reservation(1, "reserved_1234", "lease-b")
+    run(scenario())

@@ -971,20 +971,24 @@ class Database:
         except Exception:
             return False
 
-    async def update_rebecca_reserved_username(self, order_id: int, username: str) -> bool:
+    async def update_rebecca_reserved_username(self, order_id: int, old_username: str,
+                                                new_username: str, lease_token: str) -> bool:
         """Replace a reserved username only after a definitive 409 response."""
         try:
             async with aiosqlite.connect(self.db_path) as conn:
                 cur = await conn.execute(
-                    "UPDATE orders SET rebecca_username=? WHERE id=? AND rebecca_provision_state='creating'",
-                    (username, order_id),
+                    """UPDATE orders SET rebecca_username=?
+                       WHERE id=? AND rebecca_provision_state='creating'
+                       AND rebecca_username=? AND rebecca_lease_token=?""",
+                    (new_username, order_id, old_username, lease_token),
                 )
                 await conn.commit()
                 return cur.rowcount == 1
         except Exception:
             return False
 
-    async def clear_rebecca_reservation(self, order_id: int, username: str) -> bool:
+    async def clear_rebecca_reservation(self, order_id: int, username: str,
+                                         lease_token: str) -> bool:
         """Release a reservation only after a definite remote rejection."""
         try:
             async with aiosqlite.connect(self.db_path) as conn:
@@ -992,8 +996,9 @@ class Database:
                     """UPDATE orders SET rebecca_username=NULL, rebecca_password=NULL,
                        rebecca_expire=NULL, rebecca_provision_state=NULL,
                        rebecca_lease_token=NULL, rebecca_lease_at=NULL
-                       WHERE id=? AND rebecca_username=? AND rebecca_provision_state='creating'""",
-                    (order_id, username),
+                       WHERE id=? AND rebecca_username=? AND rebecca_provision_state='creating'
+                       AND rebecca_lease_token=?""",
+                    (order_id, username, lease_token),
                 )
                 await conn.commit()
                 return cur.rowcount == 1
