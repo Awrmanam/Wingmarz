@@ -9,7 +9,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from html import escape
 from typing import Any, Iterable
-from urllib.parse import quote
 
 import aiosqlite
 
@@ -233,7 +232,7 @@ async def discover_services_for_user(username: str) -> dict[str, Any]:
     if not requested:
         raise RebeccaDiscoveryError("Username is required")
     try:
-        data = await rebecca_api._request("GET", f"/api/user/{quote(requested, safe='')}")
+        data = await rebecca_api.discover_services_for_user(requested)
     except RebeccaAPIError as exc:
         if exc.status_code == 404:
             raise RebeccaDiscoveryNotFound("Rebecca user/config was not found") from exc
