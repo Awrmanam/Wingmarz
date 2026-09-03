@@ -1,8 +1,8 @@
 """Rebecca service-catalog Telegram workflow.
 
-This router is placed before the legacy sudo router by handlers.__init__ so it
-can replace only Rebecca-specific raw-ID prompts while leaving Marzban behavior
-untouched.
+This router is registered explicitly before the legacy sudo router. It intercepts
+only Rebecca-specific callbacks that replace raw Service-ID entry; Marzban mode
+continues through the original sudo handlers unchanged.
 """
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 import config
 from database import db
+from models.schemas import PlanModel
 from rebecca_api import RebeccaAPIError
 from rebecca_catalog import (
     RebeccaCatalogDuplicate,
@@ -34,12 +35,10 @@ from rebecca_catalog import (
 )
 from utils.rebecca import parse_service_ids
 
-# Importing this module happens only after handlers.sudo_handlers has completed.
-from handlers.sudo_handlers import (  # noqa: E402
-    CreatePlanStates,
-    EditPlanServicesStates,
-    _save_sales_plan,
-)
+# sudo_handlers is imported first by bot.py, so these shared state classes are
+# already defined when this module is imported. The legacy message handlers are
+# intentionally retained for the explicit manual/raw-ID fallback.
+from handlers.sudo_handlers import CreatePlanStates, EditPlanServicesStates
 
 
 rebecca_services_router = Router(name="rebecca_services")
@@ -52,8 +51,14 @@ class RebeccaOnly(BaseFilter):
 
 class RebeccaServiceStates(StatesGroup):
     waiting_for_discovery_username = State()
+    choosing_display_name = State()
     waiting_for_display_name = State()
+    waiting_for_add_confirmation = State()
     waiting_for_rename = State()
+
+
+class RebeccaPlanSelectStates(StatesGroup):
+    choosing = State()
 
 
 def _authorized(user_id: int) -> bool:
@@ -65,6 +70,13 @@ async def _deny(callback: CallbackQuery) -> bool:
         return False
     await callback.answer("غیرمجاز", show_alert=True)
     return True
+
+
+def _parse_callback_id(callback: CallbackQuery) -> int | None:
+    try:
+        return int((callback.data or "").rsplit(":", 1)[-1])
+    except (TypeError, ValueError):
+        return None
 
 
 def _service_menu_keyboard(services) -> InlineKeyboardMarkup:
@@ -82,7 +94,7 @@ def _service_menu_keyboard(services) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-async def _render_service_menu(target: Message | CallbackQuery) -> None:
+async def _render_service_menu(message: Message) -> None:
     services = await list_services()
     enabled = sum(1 for item in services if item.is_enabled)
     text = (
@@ -92,12 +104,42 @@ async def _render_service_menu(target: Message | CallbackQuery) -> None:
         "برای افزودن سرویس لازم نیست Service ID را بدانید. یک کانفیگ آزمایشی داخل "
         "سرویس موردنظر بسازید و Username آن را برای ربات بفرستید."
     )
-    markup = _service_menu_keyboard(services)
-    if isinstance(target, CallbackQuery):
-        await target.message.edit_text(text, reply_markup=markup)
-        await target.answer()
-    else:
-        await target.answer(text, reply_markup=markup)
+    await message.edit_text(text, reply_markup=_service_menu_keyboard(services))
+
+
+async def _send_service_menu(message: Message) -> None:
+    services = await list_services()
+    enabled = sum(1 for item in services if item.is_enabled)
+    text = (
+        "🔌 <b>سرویس‌های Rebecca</b>\n\n"
+        f"کل سرویس‌ها: <b>{len(services)}</b>\n"
+        f"فعال: <b>{enabled}</b>\n\n"
+        "برای افزودن سرویس لازم نیست Service ID را بدانید. یک کانفیگ آزمایشی داخل "
+        "سرویس موردنظر بسازید و Username آن را برای ربات بفرستید."
+    )
+    await message.answer(text, reply_markup=_service_menu_keyboard(services))
+
+
+async def _render_service_detail(message: Message, internal_id: int) -> bool:
+    service = await get_service(internal_id)
+    if not service:
+        return False
+    status = "فعال ✅" if service.is_enabled else "غیرفعال ⛔"
+    text = (
+        f"🔌 <b>{escape(service.display_name)}</b>\n\n"
+        f"🆔 Rebecca Service ID: <code>{service.rebecca_service_id}</code>\n"
+        f"🏷 نام اصلی: {escape(str(service.provider_name or '-'))}\n"
+        f"👤 کانفیگ مرجع: <code>{escape(str(service.source_username or '-'))}</code>\n"
+        f"وضعیت: {status}"
+    )
+    toggle_text = "⛔ غیرفعال کردن" if service.is_enabled else "✅ فعال کردن"
+    await message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ تغییر نام", callback_data=f"rsvc:ren:{service.id}")],
+        [InlineKeyboardButton(text=toggle_text, callback_data=f"rsvc:tog:{service.id}")],
+        [InlineKeyboardButton(text="🗑 حذف از کاتالوگ", callback_data=f"rsvc:rm:{service.id}")],
+        [InlineKeyboardButton(text="⬅️ لیست سرویس‌ها", callback_data="rebecca_services")],
+    ]))
+    return True
 
 
 @rebecca_services_router.message(Command("rebecca_services"), RebeccaOnly())
@@ -105,11 +147,9 @@ async def rebecca_services_command(message: Message, state: FSMContext):
     if not _authorized(message.from_user.id):
         return
     await state.clear()
-    await _render_service_menu(message)
+    await _send_service_menu(message)
 
 
-# Preserve the existing sales menu in Rebecca mode, adding one catalog entry.
-# In non-Rebecca mode this filter does not match and the legacy sudo handler runs.
 @rebecca_services_router.callback_query(F.data == "sudo_menu_sales", RebeccaOnly())
 async def rebecca_sales_menu(callback: CallbackQuery, state: FSMContext):
     if await _deny(callback):
@@ -134,7 +174,8 @@ async def rebecca_services_menu(callback: CallbackQuery, state: FSMContext):
     if await _deny(callback):
         return
     await state.clear()
-    await _render_service_menu(callback)
+    await _render_service_menu(callback.message)
+    await callback.answer()
 
 
 @rebecca_services_router.callback_query(F.data == "rsvc:add", RebeccaOnly())
@@ -174,10 +215,10 @@ async def rebecca_discovery_username(message: Message, state: FSMContext):
         return
 
     services = result.get("services") or []
-    # Rebecca currently returns exactly one service per user. Keep the guard strict.
     if len(services) != 1:
         await message.answer("❌ Rebecca تعداد غیرمنتظره‌ای سرویس برای این کاربر برگرداند. چیزی ذخیره نشد.")
         return
+
     detected = services[0]
     service_id = detected["service_id"]
     provider_name = detected.get("service_name")
@@ -200,7 +241,7 @@ async def rebecca_discovery_username(message: Message, state: FSMContext):
         discovery_provider_name=provider_name,
         discovery_display_name=suggested,
     )
-    await state.set_state(RebeccaServiceStates.waiting_for_display_name)
+    await state.set_state(RebeccaServiceStates.choosing_display_name)
     await message.answer(
         discovery_confirmation_html(result["username"], service_id, provider_name)
         + "\n\nیک نام نمایشی برای استفاده داخل ربات انتخاب کن.",
@@ -212,9 +253,11 @@ async def rebecca_discovery_username(message: Message, state: FSMContext):
     )
 
 
-async def _show_add_confirmation(message: Message, state: FSMContext) -> None:
+async def _show_add_confirmation(message: Message, state: FSMContext) -> bool:
     data = await state.get_data()
-    display_name = str(data.get("discovery_display_name") or "").strip()
+    if "discovery_service_id" not in data or not data.get("discovery_display_name"):
+        return False
+    display_name = str(data["discovery_display_name"]).strip()
     provider_name = data.get("discovery_provider_name")
     text = (
         "✅ <b>تأیید نهایی ثبت سرویس</b>\n\n"
@@ -224,23 +267,31 @@ async def _show_add_confirmation(message: Message, state: FSMContext) -> None:
         f"📝 نام نمایشی: <b>{escape(display_name)}</b>\n\n"
         "با تأیید، فقط این شناسه در کاتالوگ محلی ربات ذخیره می‌شود."
     )
+    await state.set_state(RebeccaServiceStates.waiting_for_add_confirmation)
     await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ ثبت سرویس", callback_data="radd:confirm")],
         [InlineKeyboardButton(text="❌ لغو", callback_data="rsvc:cancel")],
     ]))
+    return True
 
 
 @rebecca_services_router.callback_query(F.data == "radd:default", RebeccaOnly())
 async def rebecca_add_default_name(callback: CallbackQuery, state: FSMContext):
     if await _deny(callback):
         return
-    await _show_add_confirmation(callback.message, state)
+    if not await _show_add_confirmation(callback.message, state):
+        await callback.answer("اطلاعات شناسایی منقضی شده؛ دوباره سرویس را اضافه کن.", show_alert=True)
+        return
     await callback.answer()
 
 
 @rebecca_services_router.callback_query(F.data == "radd:custom", RebeccaOnly())
 async def rebecca_add_custom_name(callback: CallbackQuery, state: FSMContext):
     if await _deny(callback):
+        return
+    data = await state.get_data()
+    if "discovery_service_id" not in data:
+        await callback.answer("اطلاعات شناسایی منقضی شده؛ دوباره سرویس را اضافه کن.", show_alert=True)
         return
     await state.set_state(RebeccaServiceStates.waiting_for_display_name)
     await callback.message.answer("✏️ نام نمایشی دلخواه سرویس را ارسال کن:")
@@ -256,7 +307,9 @@ async def rebecca_add_display_name(message: Message, state: FSMContext):
         await message.answer("نام نمایشی باید بین ۱ تا ۸۰ کاراکتر باشد.")
         return
     await state.update_data(discovery_display_name=name)
-    await _show_add_confirmation(message, state)
+    if not await _show_add_confirmation(message, state):
+        await state.clear()
+        await message.answer("❌ اطلاعات شناسایی منقضی شده؛ دوباره سرویس را اضافه کن.")
 
 
 @rebecca_services_router.callback_query(F.data == "radd:confirm", RebeccaOnly())
@@ -281,6 +334,7 @@ async def rebecca_add_confirm(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text("ℹ️ این Service ID قبلاً در کاتالوگ ثبت شده است.")
         await callback.answer()
         return
+
     await state.clear()
     service = created[0]
     await callback.message.edit_text(
@@ -297,37 +351,21 @@ async def rebecca_service_cancel(callback: CallbackQuery, state: FSMContext):
     if await _deny(callback):
         return
     await state.clear()
-    await _render_service_menu(callback)
+    await _render_service_menu(callback.message)
+    await callback.answer()
 
 
 @rebecca_services_router.callback_query(F.data.startswith("rsvc:v:"), RebeccaOnly())
 async def rebecca_service_detail(callback: CallbackQuery):
     if await _deny(callback):
         return
-    try:
-        internal_id = int(callback.data.rsplit(":", 1)[-1])
-    except ValueError:
+    internal_id = _parse_callback_id(callback)
+    if internal_id is None:
         await callback.answer("شناسه نامعتبر است.", show_alert=True)
         return
-    service = await get_service(internal_id)
-    if not service:
+    if not await _render_service_detail(callback.message, internal_id):
         await callback.answer("سرویس پیدا نشد.", show_alert=True)
         return
-    status = "فعال ✅" if service.is_enabled else "غیرفعال ⛔"
-    text = (
-        f"🔌 <b>{escape(service.display_name)}</b>\n\n"
-        f"🆔 Rebecca Service ID: <code>{service.rebecca_service_id}</code>\n"
-        f"🏷 نام اصلی: {escape(str(service.provider_name or '-'))}\n"
-        f"👤 کانفیگ مرجع: <code>{escape(str(service.source_username or '-'))}</code>\n"
-        f"وضعیت: {status}"
-    )
-    toggle_text = "⛔ غیرفعال کردن" if service.is_enabled else "✅ فعال کردن"
-    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✏️ تغییر نام", callback_data=f"rsvc:ren:{service.id}")],
-        [InlineKeyboardButton(text=toggle_text, callback_data=f"rsvc:tog:{service.id}")],
-        [InlineKeyboardButton(text="🗑 حذف از کاتالوگ", callback_data=f"rsvc:rm:{service.id}")],
-        [InlineKeyboardButton(text="⬅️ لیست سرویس‌ها", callback_data="rebecca_services")],
-    ]))
     await callback.answer()
 
 
@@ -335,10 +373,11 @@ async def rebecca_service_detail(callback: CallbackQuery):
 async def rebecca_service_rename_start(callback: CallbackQuery, state: FSMContext):
     if await _deny(callback):
         return
-    internal_id = int(callback.data.rsplit(":", 1)[-1])
-    if not await get_service(internal_id):
+    internal_id = _parse_callback_id(callback)
+    if internal_id is None or not await get_service(internal_id):
         await callback.answer("سرویس پیدا نشد.", show_alert=True)
         return
+    await state.clear()
     await state.update_data(rename_service_id=internal_id)
     await state.set_state(RebeccaServiceStates.waiting_for_rename)
     await callback.message.answer("نام نمایشی جدید را ارسال کن:")
@@ -354,34 +393,42 @@ async def rebecca_service_rename_value(message: Message, state: FSMContext):
         await message.answer("نام نمایشی باید بین ۱ تا ۸۰ کاراکتر باشد.")
         return
     data = await state.get_data()
-    ok = await rename_service(int(data["rename_service_id"]), name)
+    internal_id = data.get("rename_service_id")
+    ok = bool(internal_id) and await rename_service(int(internal_id), name)
     await state.clear()
-    await message.answer("✅ نام سرویس تغییر کرد." if ok else "❌ سرویس پیدا نشد.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔌 لیست سرویس‌ها", callback_data="rebecca_services")]
-    ]))
+    await message.answer(
+        "✅ نام سرویس تغییر کرد." if ok else "❌ سرویس پیدا نشد.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔌 لیست سرویس‌ها", callback_data="rebecca_services")]
+        ]),
+    )
 
 
 @rebecca_services_router.callback_query(F.data.startswith("rsvc:tog:"), RebeccaOnly())
 async def rebecca_service_toggle(callback: CallbackQuery):
     if await _deny(callback):
         return
-    internal_id = int(callback.data.rsplit(":", 1)[-1])
+    internal_id = _parse_callback_id(callback)
+    if internal_id is None:
+        await callback.answer("شناسه نامعتبر است.", show_alert=True)
+        return
     service = await get_service(internal_id)
     if not service:
         await callback.answer("سرویس پیدا نشد.", show_alert=True)
         return
     await set_service_enabled(internal_id, not service.is_enabled)
+    await _render_service_detail(callback.message, internal_id)
     await callback.answer("وضعیت بروزرسانی شد.")
-    # Re-render through the same detail callback data.
-    callback.data = f"rsvc:v:{internal_id}"
-    await rebecca_service_detail(callback)
 
 
 @rebecca_services_router.callback_query(F.data.startswith("rsvc:rm:"), RebeccaOnly())
 async def rebecca_service_remove_confirm(callback: CallbackQuery):
     if await _deny(callback):
         return
-    internal_id = int(callback.data.rsplit(":", 1)[-1])
+    internal_id = _parse_callback_id(callback)
+    if internal_id is None:
+        await callback.answer("شناسه نامعتبر است.", show_alert=True)
+        return
     service = await get_service(internal_id)
     if not service:
         await callback.answer("سرویس پیدا نشد.", show_alert=True)
@@ -401,13 +448,16 @@ async def rebecca_service_remove_confirm(callback: CallbackQuery):
 async def rebecca_service_remove(callback: CallbackQuery):
     if await _deny(callback):
         return
-    internal_id = int(callback.data.rsplit(":", 1)[-1])
+    internal_id = _parse_callback_id(callback)
+    if internal_id is None:
+        await callback.answer("شناسه نامعتبر است.", show_alert=True)
+        return
     ok = await remove_service(internal_id)
-    await callback.answer("حذف شد." if ok else "سرویس پیدا نشد.")
-    await _render_service_menu(callback)
+    await _render_service_menu(callback.message)
+    await callback.answer("حذف شد." if ok else "سرویس قبلاً حذف شده بود.")
 
 
-def _plan_selector_keyboard(services, selected: set[int], *, allow_manual: bool = True) -> InlineKeyboardMarkup:
+def _plan_selector_keyboard(services, selected: set[int]) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for item in services:
         mark = "✅" if item.id in selected else "⬜"
@@ -415,43 +465,38 @@ def _plan_selector_keyboard(services, selected: set[int], *, allow_manual: bool 
             InlineKeyboardButton(text=f"{mark} {item.display_name}", callback_data=f"rcp:t:{item.id}")
         ])
     rows.append([InlineKeyboardButton(text="✅ تایید انتخاب", callback_data="rcp:done")])
-    if allow_manual:
-        rows.append([InlineKeyboardButton(text="🧰 ورود دستی Service ID", callback_data="rcp:manual")])
+    rows.append([InlineKeyboardButton(text="🧰 ورود دستی Service ID", callback_data="rcp:manual")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-async def _render_plan_selector(callback: CallbackQuery, state: FSMContext) -> None:
+async def _render_plan_selector(message: Message, state: FSMContext) -> bool:
     services = await list_services(enabled_only=True)
     data = await state.get_data()
     selected = {int(item) for item in data.get("rebecca_catalog_selected", [])}
     if not services:
-        mode = data.get("rebecca_catalog_mode")
-        if mode == "edit":
+        if data.get("rebecca_catalog_mode") == "edit":
             await state.set_state(EditPlanServicesStates.waiting_for_services)
         else:
             await state.set_state(CreatePlanStates.waiting_for_rebecca_services)
-        await callback.message.edit_text(
+        await message.edit_text(
             "هیچ سرویس فعالی در کاتالوگ Rebecca ثبت نشده است.\n"
             "فعلاً Service IDهای عددی را با کاما وارد کن یا ابتدا از بخش «سرویس‌های Rebecca» سرویس اضافه کن."
         )
-        await callback.answer()
-        return
-    await callback.message.edit_text(
+        return False
+    await message.edit_text(
         "🔌 <b>سرویس‌های این پلن را انتخاب کنید</b>\n\n"
         "می‌توانی چند سرویس را انتخاب کنی و در پایان «تایید انتخاب» را بزنی.",
         reply_markup=_plan_selector_keyboard(services, selected),
     )
-    await callback.answer()
+    return True
 
 
-# Replace the legacy raw-ID prompt only for Rebecca. Marzban callbacks continue to
-# fall through to the original sudo router because RebeccaOnly will not match.
 @rebecca_services_router.callback_query(F.data.startswith("sales_renew_mode_"), RebeccaOnly())
 async def rebecca_plan_create_services(callback: CallbackQuery, state: FSMContext):
     if await _deny(callback):
         return
-    mode = callback.data.split("_")[-1]
-    if mode not in {"incremental", "reset"}:
+    mode = (callback.data or "").split("_")[-1]
+    if mode not in {"incremental", "full"}:
         await callback.answer("حالت تمدید نامعتبر است.", show_alert=True)
         return
     await state.update_data(
@@ -460,8 +505,9 @@ async def rebecca_plan_create_services(callback: CallbackQuery, state: FSMContex
         rebecca_catalog_selected=[],
         rebecca_catalog_legacy_ids=[],
     )
-    await state.set_state(CreatePlanStates.waiting_for_rebecca_services)
-    await _render_plan_selector(callback, state)
+    await state.set_state(RebeccaPlanSelectStates.choosing)
+    await _render_plan_selector(callback.message, state)
+    await callback.answer()
 
 
 @rebecca_services_router.callback_query(F.data.startswith("sales_edit_service_"), RebeccaOnly())
@@ -469,7 +515,7 @@ async def rebecca_plan_edit_services(callback: CallbackQuery, state: FSMContext)
     if await _deny(callback):
         return
     try:
-        plan_id = int(callback.data.rsplit("_", 1)[-1])
+        plan_id = int((callback.data or "").rsplit("_", 1)[-1])
     except ValueError:
         await callback.answer("پلن نامعتبر است.", show_alert=True)
         return
@@ -478,40 +524,49 @@ async def rebecca_plan_edit_services(callback: CallbackQuery, state: FSMContext)
         await callback.answer("پلن پیدا نشد.", show_alert=True)
         return
     try:
-        existing_ids = set(parse_service_ids(getattr(plan, "rebecca_service_ids", "") or ""))
+        existing_ids = list(parse_service_ids(getattr(plan, "rebecca_service_ids", "") or ""))
     except ValueError:
-        existing_ids = set()
+        existing_ids = []
     active = await list_services(enabled_only=True)
     selected = {item.id for item in active if item.rebecca_service_id in existing_ids}
     selected_provider_ids = {item.rebecca_service_id for item in active if item.id in selected}
-    legacy_ids = sorted(existing_ids - selected_provider_ids)
+    legacy_ids = [service_id for service_id in existing_ids if service_id not in selected_provider_ids]
+    await state.clear()
     await state.update_data(
         edit_service_plan_id=plan_id,
         rebecca_catalog_mode="edit",
         rebecca_catalog_selected=sorted(selected),
         rebecca_catalog_legacy_ids=legacy_ids,
     )
-    await state.set_state(EditPlanServicesStates.waiting_for_services)
-    await _render_plan_selector(callback, state)
+    await state.set_state(RebeccaPlanSelectStates.choosing)
+    await _render_plan_selector(callback.message, state)
+    await callback.answer()
 
 
 @rebecca_services_router.callback_query(F.data.startswith("rcp:t:"), RebeccaOnly())
 async def rebecca_plan_toggle_service(callback: CallbackQuery, state: FSMContext):
     if await _deny(callback):
         return
-    internal_id = int(callback.data.rsplit(":", 1)[-1])
+    data = await state.get_data()
+    if data.get("rebecca_catalog_mode") not in {"create", "edit"}:
+        await callback.answer("این انتخاب منقضی شده است.", show_alert=True)
+        return
+    internal_id = _parse_callback_id(callback)
+    if internal_id is None:
+        await callback.answer("شناسه نامعتبر است.", show_alert=True)
+        return
     service = await get_service(internal_id)
     if not service or not service.is_enabled:
         await callback.answer("این سرویس دیگر فعال نیست.", show_alert=True)
         return
-    data = await state.get_data()
     selected = {int(item) for item in data.get("rebecca_catalog_selected", [])}
     if internal_id in selected:
         selected.remove(internal_id)
     else:
         selected.add(internal_id)
     await state.update_data(rebecca_catalog_selected=sorted(selected))
-    await _render_plan_selector(callback, state)
+    await _render_plan_selector(callback.message, state)
+    await callback.answer()
 
 
 @rebecca_services_router.callback_query(F.data == "rcp:manual", RebeccaOnly())
@@ -519,14 +574,36 @@ async def rebecca_plan_manual_fallback(callback: CallbackQuery, state: FSMContex
     if await _deny(callback):
         return
     data = await state.get_data()
-    if data.get("rebecca_catalog_mode") == "edit":
+    mode = data.get("rebecca_catalog_mode")
+    if mode == "edit":
         await state.set_state(EditPlanServicesStates.waiting_for_services)
-    else:
+    elif mode == "create":
         await state.set_state(CreatePlanStates.waiting_for_rebecca_services)
+    else:
+        await callback.answer("این انتخاب منقضی شده است.", show_alert=True)
+        return
     await callback.message.edit_text(
         "🧰 حالت دستی/اضطراری\n\nService IDهای عددی Rebecca را با کاما وارد کن (مثال: 1,2)."
     )
     await callback.answer()
+
+
+async def _save_rebecca_plan_from_state(callback: CallbackQuery, state: FSMContext, canonical: str) -> None:
+    data = await state.get_data()
+    plan = PlanModel(
+        name=data.get("name"),
+        plan_type=data.get("plan_type", "volume"),
+        traffic_limit_bytes=data.get("traffic_limit_bytes"),
+        time_limit_seconds=data.get("time_limit_seconds"),
+        max_users=data.get("max_users"),
+        price=data.get("price", 0),
+        is_active=True,
+        allow_incremental_renewal=data.get("allow_incremental_renewal", True),
+        rebecca_service_ids=canonical,
+    )
+    ok = await db.add_plan(plan)
+    await state.clear()
+    await callback.message.edit_text("✅ پلن با موفقیت اضافه شد." if ok else "❌ خطا در افزودن پلن.")
 
 
 @rebecca_services_router.callback_query(F.data == "rcp:done", RebeccaOnly())
@@ -534,6 +611,10 @@ async def rebecca_plan_catalog_done(callback: CallbackQuery, state: FSMContext):
     if await _deny(callback):
         return
     data = await state.get_data()
+    mode = data.get("rebecca_catalog_mode")
+    if mode not in {"create", "edit"}:
+        await callback.answer("این انتخاب منقضی شده است.", show_alert=True)
+        return
     selected_catalog = [int(item) for item in data.get("rebecca_catalog_selected", [])]
     legacy_ids = [int(item) for item in data.get("rebecca_catalog_legacy_ids", [])]
     if not selected_catalog and not legacy_ids:
@@ -544,13 +625,14 @@ async def rebecca_plan_catalog_done(callback: CallbackQuery, state: FSMContext):
     except ValueError as exc:
         await callback.answer(str(exc), show_alert=True)
         return
+
     final_ids: list[int] = []
     for service_id in [*legacy_ids, *selected_provider]:
         if service_id not in final_ids:
             final_ids.append(service_id)
     canonical = ",".join(str(item) for item in final_ids)
 
-    if data.get("rebecca_catalog_mode") == "edit":
+    if mode == "edit":
         plan_id = int(data["edit_service_plan_id"])
         ok = await db.update_plan(plan_id, rebecca_service_ids=canonical)
         await state.clear()
@@ -560,5 +642,5 @@ async def rebecca_plan_catalog_done(callback: CallbackQuery, state: FSMContext):
         await callback.answer()
         return
 
-    await state.update_data(rebecca_service_ids=canonical)
-    await _save_sales_plan(callback, state)
+    await _save_rebecca_plan_from_state(callback, state, canonical)
+    await callback.answer()
