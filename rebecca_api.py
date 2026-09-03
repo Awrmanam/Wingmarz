@@ -112,6 +112,18 @@ class RebeccaAPI:
                 return admin
         return None
 
+    async def discover_services_for_user(self, username: str) -> Any:
+        """Read one Rebecca user for local service discovery.
+
+        This method is deliberately read-only. It owns the provider-specific
+        endpoint and URL encoding while the catalog layer validates the response
+        schema and translates it into provider-independent service records.
+        """
+        requested = str(username or "").strip()
+        if not requested:
+            raise RebeccaAPIError("Rebecca discovery username is required")
+        return await self._request("GET", f"/api/user/{quote(requested, safe='')}")
+
     async def get_admin_usage(self, username: str) -> int:
         """Return Rebecca's effective usage, whose official response is a JSON integer."""
         data = await self._request("GET", f"/api/admin/usage/{quote(username, safe='')}")
