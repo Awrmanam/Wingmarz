@@ -15,6 +15,7 @@ import config
 from database import db
 from marzban_api import marzban_api
 from handlers.sudo_handlers import sudo_router
+from handlers.rebecca_services import rebecca_services_router
 from handlers.admin_handlers import admin_router
 from handlers.public_handlers import public_router
 from scheduler import init_scheduler
@@ -71,8 +72,11 @@ class MarzbanAdminBot:
         self.dp.callback_query.outer_middleware(ForcedJoinMiddleware(self.bot))
         
         # Setup routers - IMPORTANT: Register state-specific routers FIRST
-        # This ensures FSM state handlers are processed before general handlers
+        # Rebecca-specific interceptors must be before the legacy sudo router.
         logger.info("=== ROUTER REGISTRATION ORDER (CRITICAL FOR FSM) ===")
+        logger.info("Registering rebecca_services_router...")
+        self.dp.include_router(rebecca_services_router)
+        logger.info("✅ rebecca_services_router registered successfully")
         logger.info("Registering sudo_router (FSM-aware)...")
         self.dp.include_router(sudo_router)
         logger.info("✅ sudo_router registered successfully")
@@ -91,7 +95,7 @@ class MarzbanAdminBot:
         # Register help handler with proper filters to avoid FSM interference
         # Help and general handlers are optional; routers handle most routes.
         logger.info("=== ROUTER REGISTRATION COMPLETE ===")
-        logger.info("📋 Handler order: FSM routers → Command handlers → StateFilter(None) handlers")
+        logger.info("📋 Handler order: Rebecca → FSM routers → Command handlers → StateFilter(None) handlers")
         
         # Initialize scheduler
         self.scheduler = init_scheduler(self.bot)
