@@ -10,6 +10,7 @@ from .premium_ui_admin import premium_ui_admin_router
 from .operations import operations_router
 from . import dashboard_label_fix as _dashboard_label_fix  # presentation-only menu label fallback
 from . import operations_runtime as _operations_runtime  # checkout adapter registration
+import premium_template_runtime as _premium_template_runtime  # preserve {emoji:key} through .format()
 from .operations_public import operations_public_router
 from .control_center import control_center_router
 from .control_center_start import control_center_start_router
