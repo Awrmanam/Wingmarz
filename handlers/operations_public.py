@@ -1,12 +1,11 @@
-from aiogram import F, Router
+from aiogram import Router
 from aiogram.filters import CommandStart, Filter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
+from aiogram.types import InlineKeyboardMarkup, Message
 
 import config
 from database import db
 from style_engine import style_engine
-from .operations import _send_trial_result
 
 
 operations_public_router = Router(name="operations_public")
@@ -26,23 +25,22 @@ async def _public_keyboard() -> InlineKeyboardMarkup:
     rows = [list(row) for row in base.inline_keyboard]
     rows.insert(1, [
         await style_engine.styled_button(
-            "دریافت کانفیگ تست",
+            "دریافت تست پنل",
+            icon_key="panel",
+            fallback="🧩",
+            callback_data="ops:paneltrial:request",
+        ),
+        await style_engine.styled_button(
+            "تست رایگان کانفیگ",
             icon_key="test",
             fallback="🧪",
-            callback_data="ops:trial:request",
-        )
+            callback_data="ops:configtrial:request",
+        ),
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 @operations_public_router.message(CommandStart(), PublicOnly())
-async def public_start_with_trial(message: Message, state: FSMContext):
+async def public_start_with_trials(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("به ربات خوش آمدید!", reply_markup=await _public_keyboard())
-
-
-@operations_public_router.callback_query(F.data == "ops:trial:request")
-async def public_trial_button(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    await _send_trial_result(callback.message, callback.from_user.id)
-    await callback.answer()
