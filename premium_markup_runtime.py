@@ -9,9 +9,9 @@ from style_engine import style_engine
 async def style_reply_markup(markup):
     """Catalog and style callback buttons from any handler, including legacy ones.
 
-    The callback_data itself is never changed. On aiogram versions without
-    Telegram's custom button-icon field, the selected Premium Emoji's Unicode
-    fallback is prefixed to the visible button text.
+    Presentation identity is callback_data + the original visible text, so two
+    buttons may share one callback while keeping independent text/emoji choices.
+    callback_data itself is never changed.
     """
     if not isinstance(markup, InlineKeyboardMarkup):
         return markup
@@ -28,7 +28,7 @@ async def style_reply_markup(markup):
 
             original_text = str(getattr(button, "text", ""))
             await premium_ui_service.catalog_button(callback_data, original_text, None, None)
-            override = premium_ui_service._button_overrides.get(callback_data)
+            override = premium_ui_service.override_for(callback_data, original_text)
             if not override:
                 new_row.append(button)
                 continue
