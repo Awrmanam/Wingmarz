@@ -107,25 +107,43 @@ class BoldFixBot(Bot):
         return await super().edit_message_media(media, chat_id, message_id, inline_message_id, *args, **kwargs)
 
     async def __call__(self, method, *args: Any, **kwargs: Any):
-        """
-        Intercept all API method calls to ensure Markdown-like bold/italic/code
-        are converted to Telegram-safe HTML even when using Message.* helpers
-        that invoke the Bot via __call__ with a Method object.
-        Only converts when the payload appears to contain markdown markers to
-        avoid re-escaping already-HTML texts.
+        """Normalize outgoing formatting and resolve ``{emoji:key}`` placeholders.
+
+        Message.* helpers reach the Bot through this method, so Premium Emoji
+        placeholders work consistently for normal messages, edits and captions.
         """
         try:
             text = getattr(method, "text", None)
             if (isinstance(text, str) and not _is_explicit_html(getattr(method, "parse_mode", None))
                     and any(marker in text for marker in ("**", "__", "`", "*", "_"))):
-                setattr(method, "text", convert_markdown_bold_to_html(text))
+                text = convert_markdown_bold_to_html(text)
+            if isinstance(text, str) and "{emoji:" in text:
+                from premium_ui_service import premium_ui_service
+                text = await premium_ui_service.render_placeholders(text)
+            if isinstance(text, str):
+                setattr(method, "text", text)
         except Exception:
             pass
         try:
             caption = getattr(method, "caption", None)
             if (isinstance(caption, str) and not _is_explicit_html(getattr(method, "parse_mode", None))
                     and any(marker in caption for marker in ("**", "__", "`", "*", "_"))):
-                setattr(method, "caption", convert_markdown_bold_to_html(caption))
+                caption = convert_markdown_bold_to_html(caption)
+            if isinstance(caption, str) and "{emoji:" in caption:
+                from premium_ui_service import premium_ui_service
+                caption = await premium_ui_service.render_placeholders(caption)
+            if isinstance(caption, str):
+                setattr(method, "caption", caption)
+        except Exception:
+            pass
+        try:
+            media = getattr(method, "media", None)
+            if isinstance(media, (list, tuple)):
+                from premium_ui_service import premium_ui_service
+                for item in media:
+                    cap = getattr(item, "caption", None)
+                    if isinstance(cap, str) and "{emoji:" in cap:
+                        setattr(item, "caption", await premium_ui_service.render_placeholders(cap))
         except Exception:
             pass
         return await super().__call__(method, *args, **kwargs)
