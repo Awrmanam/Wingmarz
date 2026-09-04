@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import re
 
 import aiosqlite
@@ -52,6 +53,25 @@ async def _btn(text: str, callback_data: str, *, icon_key: str | None = None, fa
     )
 
 
+def _canonical_label(text: str) -> str:
+    """Collapse legacy labels that only differ by a leading Unicode emoji.
+
+    Examples:
+      "🧩 مرکز پنل‌ها" -> "مرکز پنل‌ها"
+      "مرکز پنل‌ها"   -> "مرکز پنل‌ها"
+
+    Persian/Latin letters and digits are word characters in Python's Unicode
+    regex engine, so stripping leading non-word characters safely removes the
+    old fallback emoji without changing the actual label.
+    """
+    value = str(text or "").strip()
+    return re.sub(r"^[^\w@]+", "", value, flags=re.UNICODE).strip() or value
+
+
+def _logical_key(item: ButtonCatalogItem) -> tuple[str, str]:
+    return item.callback_data, _canonical_label(item.default_text)
+
+
 def _is_dynamic_noise(item: ButtonCatalogItem) -> bool:
     callback = item.callback_data
     text = (item.display_text or item.default_text or "").strip()
@@ -60,7 +80,7 @@ def _is_dynamic_noise(item: ButtonCatalogItem) -> bool:
 
     # Hide entity rows such as "👤 356770827" and page counters from the visual
     # editor. Their labels are data, not UI copy, and must not be rewritten.
-    cleaned = re.sub(r"^[^\w@]+", "", text, flags=re.UNICODE).strip()
+    cleaned = _canonical_label(text)
     if re.fullmatch(r"\d{5,}", cleaned):
         return True
     if re.fullmatch(r"\d+\s*/\s*\d+", cleaned):
@@ -78,6 +98,57 @@ def _sort_key(item: ButtonCatalogItem) -> tuple[int, int, int]:
         return (0, _TOP_LEVEL_RANK[item.callback_data], item.id)
     # Newer discovered static buttons after the curated main navigation.
     return (1, 0, -item.id)
+
+
+def _representative(group: list[ButtonCatalogItem]) -> ButtonCatalogItem:
+    """Choose the cleanest row for display in the editor."""
+    return min(
+        group,
+        key=lambda item: (
+            0 if item.default_text.strip() == _canonical_label(item.default_text) else 1,
+            len(item.default_text),
+            item.id,
+        ),
+    )
+
+
+async def _coalesce_logical_duplicates(items: list[ButtonCatalogItem]) -> list[ButtonCatalogItem]:
+    """Show one editor row per logical button and mirror its override to variants.
+
+    Old Wingmarz menus sometimes embed a Unicode emoji in the button text while
+    the newer dashboard supplies the same emoji separately as a fallback. Both
+    versions therefore entered the catalog as separate rows. They are the same
+    visual control, so the editor should expose one row and a selected text/
+    Premium Emoji override must apply to every variant used by runtime menus.
+    """
+    groups: dict[tuple[str, str], list[ButtonCatalogItem]] = {}
+    for item in items:
+        groups.setdefault(_logical_key(item), []).append(item)
+
+    result: list[ButtonCatalogItem] = []
+    for group in groups.values():
+        rep = _representative(group)
+
+        # Preserve an override the admin already selected on either duplicate.
+        # Prefer a row with a Premium Emoji, then any custom text.
+        source = next((item for item in group if item.emoji_key), None)
+        if source is None:
+            source = next((item for item in group if item.display_text), None)
+
+        display_text = source.display_text if source else rep.display_text
+        emoji_key = source.emoji_key if source else rep.emoji_key
+
+        if display_text is not None or emoji_key is not None:
+            # Mirror the same presentation to every legacy/new variant so the
+            # /start menu receives the override regardless of which path built it.
+            for variant in group:
+                if variant.display_text != display_text or variant.emoji_key != emoji_key:
+                    await premium_ui_service._save_button_override(variant, display_text, emoji_key)
+            rep = replace(rep, display_text=display_text, emoji_key=emoji_key)
+
+        result.append(rep)
+
+    return result
 
 
 async def _load_clean_buttons() -> list[ButtonCatalogItem]:
@@ -102,6 +173,7 @@ async def _load_clean_buttons() -> list[ButtonCatalogItem]:
 
     items = [premium_ui_service._row_to_button(row) for row in rows]
     items = [item for item in items if not _is_dynamic_noise(item)]
+    items = await _coalesce_logical_duplicates(items)
     return sorted(items, key=_sort_key)
 
 
@@ -124,7 +196,7 @@ async def _render(message: Message, page: int = 0) -> None:
         lines.append("هنوز دکمه قابل‌ویرایشی ثبت نشده؛ یک‌بار منوی موردنظر را باز کنید و برگردید.")
 
     for item in visible:
-        label = item.display_text or item.default_text
+        label = item.display_text or _canonical_label(item.default_text)
         suffix = f" · ✨ {item.emoji_key}" if item.emoji_key else ""
         rows.append([
             await _btn(f"{label}{suffix}"[:55], f"pui:b:{item.id}", fallback="🔘")
