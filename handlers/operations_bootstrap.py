@@ -1,6 +1,7 @@
 from aiogram import Router
 
 from operations_service import operations_service
+from premium_ui_service import premium_ui_service
 from trial_experience_service import trial_experience_service
 
 
@@ -8,9 +9,10 @@ operations_bootstrap_router = Router(name="operations_bootstrap")
 
 
 async def bootstrap_operations() -> None:
-    """Initialize operational tables and restore DB-backed SUDO admins."""
+    """Initialize operational tables and restore DB-backed runtime settings."""
     await operations_service.ensure_schema()
     await trial_experience_service.ensure_schema()
+    await premium_ui_service.init()
     await operations_service.sync_runtime_admins()
 
 
