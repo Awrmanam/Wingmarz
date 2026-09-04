@@ -6,6 +6,7 @@
 from .style_admin import style_admin_router
 from .operations_bootstrap import operations_bootstrap_router
 from .trial_experience import trial_experience_router
+from .premium_ui_clean_buttons import premium_ui_clean_buttons_router
 from .premium_ui_admin import premium_ui_admin_router
 from .operations import operations_router
 from . import dashboard_label_fix as _dashboard_label_fix  # presentation-only menu label fallback
@@ -18,7 +19,9 @@ from .control_center_start import control_center_start_router
 
 style_admin_router.include_router(operations_bootstrap_router)
 style_admin_router.include_router(trial_experience_router)
-# Intercept cc:buttons / cc:texts with the richer editors before operations.py.
+# Clean button catalog intercepts cc:buttons before the detailed editor handlers.
+style_admin_router.include_router(premium_ui_clean_buttons_router)
+# Intercept cc:texts and button detail actions with the richer editors before operations.py.
 style_admin_router.include_router(premium_ui_admin_router)
 style_admin_router.include_router(operations_router)
 style_admin_router.include_router(operations_public_router)
