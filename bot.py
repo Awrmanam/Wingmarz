@@ -14,11 +14,13 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import config
 from database import db
 from marzban_api import marzban_api
+from handlers.style_admin import style_admin_router
 from handlers.sudo_handlers import sudo_router
 from handlers.rebecca_services import rebecca_services_router
 from handlers.admin_handlers import admin_router
 from handlers.public_handlers import public_router
 from scheduler import init_scheduler
+from style_engine import style_engine
 from utils.bold_fix_bot import BoldFixBot
 
 
@@ -51,9 +53,10 @@ class MarzbanAdminBot:
         # Initialize database
         try:
             await db.init_db()
-            logger.info("Database initialized successfully")
+            await style_engine.init()
+            logger.info("Database and style engine initialized successfully")
         except Exception as e:
-            logger.error(f"Failed to initialize database: {e}")
+            logger.error(f"Failed to initialize database/style engine: {e}")
             raise
         
         # Test Marzban API connection
@@ -72,8 +75,11 @@ class MarzbanAdminBot:
         self.dp.callback_query.outer_middleware(ForcedJoinMiddleware(self.bot))
         
         # Setup routers - IMPORTANT: Register state-specific routers FIRST
-        # Rebecca-specific interceptors must be before the legacy sudo router.
+        # Style and Rebecca-specific interceptors must be before the legacy sudo router.
         logger.info("=== ROUTER REGISTRATION ORDER (CRITICAL FOR FSM) ===")
+        logger.info("Registering style_admin_router...")
+        self.dp.include_router(style_admin_router)
+        logger.info("✅ style_admin_router registered successfully")
         logger.info("Registering rebecca_services_router...")
         self.dp.include_router(rebecca_services_router)
         logger.info("✅ rebecca_services_router registered successfully")
@@ -95,7 +101,7 @@ class MarzbanAdminBot:
         # Register help handler with proper filters to avoid FSM interference
         # Help and general handlers are optional; routers handle most routes.
         logger.info("=== ROUTER REGISTRATION COMPLETE ===")
-        logger.info("📋 Handler order: Rebecca → FSM routers → Command handlers → StateFilter(None) handlers")
+        logger.info("📋 Handler order: Style → Rebecca → FSM routers → Command handlers → StateFilter(None) handlers")
         
         # Initialize scheduler
         self.scheduler = init_scheduler(self.bot)
@@ -131,7 +137,8 @@ class MarzbanAdminBot:
                 "• /remove_admin - غیرفعالسازی پنل\n"
                 "• /edit_panel - ویرایش محدودیت‌های پنل\n"
                 "• /admin_status - وضعیت تفصیلی ادمین‌ها\n"
-                "• /activate_admin - فعالسازی ادمین غیرفعال\n\n"
+                "• /activate_admin - فعالسازی ادمین غیرفعال\n"
+                "• /style - ایموجی و استایل\n\n"
                 "📋 یا از دکمه‌های شیشه‌ای استفاده کنید:"
             )
             from handlers.sudo_handlers import get_sudo_keyboard
@@ -210,7 +217,8 @@ class MarzbanAdminBot:
                 "• /remove_admin - غیرفعالسازی پنل\n"
                 "• /edit_panel - ویرایش محدودیت‌های پنل\n"
                 "• /admin_status - وضعیت ادمین‌ها\n"
-                "• /activate_admin - فعالسازی ادمین غیرفعال\n\n"
+                "• /activate_admin - فعالسازی ادمین غیرفعال\n"
+                "• /style - ایموجی و استایل\n\n"
                 "برای دسترسی به منوی اصلی /start را بزنید."
             )
             logger.info(f"Sudo admin help message sent to user {user_id}")
@@ -368,7 +376,8 @@ class ForcedJoinMiddleware(BaseMiddleware):
                 "• /remove_admin - غیرفعالسازی پنل\n"
                 "• /edit_panel - ویرایش محدودیت‌های پنل\n"
                 "• /admin_status - وضعیت تفصیلی ادمین‌ها\n"
-                "• /activate_admin - فعالسازی ادمین غیرفعال\n\n"
+                "• /activate_admin - فعالسازی ادمین غیرفعال\n"
+                "• /style - ایموجی و استایل\n\n"
                 "📋 یا از دکمه‌های شیشه‌ای استفاده کنید:"
             )
             from handlers.sudo_handlers import get_sudo_keyboard
@@ -464,7 +473,8 @@ class ForcedJoinMiddleware(BaseMiddleware):
                 "• /remove_admin - غیرفعالسازی پنل\n"
                 "• /edit_panel - ویرایش محدودیت‌های پنل\n"
                 "• /admin_status - وضعیت ادمین‌ها\n"
-                "• /activate_admin - فعالسازی ادمین غیرفعال\n\n"
+                "• /activate_admin - فعالسازی ادمین غیرفعال\n"
+                "• /style - ایموجی و استایل\n\n"
                 "برای دسترسی به منوی اصلی /start را بزنید."
             )
             logger.info(f"Sudo admin help message sent to user {user_id}")
