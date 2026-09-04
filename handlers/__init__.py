@@ -1,11 +1,18 @@
 """Handlers package composition."""
 
-# The bot already registers style_admin_router before the legacy sudo router.
-# Attach the SUDO start route and control-center router as children so they are
-# handled before legacy sudo callbacks without changing business handlers.
+# The bot registers style_admin_router before legacy sudo/admin/public routers.
+# Operational children intentionally upgrade a small set of callbacks while
+# preserving the legacy handlers as fallbacks.
 from .style_admin import style_admin_router
+from .operations_bootstrap import operations_bootstrap_router
+from .operations import operations_router
+from . import operations_runtime as _operations_runtime  # checkout adapter registration
+from .operations_public import operations_public_router
 from .control_center import control_center_router
 from .control_center_start import control_center_start_router
 
+style_admin_router.include_router(operations_bootstrap_router)
+style_admin_router.include_router(operations_router)
+style_admin_router.include_router(operations_public_router)
 style_admin_router.include_router(control_center_start_router)
 style_admin_router.include_router(control_center_router)
