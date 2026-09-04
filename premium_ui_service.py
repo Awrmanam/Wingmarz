@@ -42,16 +42,18 @@ class MessageTemplateItem:
 class PremiumUIService:
     """Runtime presentation management for buttons and system text templates.
 
-    This service never rewrites callback_data or business IDs. It only changes
-    visible button labels/icons and outgoing text rendering.
+    A button's presentation identity is ``(callback_data, default_text)``. This
+    matters because two visible buttons may intentionally share one callback
+    while having different labels (for example two dashboard entry points).
+    callback_data itself is never changed.
     """
 
     def __init__(self, db_path: str | None = None):
         self._explicit_db_path = db_path
         self._patched = False
         self._original_styled_button = None
-        self._catalog_seen: set[str] = set()
-        self._button_overrides: dict[str, tuple[str | None, str | None]] = {}
+        self._catalog_seen: set[tuple[str, str]] = set()
+        self._button_overrides: dict[tuple[str, str], tuple[str | None, str | None]] = {}
         self._base_messages = dict(config.MESSAGES)
 
     @property
@@ -64,15 +66,16 @@ class PremiumUIService:
                 """
                 CREATE TABLE IF NOT EXISTS styled_button_catalog (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    callback_data TEXT NOT NULL UNIQUE,
+                    callback_data TEXT NOT NULL,
                     default_text TEXT NOT NULL,
                     default_icon_key TEXT,
                     default_fallback TEXT,
-                    last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(callback_data, default_text)
                 );
 
                 CREATE TABLE IF NOT EXISTS styled_button_overrides (
-                    callback_data TEXT PRIMARY KEY,
+                    button_id INTEGER PRIMARY KEY,
                     display_text TEXT,
                     emoji_key TEXT,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -119,20 +122,23 @@ class PremiumUIService:
         await self.ensure_schema()
         async with aiosqlite.connect(self.db_path) as conn:
             async with conn.execute(
-                "SELECT callback_data, display_text, emoji_key FROM styled_button_overrides"
+                """
+                SELECT c.callback_data,c.default_text,o.display_text,o.emoji_key
+                FROM styled_button_overrides o
+                JOIN styled_button_catalog c ON c.id=o.button_id
+                """
             ) as cur:
                 rows = await cur.fetchall()
         self._button_overrides = {
-            str(callback): (
+            (str(callback), str(default_text)): (
                 str(display) if display is not None else None,
                 str(emoji) if emoji is not None else None,
             )
-            for callback, display, emoji in rows
+            for callback, default_text, display, emoji in rows
         }
 
     async def apply_message_overrides(self) -> None:
         await self.ensure_schema()
-        # Restore defaults first so deleted overrides also take effect after reload.
         for key, value in self._base_messages.items():
             config.MESSAGES[key] = value
         async with aiosqlite.connect(self.db_path) as conn:
@@ -151,9 +157,16 @@ class PremiumUIService:
         default_fallback: str | None,
     ) -> None:
         callback_data = str(callback_data or "")
-        if not callback_data or len(callback_data) > 512 or callback_data in self._catalog_seen:
+        default_text = str(default_text or "")
+        identity = (callback_data, default_text)
+        if (
+            not callback_data
+            or len(callback_data) > 512
+            or not default_text
+            or identity in self._catalog_seen
+        ):
             return
-        self._catalog_seen.add(callback_data)
+        self._catalog_seen.add(identity)
         await self.ensure_schema()
         async with aiosqlite.connect(self.db_path) as conn:
             await conn.execute(
@@ -161,15 +174,17 @@ class PremiumUIService:
                 INSERT INTO styled_button_catalog(
                     callback_data, default_text, default_icon_key, default_fallback, last_seen_at
                 ) VALUES(?,?,?,?,CURRENT_TIMESTAMP)
-                ON CONFLICT(callback_data) DO UPDATE SET
-                    default_text=excluded.default_text,
+                ON CONFLICT(callback_data,default_text) DO UPDATE SET
                     default_icon_key=COALESCE(excluded.default_icon_key, styled_button_catalog.default_icon_key),
                     default_fallback=COALESCE(excluded.default_fallback, styled_button_catalog.default_fallback),
                     last_seen_at=CURRENT_TIMESTAMP
                 """,
-                (callback_data, str(default_text), default_icon_key, default_fallback),
+                (callback_data, default_text, default_icon_key, default_fallback),
             )
             await conn.commit()
+
+    def override_for(self, callback_data: str, default_text: str) -> tuple[str | None, str | None] | None:
+        return self._button_overrides.get((str(callback_data), str(default_text)))
 
     def patch_styled_buttons(self) -> None:
         if self._patched:
@@ -187,19 +202,19 @@ class PremiumUIService:
             **button_kwargs: Any,
         ):
             callback_data = button_kwargs.get("callback_data")
-            rendered_text = str(text)
+            default_text = str(text)
+            rendered_text = default_text
             rendered_icon = icon_key
             rendered_fallback = fallback
             if isinstance(callback_data, str) and callback_data:
-                await service.catalog_button(callback_data, rendered_text, icon_key, fallback)
-                override = service._button_overrides.get(callback_data)
+                await service.catalog_button(callback_data, default_text, icon_key, fallback)
+                override = service.override_for(callback_data, default_text)
                 if override:
                     display_text, emoji_key = override
                     if display_text:
                         rendered_text = display_text
                     if emoji_key:
                         rendered_icon = emoji_key
-                        # Let the selected emoji's own Unicode fallback be used.
                         rendered_fallback = None
             return await original(
                 rendered_text,
@@ -225,44 +240,18 @@ class PremiumUIService:
                 SELECT c.id,c.callback_data,c.default_text,c.default_icon_key,c.default_fallback,
                        o.display_text,o.emoji_key
                 FROM styled_button_catalog c
-                LEFT JOIN styled_button_overrides o ON o.callback_data=c.callback_data
+                LEFT JOIN styled_button_overrides o ON o.button_id=c.id
                 ORDER BY c.last_seen_at DESC,c.id DESC
                 LIMIT ? OFFSET ?
                 """,
                 (page_size, page * page_size),
             ) as cur:
                 rows = await cur.fetchall()
-        items = [
-            ButtonCatalogItem(
-                id=int(row["id"]),
-                callback_data=str(row["callback_data"]),
-                default_text=str(row["default_text"]),
-                default_icon_key=str(row["default_icon_key"]) if row["default_icon_key"] else None,
-                default_fallback=str(row["default_fallback"]) if row["default_fallback"] else None,
-                display_text=str(row["display_text"]) if row["display_text"] else None,
-                emoji_key=str(row["emoji_key"]) if row["emoji_key"] else None,
-            )
-            for row in rows
-        ]
+        items = [self._row_to_button(row) for row in rows]
         return items, pages
 
-    async def get_button(self, item_id: int) -> ButtonCatalogItem | None:
-        await self.ensure_schema()
-        async with aiosqlite.connect(self.db_path) as conn:
-            conn.row_factory = aiosqlite.Row
-            async with conn.execute(
-                """
-                SELECT c.id,c.callback_data,c.default_text,c.default_icon_key,c.default_fallback,
-                       o.display_text,o.emoji_key
-                FROM styled_button_catalog c
-                LEFT JOIN styled_button_overrides o ON o.callback_data=c.callback_data
-                WHERE c.id=?
-                """,
-                (int(item_id),),
-            ) as cur:
-                row = await cur.fetchone()
-        if not row:
-            return None
+    @staticmethod
+    def _row_to_button(row: aiosqlite.Row) -> ButtonCatalogItem:
         return ButtonCatalogItem(
             id=int(row["id"]),
             callback_data=str(row["callback_data"]),
@@ -273,46 +262,64 @@ class PremiumUIService:
             emoji_key=str(row["emoji_key"]) if row["emoji_key"] else None,
         )
 
+    async def get_button(self, item_id: int) -> ButtonCatalogItem | None:
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            async with conn.execute(
+                """
+                SELECT c.id,c.callback_data,c.default_text,c.default_icon_key,c.default_fallback,
+                       o.display_text,o.emoji_key
+                FROM styled_button_catalog c
+                LEFT JOIN styled_button_overrides o ON o.button_id=c.id
+                WHERE c.id=?
+                """,
+                (int(item_id),),
+            ) as cur:
+                row = await cur.fetchone()
+        return self._row_to_button(row) if row else None
+
     async def _save_button_override(
         self,
-        callback_data: str,
+        item: ButtonCatalogItem,
         display_text: str | None,
         emoji_key: str | None,
     ) -> None:
         await self.ensure_schema()
+        identity = (item.callback_data, item.default_text)
         if display_text is None and emoji_key is None:
             async with aiosqlite.connect(self.db_path) as conn:
-                await conn.execute("DELETE FROM styled_button_overrides WHERE callback_data=?", (callback_data,))
+                await conn.execute("DELETE FROM styled_button_overrides WHERE button_id=?", (item.id,))
                 await conn.commit()
-            self._button_overrides.pop(callback_data, None)
+            self._button_overrides.pop(identity, None)
             return
         async with aiosqlite.connect(self.db_path) as conn:
             await conn.execute(
                 """
-                INSERT INTO styled_button_overrides(callback_data,display_text,emoji_key,updated_at)
+                INSERT INTO styled_button_overrides(button_id,display_text,emoji_key,updated_at)
                 VALUES(?,?,?,CURRENT_TIMESTAMP)
-                ON CONFLICT(callback_data) DO UPDATE SET
+                ON CONFLICT(button_id) DO UPDATE SET
                     display_text=excluded.display_text,
                     emoji_key=excluded.emoji_key,
                     updated_at=CURRENT_TIMESTAMP
                 """,
-                (callback_data, display_text, emoji_key),
+                (item.id, display_text, emoji_key),
             )
             await conn.commit()
-        self._button_overrides[callback_data] = (display_text, emoji_key)
+        self._button_overrides[identity] = (display_text, emoji_key)
 
     async def set_button_text(self, item_id: int, text: str) -> None:
         item = await self.get_button(item_id)
         if not item:
             raise PremiumUIError("دکمه پیدا نشد.")
         text = self.validate_button_text(text)
-        await self._save_button_override(item.callback_data, text, item.emoji_key)
+        await self._save_button_override(item, text, item.emoji_key)
 
     async def reset_button_text(self, item_id: int) -> None:
         item = await self.get_button(item_id)
         if not item:
             raise PremiumUIError("دکمه پیدا نشد.")
-        await self._save_button_override(item.callback_data, None, item.emoji_key)
+        await self._save_button_override(item, None, item.emoji_key)
 
     async def set_button_emoji(self, item_id: int, emoji_key: str) -> None:
         item = await self.get_button(item_id)
@@ -321,13 +328,13 @@ class PremiumUIService:
         emoji_key = style_engine.validate_key(emoji_key)
         if not await style_engine.get_emoji(emoji_key):
             raise PremiumUIError("این Premium Emoji ثبت نشده است.")
-        await self._save_button_override(item.callback_data, item.display_text, emoji_key)
+        await self._save_button_override(item, item.display_text, emoji_key)
 
     async def reset_button_emoji(self, item_id: int) -> None:
         item = await self.get_button(item_id)
         if not item:
             raise PremiumUIError("دکمه پیدا نشد.")
-        await self._save_button_override(item.callback_data, item.display_text, None)
+        await self._save_button_override(item, item.display_text, None)
 
     async def list_messages(self) -> list[MessageTemplateItem]:
         await self.ensure_schema()
@@ -377,9 +384,9 @@ class PremiumUIService:
         config.MESSAGES[key] = self._base_messages[key]
 
     async def render_placeholders(self, text: str) -> str:
-        """Replace {emoji:key} with Telegram premium emoji HTML.
+        """Replace ``{emoji:key}`` with Telegram Premium Emoji HTML.
 
-        Unknown keys remain visible so a typo never silently removes content.
+        Unknown keys stay visible so a typo never silently removes content.
         """
         value = str(text)
         if "{emoji:" not in value:
