@@ -187,6 +187,36 @@ async def style_command(message: Message, state: FSMContext):
     await _send_menu(message)
 
 
+@style_admin_router.callback_query(F.data == "sudo_menu_settings")
+async def styled_sudo_settings(callback: CallbackQuery, state: FSMContext):
+    """Extend the existing SUDO settings screen without changing its callback identity."""
+    if await _deny(callback):
+        return
+    await state.clear()
+    settings_icon = await style_engine.render_emoji("settings", fallback="⚙️")
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [await style_engine.styled_button(
+            "کانال‌های اجباری",
+            fallback="📢",
+            callback_data="forced_join_manage",
+        )],
+        [await style_engine.styled_button(
+            "ایموجی و استایل",
+            icon_key="style",
+            fallback="🎨",
+            callback_data="style:menu",
+        )],
+        [await style_engine.styled_button(
+            "بازگشت",
+            icon_key="back",
+            fallback="⬅️",
+            callback_data="back_to_main",
+        )],
+    ])
+    await callback.message.edit_text(f"{settings_icon} <b>تنظیمات</b>:", reply_markup=kb)
+    await callback.answer()
+
+
 @style_admin_router.callback_query(F.data == "style:menu")
 async def style_menu(callback: CallbackQuery, state: FSMContext):
     if await _deny(callback):
@@ -294,7 +324,7 @@ async def style_emoji_input(message: Message, state: FSMContext):
         await state.set_state(StyleAdminStates.waiting_for_replace_confirmation)
         await message.answer(
             f"⚠️ کلید <code>{escape(key)}</code> قبلاً ثبت شده. جایگزین شود؟",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[ 
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                 await style_engine.styled_button("بله، جایگزین کن", icon_key="confirm", fallback="✅", callback_data="style:replaceok"),
                 await style_engine.styled_button("لغو", icon_key="cancel", fallback="❌", callback_data="style:cancel"),
             ]]),
@@ -424,7 +454,7 @@ async def style_delete(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.message.edit_text(
         f"🗑 حذف <code>{escape(item.key)}</code> از کاتالوگ استایل؟",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[ 
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
             await style_engine.styled_button("حذف", icon_key="confirm", fallback="✅", callback_data=f"style:deleteok:{item.id}"),
             await style_engine.styled_button("لغو", icon_key="cancel", fallback="❌", callback_data=f"style:item:{item.id}"),
         ]]),
