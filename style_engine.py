@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from html import escape
 import re
-from typing import Any, Iterable
+from typing import Any
 
 import aiosqlite
 from aiogram.types import InlineKeyboardButton
@@ -62,7 +62,7 @@ class StyleEngine:
 
     @staticmethod
     def validate_key(key: str) -> str:
-        normalized = (key or "").strip().lower()
+        normalized = (key or "").strip()
         if not _KEY_RE.fullmatch(normalized):
             raise StyleValidationError("کلید باید فقط شامل a-z، 0-9، نقطه، خط تیره یا آندرلاین باشد.")
         return normalized
