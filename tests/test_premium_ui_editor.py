@@ -1,8 +1,10 @@
 import asyncio
 
 import aiosqlite
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 import config
+import premium_markup_runtime
 from premium_template_runtime import PremiumTemplateString
 from premium_ui_service import PremiumUIService
 from style_engine import StyledEmoji, style_engine
@@ -50,6 +52,46 @@ def test_button_catalog_and_text_override_are_persistent(tmp_path):
         assert changed is not None
         assert changed.display_text == "متن جدید"
         assert changed.callback_data == "test:callback"
+
+    asyncio.run(scenario())
+
+
+def test_same_callback_can_have_independent_visible_button_overrides(tmp_path):
+    service = PremiumUIService(str(tmp_path / "pui.db"))
+
+    async def scenario():
+        await service.ensure_schema()
+        await service.catalog_button("sudo_menu_sales", "فروش و تعرفه‌ها", "sales", "🛒")
+        await service.catalog_button("sudo_menu_sales", "مالی و پرداخت", "finance", "💵")
+        items, _ = await service.list_buttons(page_size=20)
+        assert len(items) == 2
+        sales = next(item for item in items if item.default_text == "فروش و تعرفه‌ها")
+        finance = next(item for item in items if item.default_text == "مالی و پرداخت")
+        await service.set_button_text(sales.id, "فروش ویژه")
+        assert service.override_for("sudo_menu_sales", "فروش و تعرفه‌ها") == ("فروش ویژه", None)
+        assert service.override_for("sudo_menu_sales", "مالی و پرداخت") is None
+        finance_after = await service.get_button(finance.id)
+        assert finance_after and finance_after.display_text is None
+
+    asyncio.run(scenario())
+
+
+def test_legacy_inline_keyboard_text_override_preserves_callback(monkeypatch, tmp_path):
+    service = PremiumUIService(str(tmp_path / "pui.db"))
+    monkeypatch.setattr(premium_markup_runtime, "premium_ui_service", service)
+
+    async def scenario():
+        await service.ensure_schema()
+        await service.catalog_button("legacy:go", "رفتن", None, None)
+        items, _ = await service.list_buttons()
+        await service.set_button_text(items[0].id, "ورود")
+        markup = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="رفتن", callback_data="legacy:go")
+        ]])
+        rendered = await premium_markup_runtime.style_reply_markup(markup)
+        button = rendered.inline_keyboard[0][0]
+        assert button.text == "ورود"
+        assert button.callback_data == "legacy:go"
 
     asyncio.run(scenario())
 
