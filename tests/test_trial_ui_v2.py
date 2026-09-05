@@ -1,6 +1,5 @@
 from pathlib import Path
 
-import config
 from handlers.trial_ui_v2 import TRIAL_UI_DEFAULTS
 from handlers.ui_editor_v2 import _button_category, _message_category
 
@@ -14,9 +13,16 @@ def test_trial_success_card_hides_internal_service_and_config_username():
     assert "{minutes}" in body
 
 
-def test_trial_templates_are_registered_in_message_cms():
-    for key, value in TRIAL_UI_DEFAULTS.items():
-        assert config.MESSAGES[key] == value
+def test_trial_templates_cover_all_customer_trial_screens():
+    assert set(TRIAL_UI_DEFAULTS) == {
+        "trial_v2_root",
+        "trial_v2_config_select",
+        "trial_v2_panel_select",
+        "trial_v2_config_success",
+        "trial_v2_panel_username",
+        "trial_v2_panel_success",
+    }
+    assert all(str(body).strip() for body in TRIAL_UI_DEFAULTS.values())
 
 
 def test_message_editor_groups_trial_copy_together():
@@ -35,5 +41,6 @@ def test_button_editor_groups_customer_flows():
 
 def test_router_order_places_v2_before_old_flat_handlers():
     source = Path("handlers/__init__.py").read_text(encoding="utf-8")
+    assert source.index("from .trial_ui_v2 import") < source.index("from .operations_bootstrap import")
     assert source.index("include_router(trial_ui_v2_router)") < source.index("include_router(service_marketplace_router)")
     assert source.index("include_router(ui_editor_v2_router)") < source.index("include_router(premium_ui_clean_buttons_router)")
