@@ -5,6 +5,8 @@
 # preserving the legacy handlers as fallbacks.
 from .style_admin import style_admin_router
 from .operations_bootstrap import operations_bootstrap_router
+from .service_marketplace import service_marketplace_router
+from .service_marketplace_settings import service_marketplace_settings_router
 from .trial_experience import trial_experience_router
 from .premium_ui_clean_buttons import premium_ui_clean_buttons_router
 from .premium_ui_admin import premium_ui_admin_router
@@ -13,11 +15,15 @@ from . import dashboard_label_fix as _dashboard_label_fix  # presentation-only m
 from . import operations_runtime as _operations_runtime  # checkout adapter registration
 import premium_template_runtime as _premium_template_runtime  # preserve {emoji:key} through .format()
 import premium_bot_runtime as _premium_bot_runtime  # catalog/style all outgoing inline keyboards
+import service_marketplace_runtime as _service_marketplace_runtime  # add free-trial entry to user homes
 from .operations_public import operations_public_router
 from .control_center import control_center_router
 from .control_center_start import control_center_start_router
 
 style_admin_router.include_router(operations_bootstrap_router)
+# Service-first sale/trial routes must win before the older plan-first handlers.
+style_admin_router.include_router(service_marketplace_router)
+style_admin_router.include_router(service_marketplace_settings_router)
 style_admin_router.include_router(trial_experience_router)
 # Clean button catalog intercepts cc:buttons before the detailed editor handlers.
 style_admin_router.include_router(premium_ui_clean_buttons_router)
