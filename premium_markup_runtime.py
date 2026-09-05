@@ -9,6 +9,7 @@ from style_engine import style_engine
 
 
 _BUTTON_EMOJI_TOKEN_RE = re.compile(r"\{emoji:([a-z0-9_.-]{1,64})\}")
+_GENERIC_TOKEN_FALLBACK_PREFIXES = ("📦 ", "🔌 ", "🧪 ", "🧩 ", "🔘 ", "✨ ")
 
 
 async def _consume_button_emoji_token(text: str, explicit_key: str | None) -> tuple[str, str | None]:
@@ -38,6 +39,13 @@ async def _consume_button_emoji_token(text: str, explicit_key: str | None) -> tu
 
     value = _BUTTON_EMOJI_TOKEN_RE.sub(repl, value)
     value = re.sub(r"\s{2,}", " ", value).strip()
+    # A generic Unicode icon may already have been prepended by styled_button
+    # before this runtime sees the markup. Once a real Premium button icon is
+    # selected, keep only the custom icon so the button does not show two icons.
+    for prefix in _GENERIC_TOKEN_FALLBACK_PREFIXES:
+        if value.startswith(prefix):
+            value = value[len(prefix):].strip()
+            break
     return value, selected_key
 
 
