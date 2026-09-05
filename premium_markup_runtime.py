@@ -1,9 +1,44 @@
 from __future__ import annotations
 
+import re
+
 from aiogram.types import InlineKeyboardMarkup
 
 from premium_ui_service import premium_ui_service
 from style_engine import style_engine
+
+
+_BUTTON_EMOJI_TOKEN_RE = re.compile(r"\{emoji:([a-z0-9_.-]{1,64})\}")
+
+
+async def _consume_button_emoji_token(text: str, explicit_key: str | None) -> tuple[str, str | None]:
+    """Turn a {emoji:key} token in button copy into Telegram's button icon field.
+
+    Buttons cannot render tg-emoji HTML inside their text. Bot API 9.4 gives
+    them one dedicated custom emoji icon, so the first known token becomes that
+    icon and all occurrences of the same token are removed from visible text.
+    Unknown tokens stay visible instead of disappearing silently.
+    """
+    value = str(text)
+    selected_key = explicit_key
+    matches = list(_BUTTON_EMOJI_TOKEN_RE.finditer(value))
+    known_keys: set[str] = set()
+    for match in matches:
+        key = match.group(1)
+        item = await style_engine.get_emoji(key)
+        if item and item.enabled:
+            known_keys.add(key)
+            if selected_key is None:
+                selected_key = key
+    if not known_keys:
+        return value, selected_key
+
+    def repl(match: re.Match[str]) -> str:
+        return "" if match.group(1) in known_keys else match.group(0)
+
+    value = _BUTTON_EMOJI_TOKEN_RE.sub(repl, value)
+    value = re.sub(r"\s{2,}", " ", value).strip()
+    return value, selected_key
 
 
 async def style_reply_markup(markup):
@@ -29,12 +64,11 @@ async def style_reply_markup(markup):
             original_text = str(getattr(button, "text", ""))
             await premium_ui_service.catalog_button(callback_data, original_text, None, None)
             override = premium_ui_service.override_for(callback_data, original_text)
-            if not override:
-                new_row.append(button)
-                continue
-
-            display_text, emoji_key = override
+            display_text = override[0] if override else None
+            emoji_key = override[1] if override else None
             text = display_text or original_text
+            text, emoji_key = await _consume_button_emoji_token(text, emoji_key)
+
             updates = {}
             if emoji_key:
                 item = await style_engine.get_emoji(emoji_key)
