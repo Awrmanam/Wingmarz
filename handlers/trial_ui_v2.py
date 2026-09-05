@@ -19,31 +19,31 @@ import config
 # restored on startup and can be edited from the UI editor.
 TRIAL_UI_DEFAULTS: dict[str, str] = {
     "trial_v2_root": (
-        "{emoji:test} <b>تست رایگان</b>\n\n"
+        "🧪 <b>تست رایگان</b>\n\n"
         "نوع تستی که می‌خواهید دریافت کنید را انتخاب کنید."
     ),
     "trial_v2_config_select": (
-        "{emoji:test} <b>تست رایگان کانفیگ</b>\n\n"
+        "🧪 <b>تست رایگان کانفیگ</b>\n\n"
         "نوع سرویس موردنظر را انتخاب کنید:"
     ),
     "trial_v2_panel_select": (
-        "{emoji:panel} <b>تست پنل نمایندگی</b>\n\n"
+        "🧩 <b>تست پنل نمایندگی</b>\n\n"
         "نوع سرویس موردنظر را انتخاب کنید:"
     ),
     "trial_v2_config_success": (
-        "{emoji:success} <b>کانفیگ تست شما آماده شد</b>\n\n"
-        "{emoji:plan} حجم: <b>{traffic}</b>\n"
+        "✅ <b>کانفیگ تست شما آماده شد</b>\n\n"
+        "📦 حجم: <b>{traffic}</b>\n"
         "⏱ اعتبار: <b>{minutes} دقیقه</b>\n\n"
         "برای اتصال از دکمه زیر استفاده کنید."
     ),
     "trial_v2_panel_username": (
-        "{emoji:panel} <b>دریافت پنل تست</b>\n\n"
+        "🧩 <b>دریافت پنل تست</b>\n\n"
         "نام کاربری دلخواهتان را ارسال کنید.\n"
         "رمز عبور به‌صورت امن توسط ربات ساخته می‌شود.\n\n"
         "مثال: <code>arman_test</code>"
     ),
     "trial_v2_panel_success": (
-        "{emoji:success} <b>پنل تست شما آماده شد</b>\n\n"
+        "✅ <b>پنل تست شما آماده شد</b>\n\n"
         "👤 نام کاربری: <code>{username}</code>\n"
         "🔑 رمز عبور: <code>{password}</code>\n"
         "⏱ اعتبار: <b>{hours} ساعت</b>\n\n"
