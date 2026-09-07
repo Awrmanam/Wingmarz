@@ -158,11 +158,11 @@ def test_runtime_admins_persist_and_sync(tmp_path, monkeypatch):
         config.SUDO_ADMINS[:] = list(service.base_sudo_ids)
         run(service.add_runtime_admin(987654321, service.base_sudo_ids[0] if service.base_sudo_ids else 1))
         assert 987654321 in config.SUDO_ADMINS
-        run(service.set_runtime_admin_active(987654321, False))
+        run(service.set_runtime_admin_active(987654321, False, actor_id=service.base_sudo_ids[0]))
         assert 987654321 not in config.SUDO_ADMINS
-        run(service.set_runtime_admin_active(987654321, True))
+        run(service.set_runtime_admin_active(987654321, True, actor_id=service.base_sudo_ids[0]))
         assert 987654321 in config.SUDO_ADMINS
-        run(service.remove_runtime_admin(987654321))
+        run(service.remove_runtime_admin(987654321, actor_id=service.base_sudo_ids[0]))
         assert 987654321 not in config.SUDO_ADMINS
     finally:
         config.SUDO_ADMINS[:] = original
@@ -173,7 +173,7 @@ def test_base_sudo_cannot_be_removed(tmp_path):
     if not service.base_sudo_ids:
         pytest.skip("No configured SUDO in test environment")
     with pytest.raises(OperationsError):
-        run(service.remove_runtime_admin(service.base_sudo_ids[0]))
+        run(service.remove_runtime_admin(service.base_sudo_ids[0], actor_id=service.base_sudo_ids[0]))
 
 
 def test_trial_defaults_and_cooldown(tmp_path):

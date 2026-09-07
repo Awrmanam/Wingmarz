@@ -9,7 +9,8 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message, BufferedInputFile
+from trial_delivery import connection_url, save_connections, load_connections
 
 import config
 
@@ -17,44 +18,10 @@ import config
 # Register these defaults before PremiumUIService is first constructed. They then
 # behave exactly like the older config.MESSAGES entries: persisted overrides are
 # restored on startup and can be edited from the UI editor.
-TRIAL_UI_DEFAULTS: dict[str, str] = {
-    "trial_v2_root": (
-        "🧪 <b>تست رایگان</b>\n\n"
-        "نوع تستی که می‌خواهید دریافت کنید را انتخاب کنید."
-    ),
-    "trial_v2_config_select": (
-        "🧪 <b>تست رایگان کانفیگ</b>\n\n"
-        "نوع سرویس موردنظر را انتخاب کنید:"
-    ),
-    "trial_v2_panel_select": (
-        "🧩 <b>تست پنل نمایندگی</b>\n\n"
-        "نوع سرویس موردنظر را انتخاب کنید:"
-    ),
-    "trial_v2_config_success": (
-        "✅ <b>کانفیگ تست شما آماده شد</b>\n\n"
-        "📦 حجم: <b>{traffic}</b>\n"
-        "⏱ اعتبار: <b>{minutes} دقیقه</b>\n\n"
-        "برای اتصال از دکمه زیر استفاده کنید."
-    ),
-    "trial_v2_panel_username": (
-        "🧩 <b>دریافت پنل تست</b>\n\n"
-        "نام کاربری دلخواهتان را ارسال کنید.\n"
-        "رمز عبور به‌صورت امن توسط ربات ساخته می‌شود.\n\n"
-        "مثال: <code>arman_test</code>"
-    ),
-    "trial_v2_panel_success": (
-        "✅ <b>پنل تست شما آماده شد</b>\n\n"
-        "👤 نام کاربری: <code>{username}</code>\n"
-        "🔑 رمز عبور: <code>{password}</code>\n"
-        "⏱ اعتبار: <b>{hours} ساعت</b>\n\n"
-        "برای ورود از دکمه زیر استفاده کنید."
-    ),
-}
-for _key, _body in TRIAL_UI_DEFAULTS.items():
-    config.MESSAGES.setdefault(_key, _body)
+from message_catalog import TRIAL_UI_DEFAULTS
 
 from database import db
-from operations_service import OperationsError
+from operations_service import OperationsError, operations_service
 from premium_ui_service import premium_ui_service
 from service_marketplace_service import service_marketplace_service
 from style_engine import style_engine
@@ -136,6 +103,10 @@ async def _render_root(message: Message, user_id: int) -> None:
 
 
 async def _render_service_picker(message: Message, user_id: int, trial_type: str) -> None:
+    if config.PANEL_PROVIDER != "rebecca":
+        from handlers.trial_experience import _render_trial_plans
+        await _render_trial_plans(message, trial_type)
+        return
     rows = await _trial_service_rows(trial_type)
     if not rows:
         rows.append([
@@ -182,7 +153,12 @@ async def trial_panel_picker(callback: CallbackQuery, state: FSMContext):
 @trial_ui_v2_router.message(Command("test"))
 async def trial_config_command(message: Message, state: FSMContext):
     await state.clear()
+    if config.PANEL_PROVIDER != "rebecca":
+        from handlers.trial_experience import public_config_trial_command
+        await public_config_trial_command(message, state)
+        return
     rows = await _trial_service_rows("config")
+    rows.append([await _button("بازگشت", "trialv2:root", fallback="⬅️")])
     await message.answer(
         await _template("trial_v2_config_select"),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
@@ -192,7 +168,12 @@ async def trial_config_command(message: Message, state: FSMContext):
 @trial_ui_v2_router.message(Command("paneltest"))
 async def trial_panel_command(message: Message, state: FSMContext):
     await state.clear()
+    if config.PANEL_PROVIDER != "rebecca":
+        from handlers.trial_experience import public_panel_trial_command
+        await public_panel_trial_command(message, state)
+        return
     rows = await _trial_service_rows("panel")
+    rows.append([await _button("بازگشت", "trialv2:root", fallback="⬅️")])
     await message.answer(
         await _template("trial_v2_panel_select"),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
@@ -206,7 +187,7 @@ def _catalog_id(data: str | None) -> int | None:
         return None
 
 
-@trial_ui_v2_router.callback_query(F.data.startswith("trialv2:cfg:"))
+@trial_ui_v2_router.callback_query(F.data.startswith("trialv2:cfg:") | F.data.startswith("svcmarket:trialcfg:"))
 async def issue_config_trial(callback: CallbackQuery, state: FSMContext):
     catalog_id = _catalog_id(callback.data)
     if not catalog_id:
@@ -226,44 +207,43 @@ async def issue_config_trial(callback: CallbackQuery, state: FSMContext):
         return
 
     await state.clear()
-    remaining = max(0, int(result["expire_at"]) - int(time.time()))
-    minutes = max(1, math.ceil(remaining / 60))
-    traffic = await format_traffic_size(int(result["traffic_bytes"]))
-    body = await _template(
-        "trial_v2_config_success",
-        traffic=traffic,
-        minutes=minutes,
-    )
-
-    rows: list[list[Any]] = []
-    subscription_url = str(result.get("subscription_url") or "").strip()
-    if subscription_url.startswith(("https://", "http://")):
-        rows.append([
-            await _button(
-                "دریافت لینک اشتراک",
-                url=subscription_url,
-                icon_key="link",
-                fallback="🔗",
-            )
-        ])
-    else:
-        # If Rebecca did not return an HTTP subscription URL, keep the result
-        # usable without flooding the normal success card with every raw link.
-        extra_links = [str(item).strip() for item in result.get("links", []) if str(item).strip()]
-        if extra_links:
-            body += "\n\n🔗 <b>لینک اتصال:</b>"
-            for idx, link in enumerate(extra_links[:3], start=1):
-                body += f'\n<a href="{escape(link)}">لینک {idx}</a>'
-
-    rows.append([await _button("بازگشت", "trialv2:root", icon_key="back", fallback="⬅️")])
-    await callback.message.edit_text(
-        body,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
-    )
+    await render_config_result(callback.message, callback.from_user.id, result, edit=True)
     await callback.answer("تست آماده شد")
 
 
-@trial_ui_v2_router.callback_query(F.data.startswith("trialv2:panel:"))
+async def render_config_result(message, user_id, result, *, edit=False):
+    minutes = max(1, math.ceil((int(result["expire_at"]) - time.time()) / 60))
+    body = await _template("trial_v2_config_success",
+                           traffic=await format_traffic_size(int(result["traffic_bytes"])), minutes=minutes)
+    rows = []
+    url = connection_url(result.get("subscription_url"))
+    if not url:
+        url = next((connection_url(x) for x in result.get("links", []) if connection_url(x)), None)
+    if url:
+        rows.append([await _button("دریافت لینک اتصال", url=url, icon_key="link", fallback="🔗")])
+    elif result.get("links"):
+        token = await save_connections(user_id, result)
+        rows.append([await _button("دریافت فایل اتصال", f"trialv2:links:{token}", icon_key="link", fallback="🔗")])
+    else:
+        body += "\n\nلینک اتصال دریافت نشد؛ لطفاً با پشتیبانی تماس بگیرید."
+        rows.append([await _button("پشتیبانی", "support:home", fallback="🎧")])
+    rows.append([await _button("بازگشت", "trialv2:root", icon_key="back", fallback="⬅️")])
+    send = message.edit_text if edit else message.answer
+    await send(body, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@trial_ui_v2_router.callback_query(F.data.startswith("trialv2:links:"))
+async def trial_connection_file(callback):
+    links = await load_connections((callback.data or "").rsplit(":", 1)[-1], callback.from_user.id)
+    if not links:
+        await callback.answer("لینک منقضی شده یا متعلق به شما نیست.", show_alert=True)
+        return
+    await callback.message.answer_document(BufferedInputFile("\n".join(links).encode(), filename="connection.txt"),
+                                           caption="فایل اتصال تست شما")
+    await callback.answer()
+
+
+@trial_ui_v2_router.callback_query(F.data.startswith("trialv2:panel:") | F.data.startswith("svcmarket:trialpanel:"))
 async def panel_trial_selected(callback: CallbackQuery, state: FSMContext):
     catalog_id = _catalog_id(callback.data)
     if not catalog_id:
@@ -330,11 +310,11 @@ async def issue_panel_trial(message: Message, state: FSMContext):
     )
     rows: list[list[Any]] = []
     login_url = str(result.get("login_url") or "").strip()
-    if login_url.startswith(("https://", "http://")):
+    if connection_url(login_url):
         rows.append([
             await _button("ورود به پنل", url=login_url, icon_key="panel", fallback="🌐")
         ])
-    elif login_url:
-        body += f"\n\n🌐 آدرس ورود:\n<code>{escape(login_url)}</code>"
+    else:
+        body += "\n\nبرای دریافت آدرس ورود با پشتیبانی تماس بگیرید."
     rows.append([await _button("بازگشت", "trialv2:root", icon_key="back", fallback="⬅️")])
     await message.answer(body, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))

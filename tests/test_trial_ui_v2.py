@@ -28,7 +28,7 @@ def test_trial_templates_cover_all_customer_trial_screens():
 def test_message_editor_groups_trial_copy_together():
     assert _message_category("trial_v2_root") == "trial"
     assert _message_category("trial_v2_config_success") == "trial"
-    assert _message_category("public_payment_instructions") == "sales"
+    assert _message_category("public_payment_instructions") == "payment"
     assert _message_category("backup_created") == "backup"
 
 

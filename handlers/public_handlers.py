@@ -1,4 +1,5 @@
 from aiogram import Router, F
+from aiogram.filters import CommandStart
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, Message
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
@@ -8,7 +9,7 @@ from utils.notify import format_traffic_size, seconds_to_days
 
 
 public_router = Router()
-@public_router.message(F.text.as_('cmd'))
+@public_router.message(CommandStart(), F.text.as_('cmd'))
 async def public_catch_all(message: Message, cmd: str):
     # Handle /start for non-admin non-sudo to show buy menu
     if not cmd or not cmd.startswith('/'):
@@ -18,7 +19,7 @@ async def public_catch_all(message: Message, cmd: str):
     if await db.is_admin_authorized(message.from_user.id):
         return
     if cmd.startswith('/start'):
-        await message.answer("به ربات خوش آمدید!", reply_markup=get_public_main_keyboard())
+        await message.answer(config.MESSAGES["customer_home"], reply_markup=get_public_main_keyboard())
 
 
 class PublicPaymentStates(StatesGroup):
@@ -26,22 +27,11 @@ class PublicPaymentStates(StatesGroup):
 
 
 def get_public_main_keyboard() -> InlineKeyboardMarkup:
-    rows = []
-    # First: Buy Panel
-    rows.append([InlineKeyboardButton(text="🛒 خرید پنل نمایندگی", callback_data="public_buy_reseller")])
-    # Then: show non-sudo admin buttons for convenience
-    rows.append([
-        InlineKeyboardButton(text=config.BUTTONS["my_info"], callback_data="my_info"),
-        InlineKeyboardButton(text=config.BUTTONS["my_report"], callback_data="my_report")
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🛒 خرید پنل نمایندگی", callback_data="public_buy_reseller")],
+        [InlineKeyboardButton(text="🧪 تست رایگان", callback_data="svcmarket:trial")],
+        [InlineKeyboardButton(text="🎧 پشتیبانی", callback_data="support:home")],
     ])
-    rows.append([
-        InlineKeyboardButton(text=config.BUTTONS["my_users"], callback_data="my_users"),
-        InlineKeyboardButton(text=config.BUTTONS["reactivate_users"], callback_data="reactivate_users")
-    ])
-    rows.append([
-        InlineKeyboardButton(text=config.BUTTONS.get("renew", "🔄 تمدید/افزایش"), callback_data="admin_renew")
-    ])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 @public_router.callback_query(F.data == "public_buy_reseller")
@@ -115,8 +105,9 @@ async def public_order(callback: CallbackQuery):
 
 
 @public_router.callback_query(F.data == "public_back_main")
-async def public_back_main(callback: CallbackQuery):
-    await callback.message.edit_text("به ربات خوش آمدید!", reply_markup=get_public_main_keyboard())
+async def public_back_main(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text(config.MESSAGES["customer_home"], reply_markup=get_public_main_keyboard())
     await callback.answer()
 
 
@@ -156,9 +147,13 @@ async def forced_join_refresh(callback: CallbackQuery):
 
 @public_router.callback_query(F.data.startswith("public_mark_paid_"))
 async def public_mark_paid(callback: CallbackQuery, state: FSMContext):
-    order_id = int(callback.data.split("_")[-1])
+    try:
+        order_id = int(callback.data.split("_")[-1])
+    except (ValueError, AttributeError):
+        await callback.answer("سفارش نامعتبر", show_alert=True)
+        return
     order = await db.get_order_by_id(order_id)
-    if not order or order.get("user_id") != callback.from_user.id:
+    if not order or order.get("user_id") != callback.from_user.id or order.get("status") != "pending":
         await callback.answer("سفارش یافت نشد.", show_alert=True)
         return
     await state.update_data(order_id=order_id)
@@ -178,7 +173,10 @@ async def public_receive_payment_receipt(message: Message, state: FSMContext):
         await message.answer(config.MESSAGES["public_send_receipt"])
         return
     file_id = message.photo[-1].file_id
-    await db.update_order(order_id, receipt_file_id=file_id, status="submitted")
+    if not await db.submit_order_receipt(order_id, message.from_user.id, file_id):
+        await state.clear()
+        await message.answer("این سفارش قبلاً بررسی شده یا متعلق به شما نیست.")
+        return
     # Notify all sudo admins with inline approve/reject/retry buttons
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
     order = await db.get_order_by_id(order_id)

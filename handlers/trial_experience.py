@@ -12,6 +12,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 import config
+from authorization import is_staff
 from database import db
 from operations_service import DiscountQuote, OperationsError, operations_service
 from style_engine import style_engine
@@ -88,7 +89,7 @@ async def _plan_label(plan: Any) -> str:
 
 
 def _is_sudo(user_id: int) -> bool:
-    return int(user_id) in config.SUDO_ADMINS
+    return is_staff(user_id)
 
 
 async def _deny(callback: CallbackQuery) -> bool:
@@ -172,6 +173,7 @@ async def preferred_purchase_username(message: Message, state: FSMContext):
         return
     await state.update_data(purchase_username=username)
     if await operations_service.has_active_discounts(int(plan.price)):
+        await state.set_state(PurchaseStates.discount_code)
         await message.answer(
             f"✅ نام کاربری: <code>{escape(username)}</code>\n\n"
             f"قیمت پلن: <b>{int(plan.price):,} تومان</b>\n"
@@ -196,7 +198,7 @@ async def preferred_checkout_nocode(callback: CallbackQuery, state: FSMContext):
         await callback.answer("اطلاعات خرید منقضی شده؛ دوباره خرید را شروع کنید.", show_alert=True)
         return
     await state.clear()
-    await _create_order_and_render(callback.message, source, plan_id, username, None)
+    await _create_order_and_render(callback.message, source, plan_id, username, None, user_id=callback.from_user.id)
     await callback.answer()
 
 
@@ -225,7 +227,9 @@ async def preferred_checkout_code_value(message: Message, state: FSMContext):
     try:
         quote = await operations_service.quote_discount(message.text or "", message.from_user.id, int(plan.price))
     except OperationsError as exc:
-        await message.answer(f"❌ {escape(str(exc))}\n\nکد دیگری بفرستید یا /start را بزنید.")
+        await message.answer(f"❌ {escape(str(exc))}", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [await _button("ادامه بدون تخفیف", "ux:checkout:nocode")],
+            [await _button("بازگشت", "admin_buy_reseller" if source == "a" else "public_buy_reseller")]]))
         return
     await state.clear()
     await _create_order_and_render(message, source, plan_id, username, quote)
@@ -256,6 +260,7 @@ async def _create_order_and_render(
     plan_id: int,
     username: str,
     quote: DiscountQuote | None,
+    *, user_id: int | None = None,
 ) -> None:
     plan = await db.get_plan_by_id(int(plan_id))
     if not plan or not getattr(plan, "is_active", True):
@@ -272,14 +277,15 @@ async def _create_order_and_render(
 
     original_price = int(plan.price)
     final_price = quote.final_price if quote else original_price
-    order_id = await db.add_order(message.from_user.id, int(plan_id), final_price, str(plan.name))
+    customer_id = int(user_id if user_id is not None else message.from_user.id)
+    order_id = await db.add_order(customer_id, int(plan_id), final_price, str(plan.name))
     if not order_id:
         await message.answer("❌ خطا در ثبت سفارش.")
         return
     try:
         await trial_experience_service.save_order_username(order_id, username)
         if quote:
-            await operations_service.record_redemption(quote, message.from_user.id, order_id)
+            await operations_service.record_redemption(quote, customer_id, order_id)
             await db.update_order(
                 order_id,
                 payment_note=f"discount={quote.code};original={quote.original_price};discount={quote.discount_amount}",
@@ -305,14 +311,14 @@ async def _create_order_and_render(
             f"🔐 نام کاربری: <code>{escape(username)}</code>{discount_lines}\n"
             "💵 مبلغ نهایی: <b>0 تومان</b>\n\nبرای تایید و صدور به مدیریت ارسال شد."
         )
-        await _notify_free_order(message.bot, order_id, message.from_user.id, str(plan.name), username, quote)
+        await _notify_free_order(message.bot, order_id, customer_id, str(plan.name), username, quote)
         return
 
     cards = await db.get_cards(only_active=True)
     lines = [
         "✅ سفارش ثبت شد.",
         "",
-        f"شناسه سفارش: <b>{order_id}</b>",
+
         f"پلن: {escape(str(plan.name))}",
         f"نام کاربری دلخواه: <code>{escape(username)}</code>{discount_lines}",
         f"قیمت نهایی: <b>{final_price:,} تومان</b>",
@@ -391,14 +397,12 @@ async def _render_trial_plans(message: Message, trial_type: str) -> None:
     await message.edit_text(f"{heading}\n\n{description}", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 
-@trial_experience_router.callback_query(F.data == "ops:paneltrial:request")
 async def public_panel_trial_request(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await _render_trial_plans(callback.message, "panel")
     await callback.answer()
 
 
-@trial_experience_router.message(Command("paneltest"))
 async def public_panel_trial_command(message: Message, state: FSMContext):
     await state.clear()
     plans = await trial_experience_service.list_trial_plans("panel")
@@ -413,6 +417,10 @@ async def public_panel_trial_command(message: Message, state: FSMContext):
 
 @trial_experience_router.callback_query(F.data.startswith("ux:paneltrial:plan:"))
 async def panel_trial_plan(callback: CallbackQuery, state: FSMContext):
+    if config.PANEL_PROVIDER == "rebecca":
+        from handlers.trial_ui_v2 import trial_panel_picker
+        await trial_panel_picker(callback, state)
+        return
     try:
         plan_id = int((callback.data or "").rsplit(":", 1)[-1])
     except ValueError:
@@ -473,15 +481,12 @@ async def panel_trial_username(message: Message, state: FSMContext):
     )
 
 
-@trial_experience_router.callback_query(F.data == "ops:configtrial:request")
-@trial_experience_router.callback_query(F.data == "ops:trial:request")
 async def public_config_trial_request(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await _render_trial_plans(callback.message, "config")
     await callback.answer()
 
 
-@trial_experience_router.message(Command("test"))
 async def public_config_trial_command(message: Message, state: FSMContext):
     await state.clear()
     plans = await trial_experience_service.list_trial_plans("config")
@@ -496,6 +501,10 @@ async def public_config_trial_command(message: Message, state: FSMContext):
 
 @trial_experience_router.callback_query(F.data.startswith("ux:configtrial:plan:"))
 async def config_trial_plan(callback: CallbackQuery, state: FSMContext):
+    if config.PANEL_PROVIDER == "rebecca":
+        from handlers.trial_ui_v2 import trial_config_picker
+        await trial_config_picker(callback, state)
+        return
     await state.clear()
     try:
         plan_id = int((callback.data or "").rsplit(":", 1)[-1])
@@ -540,6 +549,10 @@ async def config_trial_plan(callback: CallbackQuery, state: FSMContext):
 
 @trial_experience_router.callback_query(F.data.startswith("ux:configtrial:issue:"))
 async def config_trial_issue(callback: CallbackQuery, state: FSMContext):
+    if config.PANEL_PROVIDER == "rebecca":
+        from handlers.trial_ui_v2 import trial_config_picker
+        await trial_config_picker(callback, state)
+        return
     await state.clear()
     parts = (callback.data or "").split(":")
     if len(parts) != 5:
@@ -560,23 +573,8 @@ async def _issue_config_trial(message: Message, user_id: int, plan_id: int, serv
     except OperationsError as exc:
         await message.answer(f"❌ {escape(str(exc))}")
         return
-    duration = max(1, (int(result["expire_at"]) - int(time.time())) // 60)
-    traffic_gb = result["traffic_bytes"] / (1024**3)
-    lines = [
-        f"{await _heading('test', 'کانفیگ تست شما آماده است', '🧪')}",
-        "",
-        f"پنل: <b>{escape(str(result['plan_name']))}</b>",
-        f"نام کاربری: <code>{escape(str(result['username']))}</code>",
-        f"حجم: <b>{traffic_gb:g} GB</b>",
-        f"اعتبار تقریبی: <b>{duration} دقیقه</b>",
-    ]
-    if result.get("subscription_url"):
-        lines.extend(["", "لینک سابسکریپشن:", f"<code>{escape(str(result['subscription_url']))}</code>"])
-    elif result.get("links"):
-        lines.extend(["", "لینک:", f"<code>{escape(str(result['links'][0]))}</code>"])
-    else:
-        lines.extend(["", "کانفیگ ساخته شد اما لینک سابسکریپشن برنگشت؛ با پشتیبانی تماس بگیرید."])
-    await message.answer("\n".join(lines))
+    from handlers.trial_ui_v2 import render_config_result
+    await render_config_result(message, user_id, result)
 
 
 # ---------------------------- SUDO trial center ----------------------------
@@ -601,7 +599,6 @@ async def _render_trial_center(message: Message) -> None:
     )
 
 
-@trial_experience_router.callback_query(F.data == "cc:test")
 async def trial_center(callback: CallbackQuery, state: FSMContext):
     if await _deny(callback):
         return
@@ -632,7 +629,8 @@ async def config_trial_admin(callback: CallbackQuery):
                 await _button("تنظیم مدت", "ops:trial:duration", fallback="⏱"),
             ],
             [await _button("تنظیم فاصله دریافت", "ops:trial:cooldown", fallback="🕒")],
-            [await _button("پلن‌های قابل تست", "ux:trialadmin:plans", fallback="📦")],
+            [await _button("سرویس‌های مجاز" if config.PANEL_PROVIDER == "rebecca" else "پلن‌های قابل تست", "ux:trialadmin:plans", fallback="📦")],
+            [await _button("متن و ظاهر", "uiv2:mc:trial", fallback="🎨")],
             [await _button("بازگشت", "cc:test", icon_key="back", fallback="⬅️")],
         ]),
     )
@@ -657,9 +655,10 @@ async def _render_panel_trial_admin(message: Message) -> None:
             ],
             [
                 await _button("حد کاربر", "ux:paneltrial:set:users", fallback="👥"),
-                await _button("Cooldown", "ux:paneltrial:set:cooldown", fallback="🕒"),
+                await _button("فاصله دریافت", "ux:paneltrial:set:cooldown", fallback="🕒"),
             ],
-            [await _button("پلن‌های قابل تست", "ux:trialadmin:plans", fallback="📦")],
+            [await _button("سرویس‌های مجاز" if config.PANEL_PROVIDER == "rebecca" else "پلن‌های قابل تست", "ux:trialadmin:plans", fallback="📦")],
+            [await _button("متن و ظاهر", "uiv2:mc:trial", fallback="🎨")],
             [await _button("بازگشت", "cc:test", icon_key="back", fallback="⬅️")],
         ]),
     )
@@ -805,7 +804,6 @@ async def _render_trial_plan_access(message: Message) -> None:
     await message.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 
-@trial_experience_router.callback_query(F.data == "ux:trialadmin:plans")
 async def trial_plan_access(callback: CallbackQuery):
     if await _deny(callback):
         return

@@ -14,7 +14,7 @@ import config
 
 
 _DISCOUNT_CODE_RE = re.compile(r"^[A-Z0-9_-]{3,32}$")
-_BASE_SUDO_IDS = tuple(dict.fromkeys(int(x) for x in config.SUDO_ADMINS))
+from authorization import OWNER_IDS as _BASE_SUDO_IDS
 
 
 class OperationsError(ValueError):
@@ -112,6 +112,15 @@ class OperationsService:
                     ON trial_issues(user_id, created_at DESC);
                 """
             )
+            await conn.execute("BEGIN IMMEDIATE")
+            async with conn.execute("PRAGMA table_info(discount_codes)") as cur:
+                columns = {row[1] for row in await cur.fetchall()}
+            if "starts_at" not in columns:
+                await conn.execute("ALTER TABLE discount_codes ADD COLUMN starts_at INTEGER")
+            async with conn.execute("PRAGMA table_info(bot_admins)") as cur:
+                admin_columns = {row[1] for row in await cur.fetchall()}
+            if "role" not in admin_columns:
+                await conn.execute("ALTER TABLE bot_admins ADD COLUMN role TEXT NOT NULL DEFAULT 'manager'")
             defaults = {
                 "enabled": "0",
                 "traffic_bytes": str(1024 * 1024 * 1024),
@@ -143,6 +152,7 @@ class OperationsService:
         max_uses: int = 0,
         per_user_limit: int = 1,
         expires_at: int | None = None,
+        starts_at: int | None = None,
         created_by: int | None = None,
     ) -> int:
         await self.ensure_schema()
@@ -159,13 +169,15 @@ class OperationsService:
             raise OperationsError("مبلغ تخفیف باید بیشتر از صفر باشد.")
         if expires_at is not None and int(expires_at) <= int(time.time()):
             raise OperationsError("زمان انقضا باید در آینده باشد.")
+        if starts_at is not None and expires_at is not None and int(starts_at) >= int(expires_at):
+            raise OperationsError("شروع باید قبل از انقضا باشد.")
         try:
             async with aiosqlite.connect(self.db_path) as conn:
                 cur = await conn.execute(
                     """
                     INSERT INTO discount_codes(
-                        code,kind,value,min_order,max_uses,per_user_limit,expires_at,created_by
-                    ) VALUES(?,?,?,?,?,?,?,?)
+                        code,kind,value,min_order,max_uses,per_user_limit,expires_at,created_by,starts_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         code,
@@ -176,6 +188,7 @@ class OperationsService:
                         per_user_limit,
                         int(expires_at) if expires_at else None,
                         created_by,
+                        starts_at,
                     ),
                 )
                 await conn.commit()
@@ -251,10 +264,11 @@ class OperationsService:
                 SELECT 1 FROM discount_codes
                 WHERE is_active=1
                   AND (expires_at IS NULL OR expires_at>?)
+                  AND (starts_at IS NULL OR starts_at<=?)
                   AND min_order<=?
                 LIMIT 1
                 """,
-                (now, max(0, int(price))),
+                (now, now, max(0, int(price))),
             ) as cur:
                 return await cur.fetchone() is not None
 
@@ -264,60 +278,80 @@ class OperationsService:
         price = max(0, int(price))
         now = int(time.time())
         async with aiosqlite.connect(self.db_path) as conn:
-            conn.row_factory = aiosqlite.Row
-            async with conn.execute("SELECT * FROM discount_codes WHERE code=?", (code,)) as cur:
-                row = await cur.fetchone()
-            if not row or not bool(row["is_active"]):
-                raise OperationsError("کد تخفیف معتبر یا فعال نیست.")
-            if row["expires_at"] is not None and int(row["expires_at"]) <= now:
-                raise OperationsError("این کد تخفیف منقضی شده است.")
-            if price < int(row["min_order"] or 0):
-                raise OperationsError("مبلغ سفارش برای این کد کافی نیست.")
+            return await self._quote_discount(conn, code, user_id, price, now)
 
-            async with conn.execute(
-                """
-                SELECT COUNT(*)
-                FROM discount_redemptions r
-                JOIN orders o ON o.id=r.order_id
-                WHERE r.discount_id=? AND COALESCE(o.status,'pending') NOT IN ('rejected','cancelled')
-                """,
-                (int(row["id"]),),
-            ) as cur:
-                total_used = int((await cur.fetchone())[0] or 0)
-            max_uses = int(row["max_uses"] or 0)
-            if max_uses and total_used >= max_uses:
-                raise OperationsError("ظرفیت استفاده از این کد تمام شده است.")
+    async def _quote_discount(self, conn, code, user_id, price, now):
+        conn.row_factory = aiosqlite.Row
+        async with conn.execute("SELECT * FROM discount_codes WHERE code=?", (code,)) as cur:
+            row = await cur.fetchone()
+        if not row or not bool(row["is_active"]):
+            raise OperationsError("کد تخفیف معتبر یا فعال نیست.")
+        if row["starts_at"] is not None and int(row["starts_at"]) > now:
+            raise OperationsError("زمان شروع این کد نرسیده است.")
+        if row["expires_at"] is not None and int(row["expires_at"]) <= now:
+            raise OperationsError("این کد تخفیف منقضی شده است.")
+        if price < int(row["min_order"] or 0):
+            raise OperationsError("مبلغ سفارش برای این کد کافی نیست.")
 
-            async with conn.execute(
-                """
-                SELECT COUNT(*)
-                FROM discount_redemptions r
-                JOIN orders o ON o.id=r.order_id
-                WHERE r.discount_id=? AND r.user_id=?
-                  AND COALESCE(o.status,'pending') NOT IN ('rejected','cancelled')
-                """,
-                (int(row["id"]), int(user_id)),
-            ) as cur:
-                user_used = int((await cur.fetchone())[0] or 0)
-            if user_used >= int(row["per_user_limit"] or 1):
-                raise OperationsError("سقف استفاده شما از این کد تمام شده است.")
+        async with conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM discount_redemptions r
+            JOIN orders o ON o.id=r.order_id
+            WHERE r.discount_id=? AND COALESCE(o.status,'pending') NOT IN ('rejected','cancelled')
+            """,
+            (int(row["id"]),),
+        ) as cur:
+            total_used = int((await cur.fetchone())[0] or 0)
+        max_uses = int(row["max_uses"] or 0)
+        if max_uses and total_used >= max_uses:
+            raise OperationsError("ظرفیت استفاده از این کد تمام شده است.")
 
-            if row["kind"] == "percent":
-                amount = (price * int(row["value"])) // 100
-            else:
-                amount = int(row["value"])
-            amount = max(0, min(price, amount))
-            return DiscountQuote(
-                discount_id=int(row["id"]),
-                code=str(row["code"]),
-                original_price=price,
-                discount_amount=amount,
-                final_price=max(0, price - amount),
-            )
+        async with conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM discount_redemptions r
+            JOIN orders o ON o.id=r.order_id
+            WHERE r.discount_id=? AND r.user_id=?
+              AND COALESCE(o.status,'pending') NOT IN ('rejected','cancelled')
+            """,
+            (int(row["id"]), int(user_id)),
+        ) as cur:
+            user_used = int((await cur.fetchone())[0] or 0)
+        if user_used >= int(row["per_user_limit"] or 1):
+            raise OperationsError("سقف استفاده شما از این کد تمام شده است.")
+
+        if row["kind"] == "percent":
+            amount = (price * int(row["value"])) // 100
+        else:
+            amount = int(row["value"])
+        amount = max(0, min(price, amount))
+        return DiscountQuote(
+            discount_id=int(row["id"]),
+            code=str(row["code"]),
+            original_price=price,
+            discount_amount=amount,
+            final_price=max(0, price - amount),
+        )
 
     async def record_redemption(self, quote: DiscountQuote, user_id: int, order_id: int) -> None:
         await self.ensure_schema()
         async with aiosqlite.connect(self.db_path) as conn:
+            await conn.execute("BEGIN IMMEDIATE")
+            async with conn.execute("SELECT user_id FROM orders WHERE id=?", (int(order_id),)) as cur:
+                order = await cur.fetchone()
+            if not order or int(order[0]) != int(user_id):
+                raise OperationsError("سفارش متعلق به این کاربر نیست.")
+            async with conn.execute("SELECT discount_id,user_id,original_price,discount_amount,final_price FROM discount_redemptions WHERE order_id=?", (int(order_id),)) as cur:
+                previous = await cur.fetchone()
+            expected = (quote.discount_id, int(user_id), quote.original_price, quote.discount_amount, quote.final_price)
+            if previous:
+                if tuple(previous) != expected:
+                    raise OperationsError("تخفیف سفارش قبلاً ثبت شده است.")
+                return
+            current = await self._quote_discount(conn, quote.code, user_id, quote.original_price, int(time.time()))
+            if current != quote:
+                raise OperationsError("شرایط کد تغییر کرده است؛ دوباره بررسی کنید.")
             await conn.execute(
                 """
                 INSERT INTO discount_redemptions(
@@ -344,6 +378,8 @@ class OperationsService:
 
     async def add_runtime_admin(self, user_id: int, added_by: int) -> None:
         await self.ensure_schema()
+        if int(added_by) not in self.base_sudo_ids:
+            raise OperationsError("فقط مالک ربات می‌تواند مدیر اضافه کند.")
         user_id = int(user_id)
         if user_id <= 0:
             raise OperationsError("User ID نامعتبر است.")
@@ -360,7 +396,9 @@ class OperationsService:
             await conn.commit()
         await self.sync_runtime_admins()
 
-    async def set_runtime_admin_active(self, user_id: int, active: bool) -> bool:
+    async def set_runtime_admin_active(self, user_id: int, active: bool, *, actor_id: int) -> bool:
+        if int(actor_id) not in self.base_sudo_ids:
+            raise OperationsError("فقط مالک ربات می‌تواند دسترسی مدیران را تغییر دهد.")
         await self.ensure_schema()
         user_id = int(user_id)
         if user_id in self.base_sudo_ids and not active:
@@ -375,7 +413,9 @@ class OperationsService:
         await self.sync_runtime_admins()
         return changed
 
-    async def remove_runtime_admin(self, user_id: int) -> bool:
+    async def remove_runtime_admin(self, user_id: int, *, actor_id: int) -> bool:
+        if int(actor_id) not in self.base_sudo_ids:
+            raise OperationsError("فقط مالک ربات می‌تواند دسترسی مدیران را تغییر دهد.")
         await self.ensure_schema()
         user_id = int(user_id)
         if user_id in self.base_sudo_ids:
@@ -390,7 +430,7 @@ class OperationsService:
     async def sync_runtime_admins(self) -> None:
         await self.ensure_schema()
         async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.execute("SELECT user_id FROM bot_admins WHERE is_active=1") as cur:
+            async with conn.execute("SELECT user_id FROM bot_admins WHERE is_active=1 AND role='manager'") as cur:
                 dynamic = [int(row[0]) for row in await cur.fetchall()]
         merged = list(dict.fromkeys([*self.base_sudo_ids, *dynamic]))
         if isinstance(config.SUDO_ADMINS, list):

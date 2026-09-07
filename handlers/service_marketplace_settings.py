@@ -4,6 +4,7 @@ from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup
 
 import config
+from authorization import is_staff
 from operations_service import operations_service
 from style_engine import style_engine
 from trial_experience_service import trial_experience_service
@@ -13,7 +14,7 @@ service_marketplace_settings_router = Router(name="service_marketplace_settings"
 
 
 def _sudo(user_id: int) -> bool:
-    return int(user_id) in config.SUDO_ADMINS
+    return is_staff(user_id)
 
 
 async def _button(text: str, callback_data: str, *, icon_key: str | None = None, fallback: str | None = None):

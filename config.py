@@ -154,3 +154,7 @@ BUTTONS = {
     "broadcast_all": "📣 ارسال به همه ادمین‌ها",
     "broadcast_active": "✅ ارسال به ادمین‌های فعال"
 }
+
+
+from message_catalog import UI_MESSAGES
+MESSAGES.update(UI_MESSAGES)

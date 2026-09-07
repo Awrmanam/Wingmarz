@@ -21,26 +21,10 @@ class PublicOnly(Filter):
 async def _public_keyboard() -> InlineKeyboardMarkup:
     from handlers.public_handlers import get_public_main_keyboard
 
-    base = get_public_main_keyboard()
-    rows = [list(row) for row in base.inline_keyboard]
-    rows.insert(1, [
-        await style_engine.styled_button(
-            "دریافت تست پنل",
-            icon_key="panel",
-            fallback="🧩",
-            callback_data="ops:paneltrial:request",
-        ),
-        await style_engine.styled_button(
-            "تست رایگان کانفیگ",
-            icon_key="test",
-            fallback="🧪",
-            callback_data="ops:configtrial:request",
-        ),
-    ])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+    return get_public_main_keyboard()
 
 
 @operations_public_router.message(CommandStart(), PublicOnly())
 async def public_start_with_trials(message: Message, state: FSMContext):
     await state.clear()
-    await message.answer("به ربات خوش آمدید!", reply_markup=await _public_keyboard())
+    await message.answer(config.MESSAGES["customer_home"], reply_markup=await _public_keyboard())

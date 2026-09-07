@@ -21,20 +21,9 @@ def _with_trial_button(markup: InlineKeyboardMarkup) -> InlineKeyboardMarkup:
     return markup.model_copy(update={"inline_keyboard": rows})
 
 
-_original_admin_keyboard = admin_handlers.get_admin_keyboard
-_original_public_keyboard = public_handlers.get_public_main_keyboard
+def service_market_admin_keyboard():
+    return admin_handlers.get_admin_keyboard()
 
 
-def service_market_admin_keyboard() -> InlineKeyboardMarkup:
-    return _with_trial_button(_original_admin_keyboard())
-
-
-def service_market_public_keyboard() -> InlineKeyboardMarkup:
-    return _with_trial_button(_original_public_keyboard())
-
-
-if getattr(admin_handlers.get_admin_keyboard, "__name__", "") != "service_market_admin_keyboard":
-    admin_handlers.get_admin_keyboard = service_market_admin_keyboard
-
-if getattr(public_handlers.get_public_main_keyboard, "__name__", "") != "service_market_public_keyboard":
-    public_handlers.get_public_main_keyboard = service_market_public_keyboard
+def service_market_public_keyboard():
+    return public_handlers.get_public_main_keyboard()

@@ -8,6 +8,7 @@ from typing import Any
 import aiosqlite
 
 import config
+from text_templates import PremiumTemplateString, fields, validate_template
 from style_engine import style_engine
 
 
@@ -92,9 +93,36 @@ class PremiumUIService:
 
     async def init(self) -> None:
         await self.ensure_schema()
+        await self.seed_static_buttons()
         await self.reload_button_overrides()
         await self.apply_message_overrides()
         self.patch_styled_buttons()
+
+    async def seed_static_buttons(self):
+        import ast
+        from pathlib import Path
+
+        def literal(node):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                return node.value
+            if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Attribute):
+                if isinstance(node.value.value, ast.Name) and node.value.value.id == "config" and node.value.attr == "BUTTONS":
+                    key = literal(node.slice)
+                    return config.BUTTONS.get(key)
+            return None
+
+        for path in (Path(__file__).parent / "handlers").glob("*.py"):
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                if not isinstance(node, ast.Call):
+                    continue
+                name = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, 'attr', '')
+                if name not in {"_button", "_btn", "styled_button", "InlineKeyboardButton"}:
+                    continue
+                kwargs = {kw.arg: literal(kw.value) for kw in node.keywords}
+                text = literal(node.args[0]) if node.args else kwargs.get("text")
+                callback = literal(node.args[1]) if len(node.args) > 1 else kwargs.get("callback_data")
+                if text and callback:
+                    await self.catalog_button(callback, text, kwargs.get("icon_key"), kwargs.get("fallback"))
 
     @staticmethod
     def validate_button_text(value: str) -> str:
@@ -140,14 +168,18 @@ class PremiumUIService:
     async def apply_message_overrides(self) -> None:
         await self.ensure_schema()
         for key, value in self._base_messages.items():
-            config.MESSAGES[key] = value
+            config.MESSAGES[key] = PremiumTemplateString(value)
         async with aiosqlite.connect(self.db_path) as conn:
             async with conn.execute("SELECT message_key, body FROM styled_message_overrides") as cur:
                 rows = await cur.fetchall()
         for key, body in rows:
             key = str(key)
             if key in self._base_messages:
-                config.MESSAGES[key] = str(body)
+                try:
+                    validate_template(str(body), self._base_messages[key])
+                except ValueError:
+                    continue  # Keep invalid historic overrides in storage for repair, use safe defaults.
+                config.MESSAGES[key] = PremiumTemplateString(body)
 
     async def catalog_button(
         self,
@@ -161,7 +193,8 @@ class PremiumUIService:
         identity = (callback_data, default_text)
         if (
             not callback_data
-            or len(callback_data) > 512
+            or callback_data.startswith(("pui:", "puc:", "uiv2:", "style:"))
+            or len(callback_data.encode("utf-8")) > 64
             or not default_text
             or identity in self._catalog_seen
         ):
@@ -286,27 +319,25 @@ class PremiumUIService:
         emoji_key: str | None,
     ) -> None:
         await self.ensure_schema()
-        identity = (item.callback_data, item.default_text)
-        if display_text is None and emoji_key is None:
-            async with aiosqlite.connect(self.db_path) as conn:
-                await conn.execute("DELETE FROM styled_button_overrides WHERE button_id=?", (item.id,))
-                await conn.commit()
-            self._button_overrides.pop(identity, None)
-            return
+        canonical = lambda value: re.sub(r"^[^\w@]+", "", str(value).strip()).strip()
         async with aiosqlite.connect(self.db_path) as conn:
-            await conn.execute(
-                """
-                INSERT INTO styled_button_overrides(button_id,display_text,emoji_key,updated_at)
-                VALUES(?,?,?,CURRENT_TIMESTAMP)
-                ON CONFLICT(button_id) DO UPDATE SET
-                    display_text=excluded.display_text,
-                    emoji_key=excluded.emoji_key,
-                    updated_at=CURRENT_TIMESTAMP
-                """,
-                (item.id, display_text, emoji_key),
-            )
+            async with conn.execute("SELECT id,default_text FROM styled_button_catalog WHERE callback_data=?", (item.callback_data,)) as cur:
+                variants = [(int(row[0]), str(row[1])) for row in await cur.fetchall()
+                            if canonical(row[1]) == canonical(item.default_text)]
+            for item_id, text in variants:
+                if display_text is None and emoji_key is None:
+                    await conn.execute("DELETE FROM styled_button_overrides WHERE button_id=?", (item_id,))
+                else:
+                    await conn.execute("""INSERT INTO styled_button_overrides(button_id,display_text,emoji_key)
+                        VALUES(?,?,?) ON CONFLICT(button_id) DO UPDATE SET display_text=excluded.display_text,
+                        emoji_key=excluded.emoji_key,updated_at=CURRENT_TIMESTAMP""", (item_id, display_text, emoji_key))
             await conn.commit()
-        self._button_overrides[identity] = (display_text, emoji_key)
+        for _, text in variants:
+            identity = (item.callback_data, text)
+            if display_text is None and emoji_key is None:
+                self._button_overrides.pop(identity, None)
+            else:
+                self._button_overrides[identity] = (display_text, emoji_key)
 
     async def set_button_text(self, item_id: int, text: str) -> None:
         item = await self.get_button(item_id)
@@ -361,6 +392,10 @@ class PremiumUIService:
         if key not in self._base_messages:
             raise PremiumUIError("کلید پیام ناشناخته است.")
         body = self.validate_message_body(body)
+        try:
+            validate_template(body, self._base_messages[key])
+        except ValueError as exc:
+            raise PremiumUIError(str(exc)) from exc
         await self.ensure_schema()
         async with aiosqlite.connect(self.db_path) as conn:
             await conn.execute(
@@ -372,7 +407,7 @@ class PremiumUIService:
                 (key, body),
             )
             await conn.commit()
-        config.MESSAGES[key] = body
+        config.MESSAGES[key] = PremiumTemplateString(body)
 
     async def reset_message(self, key: str) -> None:
         if key not in self._base_messages:
@@ -381,7 +416,7 @@ class PremiumUIService:
         async with aiosqlite.connect(self.db_path) as conn:
             await conn.execute("DELETE FROM styled_message_overrides WHERE message_key=?", (key,))
             await conn.commit()
-        config.MESSAGES[key] = self._base_messages[key]
+        config.MESSAGES[key] = PremiumTemplateString(self._base_messages[key])
 
     async def render_placeholders(self, text: str) -> str:
         """Replace ``{emoji:key}`` with Telegram Premium Emoji HTML.

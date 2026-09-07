@@ -9,6 +9,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 import config
+from authorization import is_staff
 from style_engine import (
     StyleValidationError,
     extract_single_custom_emoji_id,
@@ -59,7 +60,7 @@ class StyleAdminStates(StatesGroup):
 
 
 def _authorized(user_id: int) -> bool:
-    return user_id in config.SUDO_ADMINS
+    return is_staff(user_id)
 
 
 async def _deny(callback: CallbackQuery) -> bool:
@@ -140,6 +141,15 @@ async def _render_emoji_detail(message: Message, item_id: int) -> bool:
     state = "فعال ✅" if item.enabled else "غیرفعال ⛔"
     toggle = "غیرفعال کردن" if item.enabled else "فعال کردن"
     preview = await style_engine.render_emoji(item.key, fallback=item.fallback_unicode)
+    from premium_ui_service import premium_ui_service
+    from handlers.ui_editor_v2 import _message_title
+    messages = await premium_ui_service.list_messages()
+    uses = [_message_title(m.key) for m in messages if "{emoji:" + item.key + "}" in m.body]
+    async with __import__('aiosqlite').connect(premium_ui_service.db_path) as conn:
+        async with conn.execute("SELECT DISTINCT c.default_text FROM styled_button_catalog c LEFT JOIN styled_button_overrides o ON o.button_id=c.id WHERE COALESCE(o.emoji_key,c.default_icon_key)=? LIMIT 12", (item.key,)) as cur:
+            uses.extend(str(row[0]) for row in await cur.fetchall())
+    usage = "، ".join(escape(x[:45]) for x in uses[:12]) or "هنوز استفاده نشده"
+
     rows = [
         [await style_engine.styled_button("جایگزینی Premium Emoji", fallback="✨", callback_data=f"style:replace:{item.id}")],
         [await style_engine.styled_button("ویرایش Unicode Fallback", fallback="✏️", callback_data=f"style:fallback:{item.id}")],
@@ -153,7 +163,7 @@ async def _render_emoji_detail(message: Message, item_id: int) -> bool:
         f"Fallback: {escape(item.fallback_unicode)}\n"
         f"Custom Emoji ID: <code>{escape(item.custom_emoji_id)}</code>\n"
         f"وضعیت: {state}\n"
-        f"Preview: {preview}",
+        f"پیش‌نمایش: {preview}\n\nاستفاده در: {usage}",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
     )
     return True

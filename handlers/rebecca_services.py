@@ -15,6 +15,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 import config
+from authorization import is_staff
 from database import db
 from models.schemas import PlanModel
 from rebecca_api import RebeccaAPIError
@@ -62,7 +63,7 @@ class RebeccaPlanSelectStates(StatesGroup):
 
 
 def _authorized(user_id: int) -> bool:
-    return user_id in config.SUDO_ADMINS
+    return is_staff(user_id)
 
 
 async def _deny(callback: CallbackQuery) -> bool:

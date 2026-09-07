@@ -848,6 +848,15 @@ class Database:
             print(f"Error adding order: {e}")
             return None
 
+    async def submit_order_receipt(self, order_id: int, user_id: int, file_id: str) -> bool:
+        async with aiosqlite.connect(self.db_path) as conn:
+            cur = await conn.execute(
+                "UPDATE orders SET receipt_file_id=?,status='submitted' WHERE id=? AND user_id=? AND status='pending'",
+                (file_id, int(order_id), int(user_id)),
+            )
+            await conn.commit()
+            return cur.rowcount == 1
+
     async def get_orders(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
         try:
             async with aiosqlite.connect(self.db_path) as db:
