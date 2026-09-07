@@ -72,6 +72,19 @@ async def _home_callback_for(user_id: int) -> str:
 
 async def _render_purchase_services(message: Message, source: str) -> None:
     services = await service_marketplace_service.sellable_services()
+    if len(services) == 1:
+        service = services[0][0]
+        plans = await service_marketplace_service.plans_for_service(service.rebecca_service_id)
+        groups = service_marketplace_service.group_plans_by_duration(plans)
+        home = "back_to_admin_main" if source == "a" else "public_back_main"
+        if await service_marketplace_service.duration_groups_enabled() and len(groups) > 1:
+            rows = [[await _button(group.label, f"svcmarket:d:{source}:{int(service.id)}:{group.key}")] for group in groups]
+            rows.append([await _button("بازگشت", home, fallback="⬅️")])
+            title = await _render_tokens(escape(str(service.display_name)))
+            await message.edit_text(config.MESSAGES["sales_duration_select"].format(service=title), reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+        else:
+            await _render_plans(message, source=source, catalog_id=service.id, plans=plans, back_callback=home)
+        return
     rows = []
     lines = [
         config.MESSAGES["sales_service_select"],
@@ -123,6 +136,7 @@ async def _render_plans(
     catalog_id: int,
     plans: list[Any],
     duration_label: str | None = None,
+    back_callback: str | None = None,
 ) -> None:
     service = await service_marketplace_service.get_service_by_catalog_id(catalog_id)
     if not service:
@@ -134,7 +148,9 @@ async def _render_plans(
         rows.append([
             await _button(await _plan_button_label(plan), callback_data, fallback="📦")
         ])
-    if duration_label:
+    if back_callback:
+        back_cb = back_callback
+    elif duration_label:
         back_cb = f"svcmarket:s:{source}:{catalog_id}"
     else:
         back_cb = f"svcmarket:root:{source}"
@@ -195,9 +211,8 @@ async def service_purchase_service(callback: CallbackQuery, state: FSMContext):
         ]
         for group in groups
     ]
-    rows.append([
-        await _button("بازگشت", f"svcmarket:root:{source}", icon_key="back", fallback="⬅️")
-    ])
+    back = f"svcmarket:root:{source}" if len(await service_marketplace_service.sellable_services()) > 1 else ("back_to_admin_main" if source == "a" else "public_back_main")
+    rows.append([await _button("بازگشت", back, icon_key="back", fallback="⬅️")])
     title = await _render_tokens(escape(str(service.display_name)))
     await callback.message.edit_text(
         config.MESSAGES["sales_duration_select"].format(service=title),

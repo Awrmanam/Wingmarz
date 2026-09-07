@@ -388,7 +388,7 @@ class PremiumUIService:
         items = await self.list_messages()
         return next((item for item in items if item.key == key), None)
 
-    async def set_message(self, key: str, body: str) -> None:
+    def validate_message(self, key: str, body: str) -> str:
         if key not in self._base_messages:
             raise PremiumUIError("کلید پیام ناشناخته است.")
         body = self.validate_message_body(body)
@@ -396,6 +396,10 @@ class PremiumUIService:
             validate_template(body, self._base_messages[key])
         except ValueError as exc:
             raise PremiumUIError(str(exc)) from exc
+        return body
+
+    async def set_message(self, key: str, body: str) -> None:
+        body = self.validate_message(key, body)
         await self.ensure_schema()
         async with aiosqlite.connect(self.db_path) as conn:
             await conn.execute(

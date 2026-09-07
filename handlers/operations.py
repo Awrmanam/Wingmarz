@@ -13,6 +13,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 import config
+from checkout_presentation import plan_summary
 from authorization import is_staff
 from database import db
 from operations_service import DiscountQuote, OperationsError, operations_service
@@ -432,9 +433,10 @@ async def _checkout_prompt(callback: CallbackQuery, source: str, plan_id: int, s
     rows = [
         [await _button("اعمال کد تخفیف", f"ops:checkout:code:{source}:{plan_id}", fallback="🎟")],
         [await _button("ادامه بدون تخفیف", f"ops:checkout:nocode:{source}:{plan_id}", fallback="➡️")],
+        [await _button("بازگشت", "admin_buy_reseller" if source == "a" else "public_buy_reseller")],
     ]
     await callback.message.edit_text(
-        f"🛒 <b>{escape(plan.name)}</b>\nقیمت: <b>{int(plan.price):,} تومان</b>\n\nاگر کد تخفیف دارید اعمال کنید.",
+        plan_summary(plan) + "\n\n" + config.MESSAGES["sales_discount_prompt"],
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
     )
     await callback.answer()
@@ -481,7 +483,9 @@ async def checkout_code_start(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await state.update_data(checkout_source=source, checkout_plan_id=int(plan_id_raw))
     await state.set_state(CheckoutDiscountStates.code)
-    await callback.message.edit_text("🎟 کد تخفیف را ارسال کنید:")
+    await callback.message.edit_text("🎟 کد تخفیف را ارسال کنید:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [await _button("ادامه بدون تخفیف", f"ops:checkout:nocode:{source}:{plan_id_raw}")],
+        [await _button("بازگشت", "admin_buy_reseller" if source == "a" else "public_buy_reseller")]]))
     await callback.answer()
 
 
@@ -498,7 +502,9 @@ async def checkout_code_value(message: Message, state: FSMContext):
     try:
         quote = await operations_service.quote_discount(message.text or "", message.from_user.id, int(plan.price))
     except OperationsError as exc:
-        await message.answer(f"❌ {escape(str(exc))}\n\nکد دیگری بفرستید یا /start را بزنید.")
+        await message.answer(f"❌ {escape(str(exc))}", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [await _button("ادامه بدون تخفیف", f"ops:checkout:nocode:{source}:{plan_id}")],
+            [await _button("بازگشت", "admin_buy_reseller" if source == "a" else "public_buy_reseller")]]))
         return
     await state.clear()
     fake_callback = _MessageCheckoutAdapter(message)
