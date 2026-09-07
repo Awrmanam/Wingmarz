@@ -54,3 +54,14 @@ TRIAL_UI_DEFAULTS: dict[str, str] = {
 }
 
 UI_MESSAGES.update(TRIAL_UI_DEFAULTS)
+
+UI_MESSAGES.update({
+    'sales_plan_summary': '🛒 <b>{plan_name}</b>\n\nحجم: <b>{traffic}</b>\nمدت: <b>{duration}</b>\nظرفیت: <b>{users} کاربر</b>\nقیمت: <b>{price} تومان</b>',
+    'sales_username_prompt': 'نام کاربری دلخواه پنل را بفرستید.\n۳ تا ۳۲ کاراکتر؛ حروف انگلیسی، عدد، نقطه، خط تیره و آندرلاین.\nرمز عبور به‌صورت امن ساخته می‌شود.',
+    'sales_discount_prompt': 'اگر کد تخفیف دارید وارد کنید؛ در غیر این صورت به پرداخت بروید.',
+})
+UI_TITLES.update({
+    'sales_plan_summary': 'خلاصه مشخصات و قیمت پلن',
+    'sales_username_prompt': 'درخواست نام کاربری خرید',
+    'sales_discount_prompt': 'راهنمای کد تخفیف خرید',
+})

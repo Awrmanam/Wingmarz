@@ -208,7 +208,8 @@ async def button_text_start(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await state.update_data(pui_button_id=item_id)
     await state.set_state(ButtonEditStates.text)
-    await callback.message.answer("متن جدید دکمه را بفرستید؛ حداکثر ۶۴ کاراکتر و یک‌خطی.")
+    await callback.message.answer("متن جدید دکمه را بفرستید؛ حداکثر ۶۴ کاراکتر و یک‌خطی.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[await _btn("لغو و بازگشت", f"pui:b:{item_id}")]]))
     await callback.answer()
 
 
@@ -224,7 +225,8 @@ async def button_text_value(message: Message, state: FSMContext):
         await message.answer(f"❌ {escape(str(exc))}")
         return
     await state.clear()
-    await message.answer("✅ متن دکمه ذخیره شد.")
+    await message.answer("✅ متن دکمه ذخیره شد.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+        await _btn("بازگشت به دکمه", f"pui:b:{item_id}")]]))
 
 
 @premium_ui_admin_router.callback_query(F.data.startswith("pui:btr:"))

@@ -282,7 +282,8 @@ async def message_edit_start(callback: CallbackQuery, state: FSMContext):
     await callback.message.answer(
         "✏️ متن جدید را ارسال کنید.\n"
         "برای ایموجی پرمیوم بنویسید: <code>{emoji:wire}</code>"
-        + hint_text
+        + hint_text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[await _btn("لغو و بازگشت", f"uiv2:m:{key}")]])
     )
     await callback.answer()
 
@@ -294,17 +295,38 @@ async def message_edit_value(message: Message, state: FSMContext):
     data = await state.get_data()
     key = str(data.get("uiv2_message_key") or "")
     try:
-        await premium_ui_service.set_message(key, message.text or "")
+        body = premium_ui_service.validate_message(key, message.text or "")
     except PremiumUIError as exc:
         await message.answer(f"❌ {escape(str(exc))}")
         return
+    await state.update_data(uiv2_message_draft=body)
+    item = await premium_ui_service.get_message(key)
+    await message.answer(await _preview_body(item, body), reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [await _btn("ذخیره تغییرات", "uiv2:save", fallback="✅")],
+        [await _btn("لغو و بازگشت", f"uiv2:m:{key}", fallback="⬅️")],
+    ]))
+
+
+async def _preview_body(item, body):
+    for name in fields(item.default_body):
+        body = body.replace("{" + name + "}", escape(PREVIEW_VALUES.get(name, "نمونه")))
+    return await premium_ui_service.render_placeholders(body)
+
+
+@ui_editor_v2_router.callback_query(F.data == "uiv2:save", UIMessageEditStates.body)
+async def message_save_draft(callback, state):
+    if await _deny(callback):
+        return
+    data = await state.get_data()
+    key, body = data.get("uiv2_message_key", ""), data.get("uiv2_message_draft", "")
+    try:
+        await premium_ui_service.set_message(key, body)
+    except PremiumUIError as exc:
+        await callback.answer(str(exc), show_alert=True)
+        return
     await state.clear()
-    await message.answer(
-        "✅ متن ذخیره شد.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-            await _btn("برگشت به مدیریت متن‌ها", f"uiv2:m:{key}", icon_key="back", fallback="⬅️")
-        ]]),
-    )
+    await _render_message_detail(callback.message, key)
+    await callback.answer("ذخیره شد")
 
 
 @ui_editor_v2_router.callback_query(F.data.startswith("uiv2:mr:"))
@@ -330,12 +352,7 @@ async def message_preview(callback: CallbackQuery):
     if not item:
         await callback.answer("متن پیدا نشد", show_alert=True)
         return
-    body = item.body
-    for name in fields(item.default_body):
-        value = PREVIEW_VALUES.get(name, "نمونه")
-        body = body.replace("{" + name + "}", escape(value))
-    body = await premium_ui_service.render_placeholders(body)
-    await callback.message.answer(body)
+    await callback.message.answer(await _preview_body(item, item.body))
     await callback.answer("پیش‌نمایش ارسال شد")
 
 
@@ -412,3 +429,8 @@ async def button_category(callback: CallbackQuery, state: FSMContext):
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
     )
     await callback.answer()
+
+
+@ui_editor_v2_router.callback_query(F.data == "uiv2:save")
+async def expired_message_draft(callback):
+    await callback.answer("این پیش‌نویس منقضی شده است؛ متن را دوباره باز کنید.", show_alert=True)

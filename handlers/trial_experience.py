@@ -12,6 +12,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 import config
+from checkout_presentation import plan_summary
 from authorization import is_staff
 from database import db
 from operations_service import DiscountQuote, OperationsError, operations_service
@@ -109,17 +110,8 @@ async def _start_purchase(callback: CallbackQuery, state: FSMContext, source: st
     await state.clear()
     await state.update_data(purchase_source=source, purchase_plan_id=int(plan_id))
     await state.set_state(PurchaseStates.username)
-    back_cb = "back_to_admin_main" if source == "a" else "public_back_main"
-    text = (
-        f"🛒 <b>{escape(str(plan.name))}</b>\n\n"
-        "نام کاربری دلخواه پنل را ارسال کنید.\n"
-        "رمز عبور بعد از تایید سفارش به‌صورت امن توسط ربات ساخته می‌شود.\n\n"
-        "قواعد نام کاربری:\n"
-        "• ۳ تا ۳۲ کاراکتر\n"
-        "• حروف انگلیسی کوچک و عدد\n"
-        "• نقطه، خط تیره و آندرلاین مجاز است\n\n"
-        "مثال: <code>arman_panel</code>"
-    )
+    back_cb = "admin_buy_reseller" if source == "a" else "public_buy_reseller"
+    text = plan_summary(plan) + "\n\n" + config.MESSAGES["sales_username_prompt"]
     await callback.message.edit_text(
         text,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
@@ -176,11 +168,11 @@ async def preferred_purchase_username(message: Message, state: FSMContext):
         await state.set_state(PurchaseStates.discount_code)
         await message.answer(
             f"✅ نام کاربری: <code>{escape(username)}</code>\n\n"
-            f"قیمت پلن: <b>{int(plan.price):,} تومان</b>\n"
-            "اگر کد تخفیف دارید وارد کنید.",
+            + plan_summary(plan) + "\n\n" + config.MESSAGES["sales_discount_prompt"],
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [await _button("اعمال کد تخفیف", "ux:checkout:code", fallback="🎟")],
-                [await _button("ادامه بدون تخفیف", "ux:checkout:nocode", fallback="➡️")],
+                [await _button("ادامه به پرداخت", "ux:checkout:nocode", fallback="➡️")],
+                [await _button("بازگشت به پلن‌ها", "admin_buy_reseller" if source == "a" else "public_buy_reseller", fallback="⬅️")],
             ]),
         )
         return
@@ -209,7 +201,9 @@ async def preferred_checkout_code_start(callback: CallbackQuery, state: FSMConte
         await callback.answer("اطلاعات خرید منقضی شده؛ دوباره خرید را شروع کنید.", show_alert=True)
         return
     await state.set_state(PurchaseStates.discount_code)
-    await callback.message.answer("🎟 کد تخفیف را ارسال کنید:")
+    await callback.message.answer("🎟 کد تخفیف را ارسال کنید:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [await _button("ادامه بدون تخفیف", "ux:checkout:nocode")],
+        [await _button("بازگشت به پلن‌ها", "admin_buy_reseller" if data.get("purchase_source") == "a" else "public_buy_reseller")]]))
     await callback.answer()
 
 
