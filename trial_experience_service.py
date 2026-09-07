@@ -552,6 +552,10 @@ class TrialExperienceService:
         async with aiosqlite.connect(self.db_path) as conn:
             conn.row_factory = aiosqlite.Row
             await conn.execute("BEGIN IMMEDIATE")
+            async with conn.execute("SELECT status FROM orders WHERE id=?", (int(order_id),)) as cur:
+                order = await cur.fetchone()
+            if not order or order[0] not in {"pending", "submitted", "failed"}:
+                raise OperationsError("این سفارش دیگر قابل صدور نیست.")
             async with conn.execute("SELECT * FROM order_issue_locks WHERE order_id=?", (int(order_id),)) as cur:
                 row = await cur.fetchone()
             if row:
@@ -593,8 +597,8 @@ class TrialExperienceService:
         order = await db.get_order_by_id(int(order_id))
         if not order:
             raise OperationsError("سفارش یافت نشد.")
-        if str(order.get("status") or "").lower() == "approved":
-            raise OperationsError("این سفارش قبلاً تایید شده است.")
+        if str(order.get("status") or "").lower() not in {"pending", "submitted", "failed"}:
+            raise OperationsError("این سفارش دیگر قابل صدور نیست.")
         order_type = str(order.get("order_type") or "").lower()
         if order_type.startswith("renew"):
             raise OperationsError("این سفارش تمدید است و باید با مسیر قبلی پردازش شود.")

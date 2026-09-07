@@ -848,6 +848,21 @@ class Database:
             print(f"Error adding order: {e}")
             return None
 
+    async def reject_pending_order(self, order_id: int, actor_id: int) -> bool:
+        async with aiosqlite.connect(self.db_path) as conn:
+            await conn.execute("BEGIN IMMEDIATE")
+            async with conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='order_issue_locks'") as cur:
+                has_locks = await cur.fetchone() is not None
+            if has_locks:
+                async with conn.execute("SELECT 1 FROM order_issue_locks WHERE order_id=? AND state IN ('creating','completed')", (order_id,)) as cur:
+                    if await cur.fetchone():
+                        return False
+            cur = await conn.execute("""UPDATE orders SET status='rejected',approved_by=?,updated_at=CURRENT_TIMESTAMP
+                WHERE id=? AND status IN ('pending','submitted','failed')
+                AND COALESCE(rebecca_provision_state,'') NOT IN ('creating','completed')""", (actor_id,order_id))
+            await conn.commit()
+            return cur.rowcount == 1
+
     async def submit_order_receipt(self, order_id: int, user_id: int, file_id: str) -> bool:
         async with aiosqlite.connect(self.db_path) as conn:
             cur = await conn.execute(
@@ -911,7 +926,7 @@ class Database:
             await conn.execute("BEGIN IMMEDIATE")
             async with conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)) as cur:
                 row = await cur.fetchone()
-            if not row or (row["status"] or "").lower() == "approved":
+            if not row or (row["status"] or "").lower() not in {"pending", "submitted", "failed"}:
                 await conn.rollback()
                 return None
             if row["rebecca_provision_state"]:

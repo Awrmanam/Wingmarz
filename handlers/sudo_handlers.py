@@ -14,6 +14,7 @@ import re
 import secrets
 import time
 import config
+from order_tracking import track_approval
 from database import db
 from models.schemas import AdminModel, LogModel
 from utils.notify import (
@@ -4503,18 +4504,23 @@ async def set_login_url_save(message: Message, state: FSMContext):
 
 
 @sudo_router.callback_query(F.data.startswith("order_approve_"))
+@track_approval
 async def order_approve(callback: CallbackQuery):
     if callback.from_user.id not in config.SUDO_ADMINS:
         await callback.answer("غیرمجاز", show_alert=True)
         return
-    oid = int(callback.data.split("_")[-1])
+    try:
+        oid = int(callback.data.split("_")[-1])
+    except (ValueError, AttributeError):
+        await callback.answer("شناسه سفارش نامعتبر است.", show_alert=True)
+        return
     o = await db.get_order_by_id(oid)
     if not o:
         await callback.answer("سفارش یافت نشد.", show_alert=True)
         return
     # Prevent double-approval
-    if (o.get("status") or "").lower() == "approved":
-        await callback.answer("این سفارش قبلاً تایید شده است.", show_alert=True)
+    if (o.get("status") or "").lower() not in {"pending", "submitted", "failed"}:
+        await callback.answer("این سفارش دیگر قابل صدور نیست.", show_alert=True)
         return
 
     order_type = (o.get("order_type") or "").lower()
@@ -4818,12 +4824,18 @@ async def order_reject(callback: CallbackQuery):
     if callback.from_user.id not in config.SUDO_ADMINS:
         await callback.answer("غیرمجاز", show_alert=True)
         return
-    oid = int(callback.data.split("_")[-1])
+    try:
+        oid = int(callback.data.split("_")[-1])
+    except (ValueError, AttributeError):
+        await callback.answer("شناسه سفارش نامعتبر است.", show_alert=True)
+        return
     o = await db.get_order_by_id(oid)
     if not o:
         await callback.answer("سفارش یافت نشد.", show_alert=True)
         return
-    await db.update_order(oid, status="rejected", approved_by=callback.from_user.id)
+    if not await db.reject_pending_order(oid, callback.from_user.id):
+        await callback.answer("سفارش نهایی شده یا صدور آن در جریان است؛ رد نشد.", show_alert=True)
+        return
     # Notify end user about rejection
     try:
         await callback.bot.send_message(chat_id=o['user_id'], text=config.MESSAGES["order_rejected_user"])

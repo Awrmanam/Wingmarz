@@ -12,6 +12,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 import config
+from order_tracking import track_approval
 from checkout_presentation import plan_summary
 from authorization import is_staff
 from database import db
@@ -341,6 +342,7 @@ async def _create_order_and_render(
 
 
 @trial_experience_router.callback_query(PreferredOrderApproval())
+@track_approval
 async def approve_order_with_requested_username(callback: CallbackQuery, preferred_order_id: int):
     if not _is_sudo(callback.from_user.id):
         await callback.answer("غیرمجاز", show_alert=True)

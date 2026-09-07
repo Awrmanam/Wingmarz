@@ -1,6 +1,7 @@
 """Operational order filters over existing order and provisioning states."""
 import aiosqlite
 import config
+from order_tracking import ensure_schema
 
 FILTERS = {
     'pending': ('در انتظار بررسی', "status IN ('pending','submitted')"),
@@ -8,7 +9,7 @@ FILTERS = {
     'approval': ('در انتظار تأیید', "status='submitted'"),
     'approved': ('تأییدشده', "status='approved'"),
     'rejected': ('ردشده', "status='rejected'"),
-    'failed': ('صدور ناموفق', "status='failed' OR rebecca_provision_state IN ('failed','uncertain')"),
+    'failed': ('نیازمند پیگیری صدور', "status NOT IN ('approved','rejected','cancelled') AND (status='failed' OR rebecca_provision_state IN ('failed','uncertain') OR EXISTS (SELECT 1 FROM order_attempt_results a WHERE a.order_id=orders.id AND a.outcome='needs_attention'))"),
     'completed': ('صدور تکمیل‌شده', "status='approved' AND issued_admin_id IS NOT NULL"),
     'all': ('همه سفارش‌ها', '1=1'),
 }
@@ -19,6 +20,7 @@ STATUS_LABELS = {'pending': 'در انتظار رسید', 'submitted': 'در ا�
 async def list_orders(category='pending', page=0, page_size=10):
     if category not in FILTERS:
         raise ValueError('فیلتر نامعتبر')
+    await ensure_schema()
     where = FILTERS[category][1]
     async with aiosqlite.connect(config.DATABASE_PATH) as conn:
         conn.row_factory = aiosqlite.Row
