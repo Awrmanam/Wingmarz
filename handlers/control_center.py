@@ -13,6 +13,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 import config
 from authorization import is_staff
 import support_service
+from order_tracking import needs_attention
 from order_queries import FILTERS, STATUS_LABELS, list_orders
 from style_engine import style_engine
 
@@ -150,7 +151,7 @@ async def control_center_order_detail(callback: CallbackQuery, state: FSMContext
     if row['status'] == 'submitted':
         actions.append([await _button("تأیید و صدور", f"order_approve_{order_id}", fallback="✅"),
                         await _button("رد سفارش", f"order_reject_{order_id}", fallback="❌")])
-    if row['status'] == 'failed' or row['rebecca_provision_state'] in {'failed', 'uncertain'}:
+    if row['status'] in {'pending', 'submitted', 'failed'} and (row['status'] == 'failed' or row['rebecca_provision_state'] in {'failed', 'uncertain'} or await needs_attention(order_id)):
         actions.append([await _button("بررسی و تلاش دوباره", f"order_retry_{order_id}", fallback="🔁")])
     if row['receipt_file_id']:
         actions.append([await _button("مشاهده رسید", f"cc:receipt:{order_id}")])

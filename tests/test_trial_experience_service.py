@@ -127,6 +127,7 @@ def test_order_issue_lock_reuses_password_after_stale_lease(tmp_path):
     path = str(tmp_path / "locks.db")
     service = TrialExperienceService(path)
     run(service.ensure_schema())
+    seed_order(path, 5)
     password, recovery = run(service._acquire_order_lock(5, "wanted_name"))
     assert recovery is False
     assert password
@@ -146,7 +147,18 @@ def test_completed_order_lock_cannot_reissue(tmp_path):
     path = str(tmp_path / "done.db")
     service = TrialExperienceService(path)
     run(service.ensure_schema())
+    seed_order(path, 9)
     run(service._acquire_order_lock(9, "wanted_name"))
     run(service._complete_order_lock(9))
     with pytest.raises(OperationsError):
         run(service._acquire_order_lock(9, "wanted_name"))
+
+
+def seed_order(path, order_id):
+    async def seed():
+        from database import Database
+        await Database(path).init_db()
+        async with aiosqlite.connect(path) as conn:
+            await conn.execute("INSERT INTO orders(id,user_id,plan_id) VALUES(?,7,1)", (order_id,))
+            await conn.commit()
+    run(seed())
