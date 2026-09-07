@@ -9,6 +9,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 import config
+from authorization import is_staff
 from premium_ui_service import ButtonCatalogItem, premium_ui_service
 from style_engine import style_engine
 
@@ -37,11 +38,11 @@ _TOP_LEVEL_CALLBACKS = [
     "back_to_main",
 ]
 _TOP_LEVEL_RANK = {callback: index for index, callback in enumerate(_TOP_LEVEL_CALLBACKS)}
-_INTERNAL_PREFIXES = ("pui:", "puc:")
+_INTERNAL_PREFIXES = ("pui:", "puc:", "uiv2:", "style:")
 
 
 def _sudo(user_id: int) -> bool:
-    return int(user_id) in config.SUDO_ADMINS
+    return is_staff(user_id)
 
 
 async def _btn(text: str, callback_data: str, *, icon_key: str | None = None, fallback: str | None = None):
@@ -84,6 +85,11 @@ def _is_dynamic_noise(item: ButtonCatalogItem) -> bool:
     if re.fullmatch(r"\d{5,}", cleaned):
         return True
     if re.fullmatch(r"\d+\s*/\s*\d+", cleaned):
+        return True
+
+    if callback not in _TOP_LEVEL_CALLBACKS and re.search(r"(?:[:_])\d+(?:[:_]|$)", callback):
+        return True
+    if "@" in cleaned or re.search(r"(?:panel|user|admin)_[^:]+$", callback) and callback not in _TOP_LEVEL_CALLBACKS:
         return True
 
     # Common dynamic record callbacks: keep their action buttons in business
@@ -218,7 +224,6 @@ async def _render(message: Message, page: int = 0) -> None:
     await message.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 
-@premium_ui_clean_buttons_router.callback_query(F.data == "cc:buttons")
 async def clean_buttons_root(callback: CallbackQuery, state: FSMContext):
     if not _sudo(callback.from_user.id):
         await callback.answer("غیرمجاز", show_alert=True)

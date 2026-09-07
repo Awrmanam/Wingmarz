@@ -57,11 +57,11 @@ class MarzbanAdminAPI:
                     self.token = data.get("access_token")
                     return self.token
                 else:
-                    print(f"Failed to get token for {self.username}: {response.status_code} - {response.text}")
+                    print(f"Failed to get token for {self.username}: {response.status_code}")
                     return None
                     
         except Exception as e:
-            print(f"Error getting token for {self.username}: {e}")
+            print(f"Error getting token for {self.username}: {type(e).__name__}")
             return None
 
     async def ensure_authenticated(self) -> bool:
@@ -105,7 +105,7 @@ class MarzbanAdminAPI:
                 params = {"admin": self.username, "limit": limit, "offset": offset}
                 response = await self._request("GET", f"{self.base_url}/api/users", params=params)
                 if response.status_code != 200:
-                    print(f"Failed to get users for {self.username}: {response.status_code} - {response.text}")
+                    print(f"Failed to get users for {self.username}: {response.status_code}")
                     break
                 data = response.json()
                 batch = data.get("users", data if isinstance(data, list) else [])
@@ -122,7 +122,7 @@ class MarzbanAdminAPI:
                             admin=safe_extract_username(user_data.get("admin"))
                         ))
                     except Exception as e:
-                        print(f"Error parsing user data: {e}")
+                        print(f"Error parsing user data: {type(e).__name__}")
                         continue
                 users.extend(parsed_batch)
                 if len(parsed_batch) < limit:
@@ -130,7 +130,7 @@ class MarzbanAdminAPI:
                 offset += limit
             return users
         except Exception as e:
-            print(f"Error getting users for {self.username}: {e}")
+            print(f"Error getting users for {self.username}: {type(e).__name__}")
             return []
 
     async def get_users_expired_over_days(self, days: int = 10) -> List[MarzbanUserModel]:
@@ -146,7 +146,7 @@ class MarzbanAdminAPI:
                     filtered.append(u)
             return filtered
         except Exception as e:
-            print(f"Error filtering users expired over {days} days for {self.username}: {e}")
+            print(f"Error filtering users expired over {days} days for {self.username}: {type(e).__name__}")
             return []
 
     async def get_admin_stats(self) -> AdminStatsModel:
@@ -212,7 +212,7 @@ class MarzbanAdminAPI:
             )
             
         except Exception as e:
-            print(f"Error getting admin stats for {self.username}: {e}")
+            print(f"Error getting admin stats for {self.username}: {type(e).__name__}")
             return AdminStatsModel()
 
     async def test_connection(self) -> bool:
@@ -220,7 +220,7 @@ class MarzbanAdminAPI:
         try:
             return await self.ensure_authenticated()
         except Exception as e:
-            print(f"Connection test failed for {self.username}: {e}")
+            print(f"Connection test failed for {self.username}: {type(e).__name__}")
             return False
 
 
@@ -249,11 +249,11 @@ class MarzbanAPI:
                     self.token = data.get("access_token")
                     return self.token
                 else:
-                    print(f"Failed to get token: {response.status_code} - {response.text}")
+                    print(f"Failed to get token: {response.status_code}")
                     return None
                     
         except Exception as e:
-            print(f"Error getting token: {e}")
+            print(f"Error getting token: {type(e).__name__}")
             return None
 
     async def ensure_authenticated(self) -> bool:
@@ -374,7 +374,7 @@ class MarzbanAPI:
             admin_api = await self.create_admin_api(marzban_username, marzban_password)
             return await admin_api.get_admin_stats()
         except Exception as e:
-            print(f"Error getting stats with credentials for {marzban_username}: {e}")
+            print(f"Error getting stats with credentials for {marzban_username}: {type(e).__name__}")
             return AdminStatsModel()
 
     async def get_token(self) -> Optional[str]:
@@ -394,11 +394,11 @@ class MarzbanAPI:
                     self.token = data.get("access_token")
                     return self.token
                 else:
-                    print(f"Failed to get token: {response.status_code} - {response.text}")
+                    print(f"Failed to get token: {response.status_code}")
                     return None
                     
         except Exception as e:
-            print(f"Error getting token: {e}")
+            print(f"Error getting token: {type(e).__name__}")
             return None
 
     async def ensure_authenticated(self) -> bool:
@@ -430,7 +430,7 @@ class MarzbanAPI:
                     params["admin"] = admin_username
                 response = await self._request("GET", f"{self.base_url}/api/users", params=params)
                 if response.status_code != 200:
-                    print(f"Failed to get users: {response.status_code} - {response.text}")
+                    print(f"Failed to get users: {response.status_code}")
                     break
                 data = response.json()
                 batch = data.get("users", data if isinstance(data, list) else [])
@@ -447,7 +447,7 @@ class MarzbanAPI:
                             admin=safe_extract_username(user_data.get("admin"))
                         ))
                     except Exception as e:
-                        print(f"Error parsing user data: {e}")
+                        print(f"Error parsing user data: {type(e).__name__}")
                         continue
                 users.extend(parsed_batch)
                 if len(parsed_batch) < limit:
@@ -455,7 +455,7 @@ class MarzbanAPI:
                 offset += limit
             return users
         except Exception as e:
-            print(f"Error getting users: {e}")
+            print(f"Error getting users: {type(e).__name__}")
             return []
 
     async def get_users_expired_over_days(self, admin_username: Optional[str] = None, days: int = 10) -> List[MarzbanUserModel]:
@@ -475,7 +475,7 @@ class MarzbanAPI:
                     filtered.append(u)
             return filtered
         except Exception as e:
-            print(f"Error filtering users expired over {days} days for {admin_username or 'ALL'}: {e}")
+            print(f"Error filtering users expired over {days} days for {admin_username or 'ALL'}: {type(e).__name__}")
             return []
 
     async def get_small_quota_finished_users(self, max_quota_bytes: int = 1073741824, admin_username: Optional[str] = None) -> List[MarzbanUserModel]:
@@ -512,7 +512,7 @@ class MarzbanAPI:
                     filtered.append(u)
             return filtered
         except Exception as e:
-            print(f"Error filtering small-quota finished users for {admin_username or 'ALL'}: {e}")
+            print(f"Error filtering small-quota finished users for {admin_username or 'ALL'}: {type(e).__name__}")
             return []
 
     async def get_user(self, username: str) -> Optional[MarzbanUserModel]:
@@ -542,7 +542,7 @@ class MarzbanAPI:
                     return None
                     
         except Exception as e:
-            print(f"Error getting user {username}: {e}")
+            print(f"Error getting user {username}: {type(e).__name__}")
             return None
 
     async def disable_user(self, username: str) -> bool:
@@ -571,7 +571,7 @@ class MarzbanAPI:
                     try:
                         response_text = response.text
                         if response_text:
-                            error_details += f" - Response: {response_text}"
+                            error_details += " - Provider rejected request"
                     except Exception:
                         error_details += " - Could not read response text"
                     
@@ -579,7 +579,7 @@ class MarzbanAPI:
                     return False
                     
         except Exception as e:
-            logger.error(f"Exception while disabling user {username}: {type(e).__name__}: {e}")
+            logger.error(f"Exception while disabling user {username}: {type(e).__name__}: {type(e).__name__}")
             return False
 
     async def enable_user(self, username: str) -> bool:
@@ -608,7 +608,7 @@ class MarzbanAPI:
                     try:
                         response_text = response.text
                         if response_text:
-                            error_details += f" - Response: {response_text}"
+                            error_details += " - Provider rejected request"
                     except Exception:
                         error_details += " - Could not read response text"
                     
@@ -616,7 +616,7 @@ class MarzbanAPI:
                     return False
                     
         except Exception as e:
-            logger.error(f"Exception while enabling user {username}: {type(e).__name__}: {e}")
+            logger.error(f"Exception while enabling user {username}: {type(e).__name__}: {type(e).__name__}")
             return False
 
     async def disable_users_batch(self, usernames: List[str]) -> Dict[str, bool]:
@@ -697,7 +697,7 @@ class MarzbanAPI:
             )
             
         except Exception as e:
-            print(f"Error getting admin stats for {admin_username}: {e}")
+            print(f"Error getting admin stats for {admin_username}: {type(e).__name__}")
             return AdminStatsModel()
 
     async def get_system_stats(self) -> Dict[str, Any]:
@@ -717,7 +717,7 @@ class MarzbanAPI:
                     return {}
                     
         except Exception as e:
-            print(f"Error getting system stats: {e}")
+            print(f"Error getting system stats: {type(e).__name__}")
             return {}
 
     async def update_admin_password(self, admin_username: str, new_password: str, is_sudo: bool = False) -> bool:
@@ -753,7 +753,7 @@ class MarzbanAPI:
                     try:
                         response_text = response.text
                         if response_text:
-                            error_details += f" - Response: {response_text}"
+                            error_details += " - Provider rejected request"
                     except Exception:
                         error_details += " - Could not read response text"
                     
@@ -761,7 +761,7 @@ class MarzbanAPI:
                     return False
                     
         except Exception as e:
-            logger.error(f"Exception while updating password for admin {admin_username}: {type(e).__name__}: {e}")
+            logger.error(f"Exception while updating password for admin {admin_username}: {type(e).__name__}: {type(e).__name__}")
             return False
 
     async def get_admin_users(self, admin_username: str) -> List[MarzbanUserModel]:
@@ -802,7 +802,7 @@ class MarzbanAPI:
                     try:
                         response_text = response.text
                         if response_text:
-                            error_details += f" - Response: {response_text}"
+                            error_details += " - Provider rejected request"
                     except Exception:
                         error_details += " - Could not read response text"
                     
@@ -810,7 +810,7 @@ class MarzbanAPI:
                     return False
                     
         except Exception as e:
-            logger.error(f"Exception while creating admin {username}: {type(e).__name__}: {e}")
+            logger.error(f"Exception while creating admin {username}: {type(e).__name__}: {type(e).__name__}")
             return False
 
     async def admin_exists(self, username: str) -> bool:
@@ -841,7 +841,7 @@ class MarzbanAPI:
                     try:
                         response_text = response.text
                         if response_text:
-                            error_details += f" - Response: {response_text}"
+                            error_details += " - Provider rejected request"
                     except Exception:
                         error_details += " - Could not read response text"
                     
@@ -849,7 +849,7 @@ class MarzbanAPI:
                     return False
                     
         except Exception as e:
-            logger.error(f"Exception while checking admin {username} existence: {type(e).__name__}: {e}")
+            logger.error(f"Exception while checking admin {username} existence: {type(e).__name__}: {type(e).__name__}")
             return False
 
     async def set_user_owner(self, username: str, admin_username: str) -> bool:
@@ -867,7 +867,7 @@ class MarzbanAPI:
                 return response.status_code == 200
                 
         except Exception as e:
-            print(f"Error setting user owner for {username}: {e}")
+            print(f"Error setting user owner for {username}: {type(e).__name__}")
             return False
 
     async def modify_user(self, username: str, user_data: Dict[str, Any]) -> bool:
@@ -903,7 +903,7 @@ class MarzbanAPI:
                     try:
                         response_text = response.text
                         if response_text:
-                            error_details += f" - Response: {response_text}"
+                            error_details += " - Provider rejected request"
                     except Exception:
                         error_details += " - Could not read response text"
                     
@@ -911,7 +911,7 @@ class MarzbanAPI:
                     return False
                     
         except Exception as e:
-            logger.error(f"Exception while modifying user {username}: {type(e).__name__}: {e}")
+            logger.error(f"Exception while modifying user {username}: {type(e).__name__}: {type(e).__name__}")
             return False
 
     async def enable_user(self, username: str) -> bool:
@@ -948,7 +948,7 @@ class MarzbanAPI:
                     try:
                         response_text = response.text
                         if response_text:
-                            error_details += f" - Response: {response_text}"
+                            error_details += " - Provider rejected request"
                     except Exception:
                         error_details += " - Could not read response text"
                     
@@ -956,7 +956,7 @@ class MarzbanAPI:
                     return False
                     
         except Exception as e:
-            logger.error(f"Exception while removing user {username}: {type(e).__name__}: {e}")
+            logger.error(f"Exception while removing user {username}: {type(e).__name__}: {type(e).__name__}")
             return False
 
     async def get_expired_users(self, admin_username: Optional[str] = None) -> List[MarzbanUserModel]:
@@ -988,7 +988,7 @@ class MarzbanAPI:
                             admin=safe_extract_username(user_data.get("admin"))
                         ))
                     except Exception as e:
-                        print(f"Error parsing expired user data: {e}")
+                        print(f"Error parsing expired user data: {type(e).__name__}")
                         continue
                 users.extend(parsed_batch)
                 if len(parsed_batch) < limit:
@@ -996,7 +996,7 @@ class MarzbanAPI:
                 offset += limit
             return users
         except Exception as e:
-            print(f"Error getting expired users: {e}")
+            print(f"Error getting expired users: {type(e).__name__}")
             return []
 
     async def delete_expired_users(self, admin_username: Optional[str] = None) -> bool:
@@ -1013,7 +1013,7 @@ class MarzbanAPI:
             return all(results)
                 
         except Exception as e:
-            print(f"Error deleting expired users: {e}")
+            print(f"Error deleting expired users: {type(e).__name__}")
             return False
 
     async def reset_user_data_usage(self, username: str) -> bool:
@@ -1030,7 +1030,7 @@ class MarzbanAPI:
                 return response.status_code == 200
                 
         except Exception as e:
-            print(f"Error resetting data usage for user {username}: {e}")
+            print(f"Error resetting data usage for user {username}: {type(e).__name__}")
             return False
 
     async def reset_users_data_usage(self, admin_username: Optional[str] = None) -> Dict[str, bool]:
@@ -1046,7 +1046,7 @@ class MarzbanAPI:
             return results
                 
         except Exception as e:
-            print(f"Error resetting users data usage: {e}")
+            print(f"Error resetting users data usage: {type(e).__name__}")
             return {}
 
     async def get_current_admin(self) -> Optional[Dict[str, Any]]:
@@ -1067,7 +1067,7 @@ class MarzbanAPI:
                     return None
                     
         except Exception as e:
-            print(f"Error getting current admin: {e}")
+            print(f"Error getting current admin: {type(e).__name__}")
             return None
 
     async def list_admins(self) -> List[Dict[str, Any]]:
@@ -1088,7 +1088,7 @@ class MarzbanAPI:
                     return []
                     
         except Exception as e:
-            print(f"Error getting admins list: {e}")
+            print(f"Error getting admins list: {type(e).__name__}")
             return []
 
     async def delete_admin(self, admin_username: str) -> bool:
@@ -1117,7 +1117,7 @@ class MarzbanAPI:
                     try:
                         response_text = response.text
                         if response_text:
-                            error_details += f" - Response: {response_text}"
+                            error_details += " - Provider rejected request"
                     except Exception:
                         error_details += " - Could not read response text"
                     
@@ -1125,7 +1125,7 @@ class MarzbanAPI:
                     return False
                     
         except Exception as e:
-            logger.error(f"Exception while deleting admin {admin_username}: {type(e).__name__}: {e}")
+            logger.error(f"Exception while deleting admin {admin_username}: {type(e).__name__}: {type(e).__name__}")
             return False
 
     async def delete_admin_completely(self, admin_username: str) -> bool:
@@ -1158,7 +1158,7 @@ class MarzbanAPI:
                     await asyncio.sleep(0.1)  # Rate limiting
                 except Exception as e:
                     failed_users.append(user.username)
-                    logger.error(f"Exception while deleting user {user.username}: {type(e).__name__}: {e}")
+                    logger.error(f"Exception while deleting user {user.username}: {type(e).__name__}: {type(e).__name__}")
                     continue
             
             logger.info(f"User deletion summary for admin {admin_username}: {deleted_users_count} deleted, {len(failed_users)} failed")
@@ -1174,7 +1174,7 @@ class MarzbanAPI:
                 return False
                 
         except Exception as e:
-            logger.error(f"Exception during complete deletion of admin {admin_username}: {type(e).__name__}: {e}")
+            logger.error(f"Exception during complete deletion of admin {admin_username}: {type(e).__name__}: {type(e).__name__}")
             return False
 
     async def update_admin(self, admin_username: str, admin_data: Dict[str, Any]) -> bool:
@@ -1204,7 +1204,7 @@ class MarzbanAPI:
                     try:
                         response_text = response.text
                         if response_text:
-                            error_details += f" - Response: {response_text}"
+                            error_details += " - Provider rejected request"
                     except Exception:
                         error_details += " - Could not read response text"
                     
@@ -1212,7 +1212,7 @@ class MarzbanAPI:
                     return False
                     
         except Exception as e:
-            logger.error(f"Exception while updating admin {admin_username}: {type(e).__name__}: {e}")
+            logger.error(f"Exception while updating admin {admin_username}: {type(e).__name__}: {type(e).__name__}")
             return False
 
     async def test_connection(self) -> bool:
@@ -1220,7 +1220,7 @@ class MarzbanAPI:
         try:
             return await self.ensure_authenticated()
         except Exception as e:
-            print(f"Connection test failed: {e}")
+            print(f"Connection test failed: {type(e).__name__}")
             return False
 
 

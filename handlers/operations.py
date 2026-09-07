@@ -13,6 +13,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 import config
+from authorization import is_staff
 from database import db
 from operations_service import DiscountQuote, OperationsError, operations_service
 from style_engine import style_engine
@@ -49,6 +50,7 @@ class DiscountStates(StatesGroup):
     max_uses = State()
     per_user = State()
     expiry_days = State()
+    start_days = State()
 
 
 class CheckoutDiscountStates(StatesGroup):
@@ -79,7 +81,7 @@ async def _button(text: str, callback_data: str, *, icon_key: str | None = None,
 
 
 def _sudo(user_id: int) -> bool:
-    return int(user_id) in config.SUDO_ADMINS
+    return is_staff(user_id)
 
 
 async def _deny(callback: CallbackQuery) -> bool:
@@ -91,8 +93,8 @@ async def _deny(callback: CallbackQuery) -> bool:
 
 async def _menu_label(callback_data: str, default: str) -> str:
     try:
-        _raw, visible = await style_engine.resolve_visual_alias("menu", callback_data)
-        return visible
+        raw, visible = await style_engine.resolve_visual_alias("menu", callback_data)
+        return default if visible == raw else visible
     except Exception:
         return default
 
@@ -314,8 +316,26 @@ async def discount_expiry_input(message: Message, state: FSMContext):
     except ValueError:
         await message.answer("❌ عدد معتبر وارد کنید.")
         return
+    await state.update_data(discount_expiry_days=days)
+    await state.set_state(DiscountStates.start_days)
+    await message.answer("شروع کد چند روز دیگر باشد؟ صفر یعنی همین حالا.")
+
+
+@operations_router.message(DiscountStates.start_days, F.text)
+async def discount_start_input(message, state):
+    if not _sudo(message.from_user.id):
+        return
+    try:
+        delay = int(message.text.strip())
+        if delay < 0 or delay > 3650:
+            raise ValueError
+    except (ValueError, AttributeError):
+        await message.answer("عدد بین صفر تا ۳۶۵۰ وارد کنید.")
+        return
     data = await state.get_data()
-    expires_at = int(time.time()) + days * 86400 if days else None
+    days = int(data.get("discount_expiry_days") or 0)
+    starts_at = int(time.time()) + delay * 86400
+    expires_at = starts_at + days * 86400 if days else None
     try:
         discount_id = await operations_service.create_discount(
             code=data["discount_code"],
@@ -325,6 +345,7 @@ async def discount_expiry_input(message: Message, state: FSMContext):
             max_uses=int(data["discount_max_uses"]),
             per_user_limit=int(data["discount_per_user"]),
             expires_at=expires_at,
+            starts_at=starts_at,
             created_by=message.from_user.id,
         )
     except (OperationsError, KeyError) as exc:
@@ -332,7 +353,7 @@ async def discount_expiry_input(message: Message, state: FSMContext):
         await message.answer(f"❌ {escape(str(exc))}")
         return
     await state.clear()
-    await message.answer(f"✅ کد تخفیف ساخته شد. ID: <code>{discount_id}</code>")
+    await message.answer("✅ کد تخفیف ساخته شد.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[await _button("مدیریت تخفیف‌ها", "cc:discounts")]]))
 
 
 @operations_router.callback_query(F.data.startswith("ops:disc:item:"))
@@ -357,6 +378,7 @@ async def discount_detail(callback: CallbackQuery, state: FSMContext):
         f"حداقل سفارش: <b>{int(item['min_order'] or 0):,}</b>\n"
         f"سقف کل: <b>{'نامحدود' if not item['max_uses'] else item['max_uses']}</b>\n"
         f"سقف هر کاربر: <b>{item['per_user_limit']}</b>\n"
+        f"شروع: <code>{escape(operations_service.format_timestamp(item.get('starts_at')))}</code>\n"
         f"انقضا: <code>{escape(expires)}</code>\n"
         f"وضعیت: {'✅ فعال' if item['is_active'] else '⛔ غیرفعال'}"
     )
@@ -441,7 +463,7 @@ async def admin_checkout_intercept(callback: CallbackQuery, state: FSMContext):
 @operations_router.callback_query(F.data.startswith("ops:checkout:nocode:"))
 async def checkout_no_code(callback: CallbackQuery, state: FSMContext):
     parts = (callback.data or "").split(":")
-    if len(parts) != 5:
+    if len(parts) != 5 or parts[3] not in {"a", "p"} or not parts[4].isdigit() or int(parts[4]) <= 0:
         await callback.answer("نامعتبر", show_alert=True)
         return
     source, plan_id_raw = parts[3], parts[4]
@@ -452,7 +474,7 @@ async def checkout_no_code(callback: CallbackQuery, state: FSMContext):
 @operations_router.callback_query(F.data.startswith("ops:checkout:code:"))
 async def checkout_code_start(callback: CallbackQuery, state: FSMContext):
     parts = (callback.data or "").split(":")
-    if len(parts) != 5:
+    if len(parts) != 5 or parts[3] not in {"a", "p"} or not parts[4].isdigit() or int(parts[4]) <= 0:
         await callback.answer("نامعتبر", show_alert=True)
         return
     source, plan_id_raw = parts[3], parts[4]
@@ -483,10 +505,21 @@ async def checkout_code_value(message: Message, state: FSMContext):
     await _create_checkout_order(fake_callback, source, plan_id, quote)
 
 
+class _CheckoutMessage:
+    def __init__(self, message):
+        self._message = message
+
+    async def edit_text(self, text, **kwargs):
+        return await self._message.answer(text, **kwargs)
+
+    async def answer(self, text, **kwargs):
+        return await self._message.answer(text, **kwargs)
+
+
 class _MessageCheckoutAdapter:
     """Tiny adapter so one checkout renderer can answer from callback or FSM message."""
     def __init__(self, message: Message):
-        self.message = message
+        self.message = _CheckoutMessage(message)
         self.from_user = message.from_user
         self.bot = message.bot
 
@@ -554,7 +587,7 @@ async def _create_checkout_order(callback: CallbackQuery | _MessageCheckoutAdapt
 
     cards = await db.get_cards(only_active=True)
     lines = [
-        f"✅ سفارش ثبت شد.\n\nشناسه سفارش: {order_id}\nپلن: {escape(plan.name)}{discount_lines}\nقیمت نهایی: <b>{final_price:,} تومان</b>\n",
+        f"✅ سفارش ثبت شد.\n\nپلن: {escape(plan.name)}{discount_lines}\nقیمت نهایی: <b>{final_price:,} تومان</b>\n",
         config.MESSAGES["public_payment_instructions"],
         "",
         "کارت‌های فعال:",
@@ -613,7 +646,6 @@ async def _render_trial_settings(message: Message) -> None:
     await message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 
-@operations_router.callback_query(F.data == "cc:test")
 async def trial_menu(callback: CallbackQuery, state: FSMContext):
     if await _deny(callback):
         return
@@ -762,25 +794,10 @@ async def _send_trial_result(message: Message, target_user_id: int) -> None:
     except OperationsError as exc:
         await message.answer(f"❌ {escape(str(exc))}")
         return
-    duration = max(1, (int(result["expire_at"]) - int(time.time())) // 60)
-    traffic_gb = result["traffic_bytes"] / (1024 ** 3)
-    lines = [
-        "🧪 <b>کانفیگ تست شما آماده است</b>",
-        "",
-        f"نام کاربری: <code>{escape(result['username'])}</code>",
-        f"حجم: <b>{traffic_gb:g} GB</b>",
-        f"اعتبار تقریبی: <b>{duration} دقیقه</b>",
-    ]
-    if result.get("subscription_url"):
-        lines.extend(["", "لینک سابسکریپشن:", f"<code>{escape(result['subscription_url'])}</code>"])
-    elif result.get("links"):
-        lines.extend(["", "لینک:", f"<code>{escape(result['links'][0])}</code>"])
-    else:
-        lines.extend(["", "کانفیگ ساخته شد، اما Provider لینک سابسکریپشن برنگرداند؛ با پشتیبانی تماس بگیرید."])
-    await message.answer("\n".join(lines))
+    from handlers.trial_ui_v2 import render_config_result
+    await render_config_result(message, target_user_id, result)
 
 
-@operations_router.message(Command("test"))
 async def public_trial_command(message: Message, state: FSMContext):
     await state.clear()
     await _send_trial_result(message, message.from_user.id)
@@ -812,16 +829,17 @@ async def _render_bot_admins(message: Message) -> None:
         lines.append(f"{state} <code>{item['user_id']}</code>")
         rows.append([await _button(f"{state} {item['user_id']}", f"ops:ba:item:{item['user_id']}", fallback="👤")])
     rows.extend([
-        [await _button("افزودن ادمین کامل", "ops:ba:add", fallback="➕")],
+        [await _button("افزودن مدیر", "ops:ba:add", fallback="➕")],
         [await _button("خانه", "back_to_main", icon_key="home", fallback="🏠")],
     ])
-    lines.extend(["", "ادمین اضافه‌شده دسترسی کامل SUDO دارد و بعد از ری‌استارت نیز باقی می‌ماند."])
+    lines.extend(["", "مدیر به بخش‌های عملیاتی دسترسی دارد؛ تغییر دسترسی مدیران فقط با مالک است."])
     await message.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 
 @operations_router.callback_query(F.data == "cc:botadmins")
 async def bot_admins_menu(callback: CallbackQuery, state: FSMContext):
-    if await _deny(callback):
+    if callback.from_user.id not in operations_service.base_sudo_ids:
+        await callback.answer("فقط مالک ربات اجازه مدیریت دسترسی‌ها را دارد.", show_alert=True)
         return
     await state.clear()
     await _render_bot_admins(callback.message)
@@ -830,7 +848,8 @@ async def bot_admins_menu(callback: CallbackQuery, state: FSMContext):
 
 @operations_router.callback_query(F.data == "ops:ba:add")
 async def bot_admin_add_start(callback: CallbackQuery, state: FSMContext):
-    if await _deny(callback):
+    if callback.from_user.id not in operations_service.base_sudo_ids:
+        await callback.answer("فقط مالک ربات اجازه مدیریت دسترسی‌ها را دارد.", show_alert=True)
         return
     await state.clear()
     await state.set_state(BotAdminStates.user_id)
@@ -840,7 +859,7 @@ async def bot_admin_add_start(callback: CallbackQuery, state: FSMContext):
 
 @operations_router.message(BotAdminStates.user_id, F.text)
 async def bot_admin_add_value(message: Message, state: FSMContext):
-    if not _sudo(message.from_user.id):
+    if message.from_user.id not in operations_service.base_sudo_ids:
         return
     try:
         user_id = int((message.text or "").strip())
@@ -854,7 +873,8 @@ async def bot_admin_add_value(message: Message, state: FSMContext):
 
 @operations_router.callback_query(F.data.startswith("ops:ba:item:"))
 async def bot_admin_detail(callback: CallbackQuery):
-    if await _deny(callback):
+    if callback.from_user.id not in operations_service.base_sudo_ids:
+        await callback.answer("فقط مالک ربات اجازه مدیریت دسترسی‌ها را دارد.", show_alert=True)
         return
     user_id = int((callback.data or "").rsplit(":", 1)[-1])
     item = next((x for x in await operations_service.list_runtime_admins() if int(x["user_id"]) == user_id), None)
@@ -875,7 +895,8 @@ async def bot_admin_detail(callback: CallbackQuery):
 
 @operations_router.callback_query(F.data.startswith("ops:ba:toggle:"))
 async def bot_admin_toggle(callback: CallbackQuery):
-    if await _deny(callback):
+    if callback.from_user.id not in operations_service.base_sudo_ids:
+        await callback.answer("فقط مالک ربات اجازه مدیریت دسترسی‌ها را دارد.", show_alert=True)
         return
     user_id = int((callback.data or "").rsplit(":", 1)[-1])
     item = next((x for x in await operations_service.list_runtime_admins() if int(x["user_id"]) == user_id), None)
@@ -883,7 +904,7 @@ async def bot_admin_toggle(callback: CallbackQuery):
         await callback.answer("پیدا نشد", show_alert=True)
         return
     try:
-        await operations_service.set_runtime_admin_active(user_id, not bool(item["is_active"]))
+        await operations_service.set_runtime_admin_active(user_id, not bool(item["is_active"]), actor_id=callback.from_user.id)
     except OperationsError as exc:
         await callback.answer(str(exc), show_alert=True)
         return
@@ -893,11 +914,12 @@ async def bot_admin_toggle(callback: CallbackQuery):
 
 @operations_router.callback_query(F.data.startswith("ops:ba:delete:"))
 async def bot_admin_delete(callback: CallbackQuery):
-    if await _deny(callback):
+    if callback.from_user.id not in operations_service.base_sudo_ids:
+        await callback.answer("فقط مالک ربات اجازه مدیریت دسترسی‌ها را دارد.", show_alert=True)
         return
     user_id = int((callback.data or "").rsplit(":", 1)[-1])
     try:
-        await operations_service.remove_runtime_admin(user_id)
+        await operations_service.remove_runtime_admin(user_id, actor_id=callback.from_user.id)
     except OperationsError as exc:
         await callback.answer(str(exc), show_alert=True)
         return
@@ -907,7 +929,6 @@ async def bot_admin_delete(callback: CallbackQuery):
 
 # ---------------------------- Text / button management ----------------------------
 
-@operations_router.callback_query(F.data == "cc:texts")
 async def texts_menu(callback: CallbackQuery, state: FSMContext):
     if await _deny(callback):
         return
@@ -944,7 +965,6 @@ async def _render_buttons_menu(message: Message) -> None:
     await message.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 
-@operations_router.callback_query(F.data == "cc:buttons")
 async def buttons_menu(callback: CallbackQuery, state: FSMContext):
     if await _deny(callback):
         return

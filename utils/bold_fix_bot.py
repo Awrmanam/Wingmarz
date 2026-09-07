@@ -130,6 +130,14 @@ class BoldFixBot(Bot):
     async def __call__(self, method, *args: Any, **kwargs: Any):
         """Normalize outgoing formatting and resolve ``{emoji:key}`` placeholders."""
         try:
+            from premium_markup_runtime import style_reply_markup
+            markup = getattr(method, "reply_markup", None)
+            if markup is not None:
+                method.reply_markup = await style_reply_markup(markup)
+        except Exception:
+            pass  # Presentation failure must not interrupt a business operation.
+
+        try:
             text = getattr(method, "text", None)
             if _should_convert_markdown(text, getattr(method, "parse_mode", None)):
                 text = convert_markdown_bold_to_html(text)

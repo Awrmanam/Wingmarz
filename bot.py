@@ -43,7 +43,8 @@ class MarzbanAdminBot:
             token=config.BOT_TOKEN,
             default=DefaultBotProperties(parse_mode=ParseMode.HTML)
         )
-        self.dp = Dispatcher()
+        from aiogram.fsm.storage.memory import SimpleEventIsolation
+        self.dp = Dispatcher(events_isolation=SimpleEventIsolation())
         self.scheduler = None
 
     async def setup(self):

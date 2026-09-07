@@ -40,6 +40,10 @@ def get_admin_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text=config.BUTTONS["renew"], callback_data="admin_renew")
         ]
     ]
+    buttons.extend([
+        [InlineKeyboardButton(text="🧪 تست رایگان", callback_data="svcmarket:trial")],
+        [InlineKeyboardButton(text="🎧 پشتیبانی", callback_data="support:home")],
+    ])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
@@ -415,9 +419,13 @@ async def admin_order(callback: CallbackQuery):
 
 @admin_router.callback_query(F.data.startswith("admin_mark_paid_"))
 async def admin_mark_paid(callback: CallbackQuery, state: FSMContext):
-    order_id = int(callback.data.split("_")[-1])
+    try:
+        order_id = int(callback.data.split("_")[-1])
+    except (ValueError, AttributeError):
+        await callback.answer("سفارش نامعتبر", show_alert=True)
+        return
     order = await db.get_order_by_id(order_id)
-    if not order or order.get("user_id") != callback.from_user.id:
+    if not order or order.get("user_id") != callback.from_user.id or order.get("status") != "pending":
         await callback.answer("سفارش یافت نشد.", show_alert=True)
         return
     await state.update_data(order_id=order_id)
@@ -437,7 +445,10 @@ async def admin_receive_payment_receipt(message: Message, state: FSMContext):
         await message.answer(config.MESSAGES["public_send_receipt"])
         return
     file_id = message.photo[-1].file_id
-    await db.update_order(order_id, receipt_file_id=file_id, status="submitted")
+    if not await db.submit_order_receipt(order_id, message.from_user.id, file_id):
+        await state.clear()
+        await message.answer("این سفارش قبلاً بررسی شده یا متعلق به شما نیست.")
+        return
     # Notify sudo admins
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
     order = await db.get_order_by_id(order_id)
@@ -1159,7 +1170,8 @@ async def reactivate_panel_selected(callback: CallbackQuery):
 
 # Back to main menu
 @admin_router.callback_query(F.data == "back_to_admin_main")
-async def back_to_admin_main(callback: CallbackQuery):
+async def back_to_admin_main(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
     """Return to admin main menu."""
     await callback.message.edit_text(config.MESSAGES["welcome_admin"], reply_markup=get_admin_keyboard())
     await callback.answer()

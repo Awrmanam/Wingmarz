@@ -10,6 +10,9 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 import config
+from authorization import is_staff
+from text_templates import fields
+from message_catalog import UI_TITLES
 from handlers.premium_ui_clean_buttons import _canonical_label, _load_clean_buttons
 from handlers.premium_ui_admin import MESSAGE_TITLES
 from premium_ui_service import MessageTemplateItem, PremiumUIError, premium_ui_service
@@ -34,7 +37,10 @@ TRIAL_MESSAGE_TITLES = {
 
 MESSAGE_CATEGORY_META: list[tuple[str, str, str]] = [
     ("trial", "تست رایگان", "🧪"),
-    ("sales", "خرید و پرداخت", "🛒"),
+    ("sales", "فروش و انتخاب پلن", "🛒"),
+    ("payment", "پرداخت", "💳"),
+    ("orders", "سفارش‌ها و تحویل", "📦"),
+    ("support", "پشتیبانی", "🎧"),
     ("panel", "پنل و کاربران", "🧩"),
     ("start", "شروع و دسترسی", "🏠"),
     ("system", "هشدارها و خطاها", "⚠️"),
@@ -48,7 +54,9 @@ BUTTON_CATEGORY_META: list[tuple[str, str, str]] = [
     ("sales", "خرید و پلن‌ها", "🛒"),
     ("payment", "سفارش و پرداخت", "💵"),
     ("panel", "پنل و کاربران", "🧩"),
-    ("manage", "مدیریت ربات", "⚙️"),
+    ("support", "پشتیبانی", "🎧"),
+    ("settings", "تنظیمات", "⚙️"),
+    ("manage", "مدیریت ربات", "🧑‍💼"),
     ("other", "سایر دکمه‌ها", "🔘"),
 ]
 
@@ -67,7 +75,7 @@ PREVIEW_VALUES = {
 
 
 def _sudo(user_id: int) -> bool:
-    return int(user_id) in config.SUDO_ADMINS
+    return is_staff(user_id)
 
 
 async def _deny(callback: CallbackQuery) -> bool:
@@ -93,10 +101,20 @@ async def _btn(
 
 
 def _message_title(key: str) -> str:
-    return TRIAL_MESSAGE_TITLES.get(key) or MESSAGE_TITLES.get(key, key)
+    return UI_TITLES.get(key) or TRIAL_MESSAGE_TITLES.get(key) or MESSAGE_TITLES.get(key, "متن عمومی")
 
 
 def _message_category(key: str) -> str:
+    if key.startswith("support_"):
+        return "support"
+    if key == "customer_home":
+        return "start"
+    if key.startswith("sales_"):
+        return "sales"
+    if key.startswith("order_") or key == "public_order_registered":
+        return "orders"
+    if "payment" in key or "receipt" in key:
+        return "payment"
     if key.startswith("trial_v2_"):
         return "trial"
     if key.startswith("backup_"):
@@ -114,6 +132,10 @@ def _message_category(key: str) -> str:
 
 def _button_category(callback: str) -> str:
     cb = str(callback or "").lower()
+    if cb.startswith("support:") or "ticket" in cb:
+        return "support"
+    if "settings" in cb:
+        return "settings"
     if "trial" in cb or "paneltest" in cb:
         return "trial"
     if cb in {"back_to_main", "back_to_admin_main", "public_back_main", "svcmarket:home"}:
@@ -170,7 +192,12 @@ async def message_category(callback: CallbackQuery, state: FSMContext):
     if await _deny(callback):
         return
     await state.clear()
-    category = (callback.data or "").rsplit(":", 1)[-1]
+    parts = (callback.data or "").split(":")
+    category = parts[2] if len(parts) >= 3 else ""
+    try:
+        page = int(parts[3]) if len(parts) == 4 else 0
+    except ValueError:
+        page = 0
     meta = next((item for item in MESSAGE_CATEGORY_META if item[0] == category), None)
     if not meta:
         await callback.answer("بخش نامعتبر", show_alert=True)
@@ -178,9 +205,18 @@ async def message_category(callback: CallbackQuery, state: FSMContext):
     groups = await _message_groups()
     items = groups.get(category, [])
     rows = []
-    for item in items:
+    pages = max(1, math.ceil(len(items) / 10))
+    page = max(0, min(page, pages - 1))
+    for item in items[page*10:(page+1)*10]:
         status = "✨" if item.is_overridden else "▫️"
         rows.append([await _btn(f"{status} {_message_title(item.key)}"[:58], f"uiv2:m:{item.key}")])
+    nav = []
+    if page:
+        nav.append(await _btn("قبلی", f"uiv2:mc:{category}:{page-1}"))
+    if page+1 < pages:
+        nav.append(await _btn("بعدی", f"uiv2:mc:{category}:{page+1}"))
+    if nav:
+        rows.append(nav)
     rows.append([await _btn("بازگشت به بخش‌ها", "cc:texts", icon_key="back", fallback="⬅️")])
     await callback.message.edit_text(
         f"{meta[2]} <b>{escape(meta[1])}</b>\n\n"
@@ -196,7 +232,7 @@ async def _render_message_detail(message: Message, key: str) -> None:
         await message.edit_text("❌ متن پیدا نشد.")
         return
     category = _message_category(key)
-    hints = VARIABLE_HINTS.get(key, ())
+    hints = tuple("{" + name + "}" for name in sorted(fields(item.default_body)))
     hint_text = ""
     if hints:
         hint_text = "\nمتغیرهای قابل استفاده: " + "، ".join(f"<code>{escape(value)}</code>" for value in hints)
@@ -239,7 +275,7 @@ async def message_edit_start(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await state.update_data(uiv2_message_key=key)
     await state.set_state(UIMessageEditStates.body)
-    hints = VARIABLE_HINTS.get(key, ())
+    hints = tuple("{" + name + "}" for name in sorted(fields(item.default_body)))
     hint_text = ""
     if hints:
         hint_text = "\nمتغیرها را حذف نکنید: " + "، ".join(hints)
@@ -295,7 +331,8 @@ async def message_preview(callback: CallbackQuery):
         await callback.answer("متن پیدا نشد", show_alert=True)
         return
     body = item.body
-    for name, value in PREVIEW_VALUES.items():
+    for name in fields(item.default_body):
+        value = PREVIEW_VALUES.get(name, "نمونه")
         body = body.replace("{" + name + "}", escape(value))
     body = await premium_ui_service.render_placeholders(body)
     await callback.message.answer(body)

@@ -11,6 +11,9 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 import config
+from authorization import is_staff
+import support_service
+from order_queries import FILTERS, STATUS_LABELS, list_orders
 from style_engine import style_engine
 
 
@@ -28,7 +31,7 @@ class TicketReplyStates(StatesGroup):
 
 
 def _is_sudo(user_id: int) -> bool:
-    return user_id in config.SUDO_ADMINS
+    return is_staff(user_id)
 
 
 async def _deny(callback: CallbackQuery) -> bool:
@@ -38,24 +41,8 @@ async def _deny(callback: CallbackQuery) -> bool:
     return True
 
 
-async def _ensure_schema() -> None:
-    async with aiosqlite.connect(config.DATABASE_PATH) as conn:
-        await conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS support_tickets (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                subject TEXT NOT NULL,
-                body TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'open',
-                admin_reply TEXT,
-                replied_by INTEGER,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
-        await conn.commit()
+async def _ensure_schema():
+    await support_service.ensure_schema()
 
 
 async def _button(text: str, callback_data: str, *, icon_key: str | None = None, fallback: str | None = None):
@@ -67,95 +54,18 @@ async def _button(text: str, callback_data: str, *, icon_key: str | None = None,
     )
 
 
-async def build_control_center_keyboard() -> InlineKeyboardMarkup:
-    rows = [
-        [
-            await _button("فروش و تعرفه‌ها", "sudo_menu_sales", icon_key="sales", fallback="🛒"),
-            await _button("مرکز پنل‌ها", "sudo_menu_panels", icon_key="panel", fallback="🧩"),
-        ],
-        [
-            await _button("سفارش‌ها", "cc:orders:0", icon_key="orders", fallback="🧾"),
-            await _button("دسته‌بندی پلن‌ها", "sales_manage", icon_key="plan", fallback="📦"),
-        ],
-        [
-            await _button("کاربران", "cc:users:0", icon_key="users", fallback="👥"),
-            await _button("مالی و پرداخت", "sudo_menu_sales", icon_key="finance", fallback="💵"),
-        ],
-        [
-            await _button("تخفیف‌ها", "cc:discounts", icon_key="discount", fallback="🎟"),
-            await _button("کانفیگ تست", "cc:test", icon_key="test", fallback="🧪"),
-        ],
-        [
-            await _button("ادمین‌های ربات", "cc:botadmins", icon_key="admin", fallback="🧑‍💼"),
-            await _button("آمار و گزارشات", "cc:stats", icon_key="stats", fallback="📊"),
-        ],
-        [
-            await _button("اطلاع‌رسانی", "sudo_menu_broadcast", icon_key="broadcast", fallback="📢"),
-            await _button("پشتیبانی و تیکت", "cc:tickets:0", icon_key="support", fallback="🎧"),
-        ],
-        [
-            await _button("ایموجی و استایل", "style:menu", icon_key="style", fallback="🎨"),
-            await _button("مدیریت متن‌ها", "cc:texts", icon_key="text", fallback="📝"),
-        ],
-        [
-            await _button("دکمه‌ها و منوها", "cc:buttons", icon_key="buttons", fallback="🔘"),
-            await _button("ابزارها و بکاپ", "sudo_menu_backup", icon_key="tools", fallback="🧰"),
-        ],
-        [await _button("تنظیمات", "sudo_menu_settings", icon_key="settings", fallback="⚙️")],
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+async def build_control_center_keyboard():
+    from handlers.operations import build_operational_dashboard_keyboard
+    return await build_operational_dashboard_keyboard()
 
 
-async def _dashboard_text() -> str:
-    async with aiosqlite.connect(config.DATABASE_PATH) as conn:
-        queries = {
-            "orders": "SELECT COUNT(*) FROM orders",
-            "pending": "SELECT COUNT(*) FROM orders WHERE status='pending'",
-            "admins": "SELECT COUNT(*) FROM admins WHERE is_active=1",
-            "plans": "SELECT COUNT(*) FROM plans WHERE is_active=1",
-        }
-        values: dict[str, int] = {}
-        for key, query in queries.items():
-            try:
-                async with conn.execute(query) as cur:
-                    row = await cur.fetchone()
-                    values[key] = int((row or [0])[0] or 0)
-            except aiosqlite.OperationalError:
-                values[key] = 0
-    return (
-        "🏠 <b>مرکز مدیریت ربات</b>\n\n"
-        f"🧾 سفارش‌ها: <b>{values['orders']}</b>  |  در انتظار: <b>{values['pending']}</b>\n"
-        f"🧩 پنل‌های فعال: <b>{values['admins']}</b>  |  پلن‌های فعال: <b>{values['plans']}</b>\n\n"
-        "یک بخش را انتخاب کنید."
-    )
-
-
-async def _render_dashboard(message: Message) -> None:
-    await message.edit_text(await _dashboard_text(), reply_markup=await build_control_center_keyboard())
-
-
-async def _send_dashboard(message: Message) -> None:
-    await message.answer(await _dashboard_text(), reply_markup=await build_control_center_keyboard())
-
-
-@control_center_router.message(Command("dashboard"))
-@control_center_router.message(Command("admin"))
+@control_center_router.message(Command("control"))
 async def control_center_command(message: Message, state: FSMContext):
     if not _is_sudo(message.from_user.id):
         return
+    from handlers.operations import _send_dashboard
     await state.clear()
-    await _ensure_schema()
     await _send_dashboard(message)
-
-
-@control_center_router.callback_query(F.data == "back_to_main")
-async def control_center_back(callback: CallbackQuery, state: FSMContext):
-    if await _deny(callback):
-        return
-    await state.clear()
-    await _ensure_schema()
-    await _render_dashboard(callback.message)
-    await callback.answer()
 
 
 async def _order_count(conn: aiosqlite.Connection) -> int:
@@ -167,60 +77,41 @@ async def _order_count(conn: aiosqlite.Connection) -> int:
         return 0
 
 
-async def _render_orders(message: Message, page: int) -> None:
-    page = max(0, page)
-    async with aiosqlite.connect(config.DATABASE_PATH) as conn:
-        conn.row_factory = aiosqlite.Row
-        total = await _order_count(conn)
-        pages = max(1, math.ceil(total / PAGE_SIZE))
-        page = min(page, pages - 1)
-        try:
-            async with conn.execute(
-                """
-                SELECT id, user_id, status, order_type, price_snapshot,
-                       plan_name_snapshot, created_at
-                FROM orders
-                ORDER BY id DESC
-                LIMIT ? OFFSET ?
-                """,
-                (PAGE_SIZE, page * PAGE_SIZE),
-            ) as cur:
-                rows = await cur.fetchall()
-        except aiosqlite.OperationalError:
-            rows = []
-
-    lines = ["🧾 <b>سفارش‌ها</b>", "", f"کل: <b>{total}</b>"]
-    buttons = []
-    if not rows:
-        lines.extend(["", "سفارشی ثبت نشده است."])
-    for row in rows:
-        status = escape(str(row["status"] or "-"))
-        plan = escape(str(row["plan_name_snapshot"] or "پلن"))
-        price = int(row["price_snapshot"] or 0)
-        lines.append(f"#{row['id']} · {plan} · {status} · {price:,}")
-        buttons.append([await _button(f"سفارش #{row['id']}", f"cc:order:{row['id']}", fallback="🧾")])
-
+async def _render_orders(message, page, category="pending"):
+    orders, total, page, pages = await list_orders(category, page, PAGE_SIZE)
+    rows = [[await _button(title, f"cc:orders:{key}:0") for key, (title, _) in list(FILTERS.items())[i:i+2]]
+            for i in range(0, len(FILTERS), 2)]
+    for order in orders:
+        label = str(order.get("plan_name_snapshot") or "سفارش")[:25]
+        status = STATUS_LABELS.get(order['status'], 'در حال بررسی')
+        rows.append([await _button(f"{label} · {status}", f"cc:order:{order['id']}")])
     nav = []
-    if page > 0:
-        nav.append(await _button("قبلی", f"cc:orders:{page-1}", fallback="⬅️"))
-    if page + 1 < pages:
-        nav.append(await _button("بعدی", f"cc:orders:{page+1}", fallback="➡️"))
+    if page:
+        nav.append(await _button("قبلی", f"cc:orders:{category}:{page-1}"))
+    if page+1 < pages:
+        nav.append(await _button("بعدی", f"cc:orders:{category}:{page+1}"))
     if nav:
-        buttons.append(nav)
-    buttons.append([await _button("خانه", "back_to_main", icon_key="home", fallback="🏠")])
-    await message.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        rows.append(nav)
+    rows.append([await _button("خانه", "back_to_main", fallback="🏠")])
+    await message.edit_text(f"🧾 <b>{FILTERS[category][0]}</b>\n\nتعداد: {total}", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 
 @control_center_router.callback_query(F.data.startswith("cc:orders:"))
-async def control_center_orders(callback: CallbackQuery, state: FSMContext):
+async def control_center_orders(callback, state):
     if await _deny(callback):
         return
-    await state.clear()
+    parts = (callback.data or '').split(':')
+    category = parts[2] if len(parts) == 4 else 'pending'
+    if category not in FILTERS:
+        await callback.answer("فیلتر نامعتبر", show_alert=True)
+        return
     try:
-        page = int((callback.data or "").rsplit(":", 1)[-1])
+        page = int(parts[-1])
     except ValueError:
-        page = 0
-    await _render_orders(callback.message, page)
+        await callback.answer("صفحه نامعتبر", show_alert=True)
+        return
+    await state.clear()
+    await _render_orders(callback.message, page, category)
     await callback.answer()
 
 
@@ -249,13 +140,21 @@ async def control_center_order_detail(callback: CallbackQuery, state: FSMContext
         f"👤 User ID: <code>{row['user_id']}</code>\n"
         f"📦 پلن: {escape(str(row['plan_name_snapshot'] or row['plan_id'] or '-'))}\n"
         f"🔁 نوع: {escape(str(row['order_type'] or '-'))}\n"
-        f"💳 وضعیت: <b>{escape(str(row['status'] or '-'))}</b>\n"
+        f"💳 وضعیت: <b>{escape(STATUS_LABELS.get(row['status'], 'در حال بررسی'))}</b>\n"
         f"💵 مبلغ: <b>{int(row['price_snapshot'] or 0):,}</b>\n"
         f"🕒 ثبت: {escape(str(row['created_at'] or '-'))}\n"
         f"✅ تاییدکننده: {escape(str(row['approved_by'] or '-'))}\n"
         f"🧩 پنل صادرشده: {escape(str(row['issued_admin_id'] or '-'))}"
     )
-    kb = InlineKeyboardMarkup(inline_keyboard=[
+    actions = []
+    if row['status'] == 'submitted':
+        actions.append([await _button("تأیید و صدور", f"order_approve_{order_id}", fallback="✅"),
+                        await _button("رد سفارش", f"order_reject_{order_id}", fallback="❌")])
+    if row['status'] == 'failed' or row['rebecca_provision_state'] in {'failed', 'uncertain'}:
+        actions.append([await _button("بررسی و تلاش دوباره", f"order_retry_{order_id}", fallback="🔁")])
+    if row['receipt_file_id']:
+        actions.append([await _button("مشاهده رسید", f"cc:receipt:{order_id}")])
+    kb = InlineKeyboardMarkup(inline_keyboard=actions + [
         [await _button("بازگشت به سفارش‌ها", "cc:orders:0", icon_key="back", fallback="⬅️")],
         [await _button("خانه", "back_to_main", icon_key="home", fallback="🏠")],
     ])
@@ -423,137 +322,31 @@ async def control_center_stats(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@control_center_router.callback_query(F.data == "cc:test")
-async def control_center_test(callback: CallbackQuery, state: FSMContext):
-    if await _deny(callback):
-        return
-    await state.clear()
-    provider = config.PANEL_PROVIDER
-    ok = False
-    detail = ""
-    try:
-        if provider == "rebecca":
-            from rebecca_api import rebecca_api
-            result = await rebecca_api.health_check()
-            ok = bool(result)
-        else:
-            from marzban_api import marzban_api
-            ok = bool(await marzban_api.test_connection())
-    except Exception as exc:
-        detail = type(exc).__name__
-    status = "✅ اتصال برقرار است" if ok else "❌ اتصال برقرار نیست"
-    text = (
-        "🧪 <b>تست اتصال پنل</b>\n\n"
-        f"Provider: <code>{escape(provider)}</code>\n"
-        f"وضعیت: <b>{status}</b>"
-    )
-    if detail:
-        text += f"\nخطا: <code>{escape(detail)}</code>"
-    text += "\n\nاین تست فقط خواندنی است و کاربر/کانفیگی ایجاد یا حذف نمی‌کند."
-    await callback.message.edit_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [await _button("خانه", "back_to_main", icon_key="home", fallback="🏠")]
-        ]),
-    )
-    await callback.answer()
-
-
-@control_center_router.callback_query(F.data == "cc:botadmins")
-async def control_center_botadmins(callback: CallbackQuery, state: FSMContext):
-    if await _deny(callback):
-        return
-    await state.clear()
-    ids = sorted(set(int(x) for x in config.SUDO_ADMINS))
-    lines = ["🧑‍💼 <b>ادمین‌های ربات</b>", "", "SUDOهای فعال از تنظیمات امن سرور:"]
-    lines.extend(f"• <code>{user_id}</code>" for user_id in ids)
-    lines.extend(["", "برای جلوگیری از دور زدن سطح دسترسی، SUDO اصلی از env/config کنترل می‌شود."])
-    await callback.message.edit_text(
-        "\n".join(lines),
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [await _button("مدیریت پنل‌ها", "sudo_menu_panels", fallback="🧩")],
-            [await _button("خانه", "back_to_main", icon_key="home", fallback="🏠")],
-        ]),
-    )
-    await callback.answer()
-
-
-@control_center_router.callback_query(F.data == "cc:discounts")
-async def control_center_discounts(callback: CallbackQuery, state: FSMContext):
-    if await _deny(callback):
-        return
-    await state.clear()
-    await callback.message.edit_text(
-        "🎟 <b>تخفیف‌ها</b>\n\n"
-        "موتور تخفیف مستقل هنوز به checkout فعلی وصل نشده است؛ برای جلوگیری از نمایش کد تخفیفِ ظاهراً فعال ولی بی‌اثر، این بخش تا اتصال کامل به سفارش عمداً فقط وضعیت را نشان می‌دهد.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [await _button("فروش و تعرفه‌ها", "sudo_menu_sales", fallback="🛒")],
-            [await _button("خانه", "back_to_main", icon_key="home", fallback="🏠")],
-        ]),
-    )
-    await callback.answer()
-
-
-@control_center_router.callback_query(F.data == "cc:texts")
-async def control_center_texts(callback: CallbackQuery, state: FSMContext):
-    if await _deny(callback):
-        return
-    await state.clear()
-    overrides = await style_engine.list_overrides()
-    await callback.message.edit_text(
-        "📝 <b>مدیریت متن‌ها</b>\n\n"
-        f"Text Overrideهای فعال: <b>{len(overrides)}</b>\n"
-        "متن نمایشی از هویت خام جدا نگه داشته می‌شود تا callback و lookup خراب نشود.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [await _button("باز کردن Text Overrides", "style:aliases", fallback="📝")],
-            [await _button("خانه", "back_to_main", icon_key="home", fallback="🏠")],
-        ]),
-    )
-    await callback.answer()
-
-
-@control_center_router.callback_query(F.data == "cc:buttons")
-async def control_center_buttons(callback: CallbackQuery, state: FSMContext):
-    if await _deny(callback):
-        return
-    await state.clear()
-    await callback.message.edit_text(
-        "🔘 <b>دکمه‌ها و منوها</b>\n\n"
-        "ظاهر دکمه‌ها از Style Engine کنترل می‌شود و callback_data ثابت می‌ماند.\n"
-        "برای تغییر ایموجی، fallback و ظاهر فعلی از بخش «ایموجی و استایل» استفاده کنید.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [await _button("ایموجی و استایل", "style:menu", icon_key="style", fallback="🎨")],
-            [await _button("خانه", "back_to_main", icon_key="home", fallback="🏠")],
-        ]),
-    )
-    await callback.answer()
-
-
-async def _render_tickets(message: Message, page: int = 0) -> None:
+async def _render_tickets(message: Message, page: int = 0, status="open") -> None:
     await _ensure_schema()
     page = max(0, page)
     async with aiosqlite.connect(config.DATABASE_PATH) as conn:
         conn.row_factory = aiosqlite.Row
-        async with conn.execute("SELECT COUNT(*) FROM support_tickets") as cur:
+        async with conn.execute("SELECT COUNT(*) FROM support_tickets WHERE status=?", (status,)) as cur:
             total = int((await cur.fetchone())[0])
         pages = max(1, math.ceil(total / PAGE_SIZE))
         page = min(page, pages - 1)
         async with conn.execute(
-            "SELECT id,user_id,subject,status,created_at FROM support_tickets ORDER BY id DESC LIMIT ? OFFSET ?",
-            (PAGE_SIZE, page * PAGE_SIZE),
+            "SELECT id,user_id,subject,status,created_at FROM support_tickets WHERE status=? ORDER BY id DESC LIMIT ? OFFSET ?",
+            (status, PAGE_SIZE, page * PAGE_SIZE),
         ) as cur:
             rows = await cur.fetchall()
     lines = ["🎧 <b>پشتیبانی و تیکت</b>", "", f"کل تیکت‌ها: <b>{total}</b>"]
-    buttons = []
+    buttons = [[await _button("تیکت‌های باز", "cc:tickets:open:0"), await _button("بسته‌شده", "cc:tickets:closed:0")]]
     for row in rows:
         icon = "🟢" if row["status"] == "open" else "✅"
         lines.append(f"{icon} #{row['id']} · {escape(str(row['subject']))} · <code>{row['user_id']}</code>")
         buttons.append([await _button(f"تیکت #{row['id']}", f"cc:ticket:{row['id']}", fallback="🎫")])
     nav = []
     if page > 0:
-        nav.append(await _button("قبلی", f"cc:tickets:{page-1}", fallback="⬅️"))
+        nav.append(await _button("قبلی", f"cc:tickets:{status}:{page-1}", fallback="⬅️"))
     if page + 1 < pages:
-        nav.append(await _button("بعدی", f"cc:tickets:{page+1}", fallback="➡️"))
+        nav.append(await _button("بعدی", f"cc:tickets:{status}:{page+1}", fallback="➡️"))
     if nav:
         buttons.append(nav)
     buttons.append([await _button("خانه", "back_to_main", icon_key="home", fallback="🏠")])
@@ -569,7 +362,8 @@ async def control_center_tickets(callback: CallbackQuery, state: FSMContext):
         page = int((callback.data or "").rsplit(":", 1)[-1])
     except ValueError:
         page = 0
-    await _render_tickets(callback.message, page)
+    status = "closed" if ":closed:" in (callback.data or "") else "open"
+    await _render_tickets(callback.message, page, status)
     await callback.answer()
 
 
@@ -596,7 +390,7 @@ async def control_center_ticket_detail(callback: CallbackQuery, state: FSMContex
         f"👤 <code>{row['user_id']}</code>\n"
         f"عنوان: {escape(str(row['subject']))}\n"
         f"وضعیت: <b>{escape(str(row['status']))}</b>\n\n"
-        f"{escape(str(row['body']))}"
+        f"{escape(str(row['body'])[:1200])}"
     )
     if row["admin_reply"]:
         text += f"\n\n<b>پاسخ:</b>\n{escape(str(row['admin_reply']))}"
@@ -635,29 +429,20 @@ async def control_center_ticket_reply_value(message: Message, state: FSMContext)
     if not ticket_id or not reply or len(reply) > 3500:
         await message.answer("پاسخ نامعتبر است.")
         return
-    await _ensure_schema()
-    async with aiosqlite.connect(config.DATABASE_PATH) as conn:
-        conn.row_factory = aiosqlite.Row
-        async with conn.execute("SELECT user_id,status FROM support_tickets WHERE id=?", (int(ticket_id),)) as cur:
-            row = await cur.fetchone()
-        if not row:
-            await state.clear()
-            await message.answer("تیکت پیدا نشد.")
-            return
-        await conn.execute(
-            "UPDATE support_tickets SET admin_reply=?, replied_by=?, status='closed', updated_at=CURRENT_TIMESTAMP WHERE id=?",
-            (reply, message.from_user.id, int(ticket_id)),
-        )
-        await conn.commit()
+    recipient = await support_service.reply_ticket(int(ticket_id), message.from_user.id, reply)
+    if recipient is None:
+        await state.clear()
+        await message.answer("این تیکت بسته شده یا پیدا نشد.")
+        return
+    delivered = True
     try:
-        await message.bot.send_message(
-            int(row["user_id"]),
-            f"🎧 <b>پاسخ تیکت #{ticket_id}</b>\n\n{escape(reply)}",
-        )
+        await message.bot.send_message(recipient, config.MESSAGES["support_reply"].format(reply=escape(reply)))
     except Exception:
-        pass
+        delivered = False
     await state.clear()
-    await message.answer(f"✅ پاسخ تیکت #{ticket_id} ذخیره و تیکت بسته شد.")
+    text = "پاسخ ارسال شد. تیکت باز می‌ماند." if delivered else "پاسخ ذخیره شد اما ارسال به کاربر ناموفق بود."
+    await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+        await _button("بازگشت به تیکت", f"cc:ticket:{ticket_id}")]]))
 
 
 @control_center_router.callback_query(F.data.startswith("cc:ticketclose:"))
@@ -690,7 +475,7 @@ async def ticket_create_command(message: Message, state: FSMContext):
     await _ensure_schema()
     await state.clear()
     await state.set_state(TicketCreateStates.waiting_for_subject)
-    await message.answer("🎧 عنوان کوتاه تیکت را ارسال کنید:")
+    await message.answer(config.MESSAGES["support_subject"], reply_markup=await support_keyboard(message.from_user.id))
 
 
 @control_center_router.message(TicketCreateStates.waiting_for_subject, F.text)
@@ -701,7 +486,7 @@ async def ticket_subject_value(message: Message, state: FSMContext):
         return
     await state.update_data(ticket_subject=subject)
     await state.set_state(TicketCreateStates.waiting_for_body)
-    await message.answer("متن درخواست را ارسال کنید:")
+    await message.answer(config.MESSAGES["support_body"], reply_markup=await support_keyboard(message.from_user.id))
 
 
 @control_center_router.message(TicketCreateStates.waiting_for_body, F.text)
@@ -721,7 +506,7 @@ async def ticket_body_value(message: Message, state: FSMContext):
         await conn.commit()
         ticket_id = int(cur.lastrowid)
     await state.clear()
-    await message.answer(f"✅ تیکت #{ticket_id} ثبت شد.")
+    await message.answer(config.MESSAGES["support_submitted"], reply_markup=await support_keyboard(message.from_user.id))
     for sudo_id in config.SUDO_ADMINS:
         try:
             await message.bot.send_message(
@@ -733,3 +518,42 @@ async def ticket_body_value(message: Message, state: FSMContext):
             )
         except Exception:
             pass
+
+
+async def support_keyboard(user_id):
+    from database import db
+    home = "back_to_admin_main" if await db.is_admin_authorized(user_id) else "public_back_main"
+    return InlineKeyboardMarkup(inline_keyboard=[[await _button("بازگشت", home, fallback="⬅️")]])
+
+
+@control_center_router.callback_query(F.data == "support:home")
+async def support_home(callback, state):
+    await state.clear()
+    rows = [[await _button("ایجاد تیکت", "support:new", fallback="✉️")]]
+    rows.extend((await support_keyboard(callback.from_user.id)).inline_keyboard)
+    await callback.message.edit_text(config.MESSAGES["support_home"], reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await callback.answer()
+
+
+@control_center_router.callback_query(F.data == "support:new")
+async def support_new(callback, state):
+    await state.clear()
+    await state.set_state(TicketCreateStates.waiting_for_subject)
+    await callback.message.edit_text(config.MESSAGES["support_subject"], reply_markup=await support_keyboard(callback.from_user.id))
+    await callback.answer()
+
+
+@control_center_router.callback_query(F.data.startswith("cc:receipt:"))
+async def order_receipt(callback):
+    if await _deny(callback):
+        return
+    from database import db
+    try:
+        order = await db.get_order_by_id(int(callback.data.rsplit(':', 1)[-1]))
+    except ValueError:
+        order = None
+    if not order or not order.get('receipt_file_id'):
+        await callback.answer("رسید پیدا نشد.", show_alert=True)
+        return
+    await callback.message.answer_photo(order['receipt_file_id'], caption="رسید پرداخت")
+    await callback.answer()

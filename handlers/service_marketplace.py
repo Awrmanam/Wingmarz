@@ -11,6 +11,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 import config
+from authorization import is_staff
 from database import db
 from operations_service import OperationsError, operations_service
 from premium_ui_service import premium_ui_service
@@ -29,7 +30,7 @@ class ServicePanelTrialStates(StatesGroup):
 
 
 def _is_sudo(user_id: int) -> bool:
-    return int(user_id) in config.SUDO_ADMINS
+    return is_staff(user_id)
 
 
 async def _button(
@@ -73,9 +74,7 @@ async def _render_purchase_services(message: Message, source: str) -> None:
     services = await service_marketplace_service.sellable_services()
     rows = []
     lines = [
-        "🛒 <b>خرید پنل نمایندگی</b>",
-        "",
-        "ابتدا نوع سرویس را انتخاب کنید:",
+        config.MESSAGES["sales_service_select"],
     ]
     for service, count in services:
         rows.append([
@@ -88,8 +87,7 @@ async def _render_purchase_services(message: Message, source: str) -> None:
     if not rows:
         lines.extend([
             "",
-            "فعلاً هیچ سرویس فروشی آماده نیست.",
-            "مدیریت باید حداقل یک سرویس Rebecca فعال را به یک پلن فعال متصل کند.",
+            config.MESSAGES["sales_empty"],
         ])
     back_cb = "back_to_admin_main" if source == "a" else "public_back_main"
     rows.append([await _button("بازگشت", back_cb, icon_key="back", fallback="⬅️")])
@@ -99,6 +97,10 @@ async def _render_purchase_services(message: Message, source: str) -> None:
 @service_marketplace_router.callback_query(F.data == "admin_buy_reseller")
 async def service_buy_admin(callback: CallbackQuery, state: FSMContext):
     await state.clear()
+    if config.PANEL_PROVIDER != "rebecca":
+        from handlers.admin_handlers import admin_buy_reseller
+        await admin_buy_reseller(callback)
+        return
     await _render_purchase_services(callback.message, "a")
     await callback.answer()
 
@@ -106,6 +108,10 @@ async def service_buy_admin(callback: CallbackQuery, state: FSMContext):
 @service_marketplace_router.callback_query(F.data == "public_buy_reseller")
 async def service_buy_public(callback: CallbackQuery, state: FSMContext):
     await state.clear()
+    if config.PANEL_PROVIDER != "rebecca":
+        from handlers.public_handlers import public_buy_reseller
+        await public_buy_reseller(callback)
+        return
     await _render_purchase_services(callback.message, "p")
     await callback.answer()
 
@@ -133,10 +139,10 @@ async def _render_plans(
     else:
         back_cb = f"svcmarket:root:{source}"
     rows.append([await _button("بازگشت", back_cb, icon_key="back", fallback="⬅️")])
-    title = await _render_tokens(str(service.display_name))
+    title = await _render_tokens(escape(str(service.display_name)))
     extra = f"\n🗓 {escape(duration_label)}" if duration_label else ""
     await message.edit_text(
-        f"🔌 <b>{title}</b>{extra}\n\nپلن موردنظر را انتخاب کنید:",
+        config.MESSAGES["sales_plan_select"].format(service=title) + extra,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
     )
 
@@ -192,9 +198,9 @@ async def service_purchase_service(callback: CallbackQuery, state: FSMContext):
     rows.append([
         await _button("بازگشت", f"svcmarket:root:{source}", icon_key="back", fallback="⬅️")
     ])
-    title = await _render_tokens(str(service.display_name))
+    title = await _render_tokens(escape(str(service.display_name)))
     await callback.message.edit_text(
-        f"🔌 <b>{title}</b>\n\nمدت سرویس را انتخاب کنید:",
+        config.MESSAGES["sales_duration_select"].format(service=title),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
     )
     await callback.answer()
@@ -236,205 +242,6 @@ async def service_purchase_duration(callback: CallbackQuery):
 # ---------------------------------------------------------------------------
 # Service-first free trial
 # ---------------------------------------------------------------------------
-
-async def _render_trial_root(message: Message) -> None:
-    rows = [
-        [await _button("تست رایگان کانفیگ", "svcmarket:trial:config", icon_key="test", fallback="🧪")],
-        [await _button("تست پنل نمایندگی", "svcmarket:trial:panel", icon_key="panel", fallback="🧩")],
-        [await _button("بازگشت", "svcmarket:home", icon_key="back", fallback="⬅️")],
-    ]
-    await message.edit_text(
-        "🧪 <b>تست رایگان</b>\n\n"
-        "نوع تست را انتخاب کنید. در مرحله بعد سرویس موردنظر مثل WireGuard یا OpenVPN را انتخاب می‌کنید.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
-    )
-
-
-async def _render_trial_services(message: Message, trial_type: str) -> None:
-    services = await service_marketplace_service.trial_services(trial_type)
-    rows = []
-    for service in services:
-        callback_data = (
-            f"svcmarket:trialcfg:{int(service.id)}"
-            if trial_type == "config"
-            else f"svcmarket:trialpanel:{int(service.id)}"
-        )
-        rows.append([
-            await _button(await _service_label(service), callback_data, fallback="🔌")
-        ])
-    if not rows:
-        text = "فعلاً سرویسی برای این نوع تست فعال نشده است."
-    else:
-        text = "سرویس موردنظر را انتخاب کنید:"
-    rows.append([await _button("بازگشت", "svcmarket:trial", icon_key="back", fallback="⬅️")])
-    heading = "🧪 تست رایگان کانفیگ" if trial_type == "config" else "🧩 تست پنل نمایندگی"
-    await message.edit_text(
-        f"<b>{heading}</b>\n\n{text}",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
-    )
-
-
-@service_marketplace_router.callback_query(F.data == "svcmarket:trial")
-async def trial_root(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    await _render_trial_root(callback.message)
-    await callback.answer()
-
-
-@service_marketplace_router.callback_query(F.data == "svcmarket:trial:config")
-@service_marketplace_router.callback_query(F.data == "ops:configtrial:request")
-@service_marketplace_router.callback_query(F.data == "ops:trial:request")
-async def trial_config_services(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    await _render_trial_services(callback.message, "config")
-    await callback.answer()
-
-
-@service_marketplace_router.callback_query(F.data == "svcmarket:trial:panel")
-@service_marketplace_router.callback_query(F.data == "ops:paneltrial:request")
-async def trial_panel_services(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    await _render_trial_services(callback.message, "panel")
-    await callback.answer()
-
-
-@service_marketplace_router.message(Command("test"))
-async def trial_config_command(message: Message, state: FSMContext):
-    await state.clear()
-    services = await service_marketplace_service.trial_services("config")
-    rows = [
-        [await _button(await _service_label(service), f"svcmarket:trialcfg:{int(service.id)}", fallback="🔌")]
-        for service in services
-    ]
-    await message.answer(
-        "🧪 <b>تست رایگان کانفیگ</b>\n\nسرویس موردنظر را انتخاب کنید:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
-    )
-
-
-@service_marketplace_router.message(Command("paneltest"))
-async def trial_panel_command(message: Message, state: FSMContext):
-    await state.clear()
-    services = await service_marketplace_service.trial_services("panel")
-    rows = [
-        [await _button(await _service_label(service), f"svcmarket:trialpanel:{int(service.id)}", fallback="🔌")]
-        for service in services
-    ]
-    await message.answer(
-        "🧩 <b>تست پنل نمایندگی</b>\n\nسرویس موردنظر را انتخاب کنید:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
-    )
-
-
-@service_marketplace_router.callback_query(F.data.startswith("svcmarket:trialcfg:"))
-async def issue_config_service_trial(callback: CallbackQuery, state: FSMContext):
-    try:
-        catalog_id = int((callback.data or "").rsplit(":", 1)[-1])
-    except ValueError:
-        await callback.answer("نامعتبر", show_alert=True)
-        return
-    service = await service_marketplace_service.get_service_by_catalog_id(catalog_id)
-    if not service:
-        await callback.answer("سرویس دیگر فعال نیست.", show_alert=True)
-        return
-    try:
-        result = await service_marketplace_service.issue_config_trial_for_service(
-            callback.from_user.id, service.rebecca_service_id
-        )
-    except OperationsError as exc:
-        await callback.answer(str(exc), show_alert=True)
-        return
-    await state.clear()
-    lines = [
-        "✅ <b>کانفیگ تست ساخته شد</b>",
-        f"🔌 سرویس: {await _render_tokens(result['service_name'])}",
-        f"👤 <code>{escape(result['username'])}</code>",
-        f"📦 حجم: {escape(await format_traffic_size(int(result['traffic_bytes'])))}",
-    ]
-    remaining = max(0, int(result["expire_at"]) - int(__import__("time").time()))
-    lines.append(f"⏱ اعتبار: {max(1, math.ceil(remaining / 60))} دقیقه")
-    if result.get("subscription_url"):
-        lines.extend(["", f"🔗 <a href=\"{escape(str(result['subscription_url']))}\">لینک اشتراک</a>"])
-    extra_links = [item for item in result.get("links", []) if item != result.get("subscription_url")]
-    for idx, link in enumerate(extra_links[:5], start=1):
-        lines.append(f"🔗 <a href=\"{escape(str(link))}\">لینک {idx}</a>")
-    await callback.message.edit_text(
-        "\n".join(lines),
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-            await _button("بازگشت", "svcmarket:trial", icon_key="back", fallback="⬅️")
-        ]]),
-    )
-    await callback.answer("ساخته شد")
-
-
-@service_marketplace_router.callback_query(F.data.startswith("svcmarket:trialpanel:"))
-async def panel_trial_service_selected(callback: CallbackQuery, state: FSMContext):
-    try:
-        catalog_id = int((callback.data or "").rsplit(":", 1)[-1])
-    except ValueError:
-        await callback.answer("نامعتبر", show_alert=True)
-        return
-    service = await service_marketplace_service.get_service_by_catalog_id(catalog_id)
-    if not service:
-        await callback.answer("سرویس دیگر فعال نیست.", show_alert=True)
-        return
-    settings = await trial_experience_service.get_panel_trial_settings()
-    if not settings["enabled"]:
-        await callback.answer("تست پنل فعلاً غیرفعال است.", show_alert=True)
-        return
-    wait = await trial_experience_service.panel_trial_wait_seconds(callback.from_user.id)
-    if wait > 0:
-        await callback.answer(
-            f"برای تست بعدی حدود {max(1, math.ceil(wait / 3600))} ساعت صبر کنید.",
-            show_alert=True,
-        )
-        return
-    await state.clear()
-    await state.update_data(service_trial_catalog_id=catalog_id)
-    await state.set_state(ServicePanelTrialStates.username)
-    await callback.message.edit_text(
-        f"🧩 <b>تست پنل {await _render_tokens(str(service.display_name))}</b>\n\n"
-        "نام کاربری دلخواه را بفرستید. رمز عبور توسط ربات ساخته می‌شود.\n\n"
-        "مثال: <code>arman_test</code>",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-            await _button("بازگشت", "svcmarket:trial:panel", icon_key="back", fallback="⬅️")
-        ]]),
-    )
-    await callback.answer()
-
-
-@service_marketplace_router.message(ServicePanelTrialStates.username, F.text)
-async def issue_panel_service_trial(message: Message, state: FSMContext):
-    data = await state.get_data()
-    catalog_id = int(data.get("service_trial_catalog_id") or 0)
-    service = await service_marketplace_service.get_service_by_catalog_id(catalog_id)
-    if not service:
-        await state.clear()
-        await message.answer("❌ سرویس دیگر فعال نیست.")
-        return
-    try:
-        result = await service_marketplace_service.issue_panel_trial_for_service(
-            user_id=message.from_user.id,
-            service_id=service.rebecca_service_id,
-            requested_username=message.text or "",
-            telegram_username=message.from_user.username,
-            first_name=message.from_user.first_name,
-            last_name=message.from_user.last_name,
-        )
-    except OperationsError as exc:
-        await message.answer(f"❌ {escape(str(exc))}")
-        return
-    await state.clear()
-    await message.answer(
-        credential_message(
-            result["username"],
-            result["password"],
-            result["login_url"],
-            f"تست {result['service_name']}",
-        ),
-        parse_mode="HTML",
-    )
-
 
 @service_marketplace_router.callback_query(F.data == "svcmarket:home")
 async def marketplace_home(callback: CallbackQuery, state: FSMContext):
@@ -540,6 +347,10 @@ async def _render_trial_admin_center(message: Message) -> None:
 
 @service_marketplace_router.callback_query(F.data == "cc:test")
 async def service_trial_admin_center(callback: CallbackQuery, state: FSMContext):
+    if config.PANEL_PROVIDER != "rebecca":
+        from handlers.trial_experience import trial_center
+        await trial_center(callback, state)
+        return
     if not _is_sudo(callback.from_user.id):
         return
     await state.clear()
@@ -580,6 +391,10 @@ async def _render_service_trial_access(message: Message) -> None:
 
 @service_marketplace_router.callback_query(F.data == "ux:trialadmin:plans")
 async def service_trial_access_list(callback: CallbackQuery):
+    if config.PANEL_PROVIDER != "rebecca":
+        from handlers.trial_experience import trial_plan_access
+        await trial_plan_access(callback)
+        return
     if not _is_sudo(callback.from_user.id):
         return
     await _render_service_trial_access(callback.message)

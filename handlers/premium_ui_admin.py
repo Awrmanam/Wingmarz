@@ -9,6 +9,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 import config
+from authorization import is_staff
 from premium_ui_service import PremiumUIError, premium_ui_service
 from style_engine import style_engine
 
@@ -64,7 +65,7 @@ class MessageEditStates(StatesGroup):
 
 
 def _sudo(user_id: int) -> bool:
-    return int(user_id) in config.SUDO_ADMINS
+    return is_staff(user_id)
 
 
 async def _deny(callback: CallbackQuery) -> bool:
@@ -124,7 +125,6 @@ async def _render_buttons(message: Message, page: int = 0) -> None:
     await message.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 
-@premium_ui_admin_router.callback_query(F.data == "cc:buttons")
 async def buttons_root(callback: CallbackQuery, state: FSMContext):
     if await _deny(callback):
         return
@@ -163,9 +163,11 @@ async def _render_button_detail(message: Message, item_id: int) -> None:
         f"متن فعلی: <b>{escape(visible)}</b>\n"
         f"متن اصلی: {escape(item.default_text)}\n"
         f"ایموجی: <code>{escape(str(emoji_key))}</code>\n"
-        f"Callback: <code>{escape(item.callback_data)}</code>"
+        "متن و ایموجی روی عملکرد دکمه اثری ندارند."
     )
+    preview = await style_engine.styled_button(visible, callback_data="pui:noop", icon_key=item.emoji_key or item.default_icon_key, fallback=item.default_fallback)
     rows = [
+        [preview],
         [await _btn("تغییر متن", f"pui:bt:{item.id}", fallback="✏️")],
         [await _btn("انتخاب Premium Emoji", f"pui:be:{item.id}", fallback="✨")],
         [
@@ -320,7 +322,6 @@ async def _render_messages(message: Message) -> None:
     await message.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 
-@premium_ui_admin_router.callback_query(F.data == "cc:texts")
 async def messages_root(callback: CallbackQuery, state: FSMContext):
     if await _deny(callback):
         return
