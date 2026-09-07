@@ -14,6 +14,7 @@ from .premium_ui_clean_buttons import premium_ui_clean_buttons_router
 from .premium_ui_admin import premium_ui_admin_router
 from .ui_editor_v2 import ui_editor_v2_router
 from .operations import operations_router
+from .home_navigation import home_navigation_router
 from .operations_public import operations_public_router
 from .control_center import control_center_router
 
@@ -30,6 +31,9 @@ style_admin_router.include_router(ui_editor_v2_router)
 style_admin_router.include_router(premium_ui_clean_buttons_router)
 # Detailed text/button editors remain as fallback handlers.
 style_admin_router.include_router(premium_ui_admin_router)
+# SUDO dashboard owns SUDO /start first. Role-aware navigation then owns regular
+# admin /start plus every home/back alias; public /start remains the final path.
 style_admin_router.include_router(operations_router)
+style_admin_router.include_router(home_navigation_router)
 style_admin_router.include_router(operations_public_router)
 style_admin_router.include_router(control_center_router)
