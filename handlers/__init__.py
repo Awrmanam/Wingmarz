@@ -7,6 +7,7 @@ from .style_admin import style_admin_router
 # All template defaults are registered by config before routers are imported.
 from .trial_ui_v2 import trial_ui_v2_router
 from .operations_bootstrap import operations_bootstrap_router
+from .plan_storefront import plan_storefront_router
 from .service_marketplace import service_marketplace_router
 from .service_marketplace_settings import service_marketplace_settings_router
 from .trial_experience import trial_experience_router
@@ -21,7 +22,9 @@ from .control_center import control_center_router
 style_admin_router.include_router(operations_bootstrap_router)
 # One trial presentation router owns current and historical service callbacks.
 style_admin_router.include_router(trial_ui_v2_router)
-# Service-first sale/trial routes must win before the older plan-first handlers.
+# Paid Rebecca purchases are plan-first: provider/inbound mappings stay internal.
+style_admin_router.include_router(plan_storefront_router)
+# Service-aware routes remain for trial/settings and as backward-compatible fallbacks.
 style_admin_router.include_router(service_marketplace_router)
 style_admin_router.include_router(service_marketplace_settings_router)
 style_admin_router.include_router(trial_experience_router)
