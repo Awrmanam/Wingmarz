@@ -157,12 +157,11 @@ async def canonical_renew_panel(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@panel_experience_router.callback_query(F.data.startswith("admin_full_renew_"), RebeccaOnly())
+@panel_experience_router.callback_query(
+    F.data.startswith("admin_full_renew_") & (~F.data.startswith("admin_full_renew_plan_")),
+    RebeccaOnly(),
+)
 async def canonical_full_renew(callback: CallbackQuery, state: FSMContext):
-    # Do not consume the more specific final plan callback; legacy order creation
-    # remains the single business implementation for that callback.
-    if (callback.data or "").startswith("admin_full_renew_plan_"):
-        return
     try:
         admin_id = int((callback.data or "").rsplit("_", 1)[-1])
     except ValueError:
@@ -200,7 +199,7 @@ async def canonical_full_renew(callback: CallbackQuery, state: FSMContext):
         return
 
     icon = await style_engine.render_emoji(icon_key, fallback="📦") if icon_key else "📦"
-    lines = [f"{icon} <b>{escape(panel_name)}</b>", "", "پلن جدید را برای تمدید انتخاب کنید:", ""]
+    lines = [f"{icon} <b>{escape(panel_name)}</b>", "پلن جدید را برای تمدید انتخاب کنید:"]
     rows = []
     for plan in plans:
         traffic = "نامحدود" if plan.traffic_limit_bytes is None else await format_traffic_size(plan.traffic_limit_bytes)
