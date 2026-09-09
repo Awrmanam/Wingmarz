@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 
 from aiogram.types import InlineKeyboardButton
 
+from database import db as database_db
 from handlers import plan_storefront as store
 
 
@@ -92,7 +93,7 @@ def test_plan_detail_keeps_provider_mapping_internal(monkeypatch):
     monkeypatch.setattr(store, "_button", fake_button)
     monkeypatch.setattr(store.product_catalog, "get_category", AsyncMock(return_value=_category()))
     monkeypatch.setattr(store.product_catalog, "plan_description", AsyncMock(return_value="پلن مناسب مصرف روزانه"))
-    monkeypatch.setattr(store.db, "get_plan_by_id", AsyncMock(return_value=_plan(1, "اقتصادی", 30)))
+    monkeypatch.setattr(database_db, "get_plan_by_id", AsyncMock(return_value=_plan(1, "اقتصادی", 30)))
     message = SimpleNamespace(edit_text=AsyncMock())
 
     run(store._render_plan_detail(message, "a", 3, 1, None))
