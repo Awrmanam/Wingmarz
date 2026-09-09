@@ -17,7 +17,8 @@ async def _schema(path: str):
                 display_name TEXT NOT NULL,
                 provider_name TEXT,
                 source_username TEXT,
-                is_enabled INTEGER NOT NULL DEFAULT 1
+                is_enabled INTEGER NOT NULL DEFAULT 1,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             CREATE TABLE plans (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -45,7 +46,7 @@ async def _schema(path: str):
             """
         )
         await conn.execute(
-            "INSERT INTO rebecca_services(rebecca_service_id,display_name,provider_name,is_enabled) VALUES(7,'Wire','Wire',1)"
+            "INSERT INTO rebecca_services(rebecca_service_id,display_name,provider_name,is_enabled) VALUES(7,'Wire Panel','Wire',1)"
         )
         await conn.execute(
             """
@@ -56,7 +57,7 @@ async def _schema(path: str):
         await conn.commit()
 
 
-def test_wire_inbound_is_seeded_as_wireguard_public_category(tmp_path):
+def test_owner_defined_panel_name_is_canonical(tmp_path):
     path = str(tmp_path / "catalog.db")
     asyncio.run(_schema(path))
     service = ProductCatalogService(path)
@@ -66,10 +67,31 @@ def test_wire_inbound_is_seeded_as_wireguard_public_category(tmp_path):
         async def scenario():
             categories = await service.categories(active_only=True, sellable_only=True)
             assert len(categories) == 1
-            assert categories[0].name == "WireGuard"
+            assert categories[0].name == "Wire Panel"
             assert categories[0].provider_name == "Wire"
             plans = await service.plans_for_category(categories[0].id)
             assert [p.name for p in plans] == ["اقتصادی"]
+        asyncio.run(scenario())
+    finally:
+        db.db_path = old_path
+
+
+def test_category_rename_updates_canonical_rebecca_display_name(tmp_path):
+    path = str(tmp_path / "rename.db")
+    asyncio.run(_schema(path))
+    service = ProductCatalogService(path)
+    old_path = db.db_path
+    db.db_path = path
+    try:
+        async def scenario():
+            category = (await service.categories())[0]
+            await service.update_category(category.id, name="WireGuard VIP")
+            async with aiosqlite.connect(path) as conn:
+                async with conn.execute("SELECT display_name FROM rebecca_services WHERE rebecca_service_id=7") as cur:
+                    assert (await cur.fetchone())[0] == "WireGuard VIP"
+            # A later sync must preserve the same single source of truth.
+            refreshed = await service.get_category(category.id)
+            assert refreshed.name == "WireGuard VIP"
         asyncio.run(scenario())
     finally:
         db.db_path = old_path
@@ -144,16 +166,23 @@ def test_safe_delete_preserves_historical_orders(tmp_path):
         db.db_path = old_path
 
 
-def test_trial_picker_uses_public_category_layer():
+def test_panel_icon_candidates_reuse_registered_owner_key():
+    assert ProductCatalogService._emoji_key_candidates("WireGuard", "Wire")[:2] == ["wireguard", "wire"]
+    assert "openvpn" in ProductCatalogService._emoji_key_candidates("OpenVPN", "Open")
+
+
+def test_trial_picker_uses_canonical_panel_layer():
     source = open("handlers/trial_category_ui.py", encoding="utf-8").read()
     assert "category.name" in source
     assert "service.display_name" not in source
+    assert "resolve_panel_icon_key" in source
     assert "trialv2:cfg:" in source
 
 
-def test_paid_storefront_is_category_first_and_keeps_purchase_callbacks():
+def test_paid_storefront_is_panel_first_and_keeps_purchase_callbacks():
     source = open("handlers/plan_storefront.py", encoding="utf-8").read()
     assert "planmarket:c:" in source
-    assert "نوع پنل را انتخاب کنید" in source
+    assert "پنل موردنظر را انتخاب کنید" in source
+    assert "resolve_panel_icon_key" in source
     assert "admin_order_" in source
     assert "public_order_" in source

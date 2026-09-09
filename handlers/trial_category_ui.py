@@ -30,19 +30,20 @@ async def _rows(trial_type: str) -> list[list[Any]]:
     rows: list[list[Any]] = []
     for service in services:
         category = await product_catalog.get_category_by_service(service.rebecca_service_id)
-        if not category or not category.is_active:
+        if not category or not category.is_active or not category.provider_enabled:
             continue
         callback_data = (
             f"trialv2:cfg:{int(service.id)}"
             if trial_type == "config"
             else f"trialv2:panel:{int(service.id)}"
         )
+        icon_key = await product_catalog.resolve_panel_icon_key(category)
         rows.append([
             await _button(
                 category.name,
                 callback_data,
-                icon_key="plan",
-                fallback="📁",
+                icon_key=icon_key,
+                fallback="📁" if not icon_key else None,
             )
         ])
     return rows
@@ -56,9 +57,9 @@ async def _render(message: Message, trial_type: str, *, answer: bool = False) ->
     else:
         rows.append([await _button("بازگشت", "trialv2:root", icon_key="back", fallback="⬅️")])
         text = (
-            "🧪 <b>تست رایگان کانفیگ</b>\n\nنوع پنل را انتخاب کنید:"
+            "🧪 <b>تست رایگان کانفیگ</b>\n\nپنل موردنظر را انتخاب کنید:"
             if trial_type == "config"
-            else "🧩 <b>تست پنل نمایندگی</b>\n\nنوع پنل را انتخاب کنید:"
+            else "🧩 <b>تست پنل نمایندگی</b>\n\nپنل موردنظر را انتخاب کنید:"
         )
     markup = InlineKeyboardMarkup(inline_keyboard=rows)
     if answer:

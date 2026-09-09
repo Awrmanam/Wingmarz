@@ -1,11 +1,11 @@
 from aiogram import Router
 from aiogram.filters import CommandStart, Filter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import InlineKeyboardMarkup, Message
+from aiogram.types import Message
 
 import config
 from database import db
-from style_engine import style_engine
+from handlers.home_navigation import render_home
 
 
 operations_public_router = Router(name="operations_public")
@@ -15,16 +15,14 @@ class PublicOnly(Filter):
     async def __call__(self, message: Message) -> bool:
         if message.from_user.id in config.SUDO_ADMINS:
             return False
-        return not await db.is_admin_authorized(message.from_user.id)
-
-
-async def _public_keyboard() -> InlineKeyboardMarkup:
-    from handlers.public_handlers import get_public_main_keyboard
-
-    return get_public_main_keyboard()
+        # A historical/expired panel owner still belongs to the reseller home.
+        try:
+            return not bool(await db.get_admins_for_user(int(message.from_user.id)))
+        except Exception:
+            return not await db.is_admin_authorized(message.from_user.id)
 
 
 @operations_public_router.message(CommandStart(), PublicOnly())
 async def public_start_with_trials(message: Message, state: FSMContext):
     await state.clear()
-    await message.answer(config.MESSAGES["customer_home"], reply_markup=await _public_keyboard())
+    await render_home(message, message.from_user.id, edit=False)

@@ -6,6 +6,7 @@ from .trial_ui_v2 import trial_ui_v2_router
 from .operations_bootstrap import operations_bootstrap_router
 from .product_center import product_center_router
 from .plan_storefront import plan_storefront_router
+from .panel_experience import panel_experience_router
 from .service_marketplace import service_marketplace_router
 from .service_marketplace_settings import service_marketplace_settings_router
 from .trial_experience import trial_experience_router
@@ -18,14 +19,14 @@ from .operations_public import operations_public_router
 from .control_center import control_center_router
 
 style_admin_router.include_router(operations_bootstrap_router)
-# Public trial pickers use presentation categories, never Rebecca inbound names.
+# Trials and paid purchases consume the same canonical customer-facing panel name.
 style_admin_router.include_router(trial_category_router)
 style_admin_router.include_router(trial_ui_v2_router)
-# Central product manager owns sales_manage before legacy sales handlers.
 style_admin_router.include_router(product_center_router)
-# Paid purchases are category-first; provider mappings remain internal.
 style_admin_router.include_router(plan_storefront_router)
-# Service-aware routes remain for provisioning/settings and compatibility.
+# Renewal/extension also resolves panel identity through the same catalog.
+style_admin_router.include_router(panel_experience_router)
+# Provider-specific routes remain internal for discovery/provisioning/settings.
 style_admin_router.include_router(service_marketplace_router)
 style_admin_router.include_router(service_marketplace_settings_router)
 style_admin_router.include_router(trial_experience_router)

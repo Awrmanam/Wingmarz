@@ -36,11 +36,18 @@ def _category():
         name="WireGuard",
         description="دسته عمومی",
         is_active=True,
+        provider_name="Wire",
+        provider_enabled=True,
     )
+
+
+def _mock_icons(monkeypatch):
+    monkeypatch.setattr(store.product_catalog, "resolve_panel_icon_key", AsyncMock(return_value=None))
 
 
 def test_paid_storefront_shows_public_category_not_rebecca_inbound(monkeypatch):
     monkeypatch.setattr(store, "_button", fake_button)
+    _mock_icons(monkeypatch)
     monkeypatch.setattr(
         store.product_catalog,
         "categories",
@@ -57,7 +64,7 @@ def test_paid_storefront_shows_public_category_not_rebecca_inbound(monkeypatch):
 
     text = message.edit_text.call_args.args[0]
     assert "Wire" not in text
-    assert "نوع پنل" in text
+    assert "پنل موردنظر" in text
     rows = message.edit_text.call_args.kwargs["reply_markup"].inline_keyboard
     assert rows[0][0].callback_data == "planmarket:c:a:3"
     assert "WireGuard" in rows[0][0].text
@@ -65,6 +72,7 @@ def test_paid_storefront_shows_public_category_not_rebecca_inbound(monkeypatch):
 
 def test_duration_groups_are_optional_inside_public_category(monkeypatch):
     monkeypatch.setattr(store, "_button", fake_button)
+    _mock_icons(monkeypatch)
     monkeypatch.setattr(store.product_catalog, "get_category", AsyncMock(return_value=_category()))
     monkeypatch.setattr(
         store.product_catalog,
@@ -91,6 +99,7 @@ def test_duration_groups_are_optional_inside_public_category(monkeypatch):
 
 def test_plan_detail_keeps_provider_mapping_internal(monkeypatch):
     monkeypatch.setattr(store, "_button", fake_button)
+    _mock_icons(monkeypatch)
     monkeypatch.setattr(store.product_catalog, "get_category", AsyncMock(return_value=_category()))
     monkeypatch.setattr(store.product_catalog, "plan_description", AsyncMock(return_value="پلن مناسب مصرف روزانه"))
     monkeypatch.setattr(database_db, "get_plan_by_id", AsyncMock(return_value=_plan(1, "اقتصادی", 30)))
