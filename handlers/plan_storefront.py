@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from html import escape
-import math
 from typing import Any
 
 from aiogram import F, Router
@@ -61,6 +60,12 @@ async def _categories() -> list[Any]:
     return await product_catalog.categories(active_only=True, sellable_only=True)
 
 
+async def _panel_heading(category: Any, fallback: str = "📁") -> str:
+    icon_key = await product_catalog.resolve_panel_icon_key(category)
+    icon = await style_engine.render_emoji(icon_key, fallback=fallback) if icon_key else fallback
+    return f"{icon} <b>{escape(category.name)}</b>"
+
+
 async def _render_storefront(message: Message, source: str) -> None:
     categories = await _categories()
     if not categories:
@@ -75,29 +80,31 @@ async def _render_storefront(message: Message, source: str) -> None:
     rows = []
     for category in categories:
         plans = await product_catalog.plans_for_category(category.id, only_active=True)
+        icon_key = await product_catalog.resolve_panel_icon_key(category)
         rows.append([
             await _button(
                 f"{category.name} · {len(plans)} پلن",
                 f"planmarket:c:{source}:{category.id}",
-                fallback="📁",
+                icon_key=icon_key,
+                fallback="📁" if not icon_key else None,
             )
         ])
     rows.append([await _button("بازگشت", _home_callback(source), icon_key="back", fallback="⬅️")])
     await message.edit_text(
-        "🛒 <b>خرید پنل نمایندگی</b>\n\nنوع پنل را انتخاب کنید:",
+        "🛒 <b>خرید پنل نمایندگی</b>\n\nپنل موردنظر را انتخاب کنید:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
     )
 
 
 async def _render_category(message: Message, source: str, category_id: int) -> None:
     category = await product_catalog.get_category(category_id)
-    if not category or not category.is_active:
-        await message.edit_text("این دسته در حال حاضر فعال نیست.")
+    if not category or not category.is_active or not category.provider_enabled:
+        await message.edit_text("این پنل در حال حاضر فعال نیست.")
         return
     plans = await product_catalog.plans_for_category(category_id, only_active=True)
     if not plans:
         await message.edit_text(
-            "فعلاً پلن فعالی در این دسته وجود ندارد.",
+            "فعلاً پلن فعالی برای این پنل وجود ندارد.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                 await _button("بازگشت", f"planmarket:root:{source}", fallback="⬅️")
             ]]),
@@ -112,10 +119,10 @@ async def _render_category(message: Message, source: str, category_id: int) -> N
             for group in groups
         ]
         rows.append([await _button("بازگشت", f"planmarket:root:{source}", icon_key="back", fallback="⬅️")])
-        body = f"📁 <b>{escape(category.name)}</b>\n"
+        body = await _panel_heading(category)
         if category.description:
-            body += f"\n{escape(category.description)}\n"
-        body += "\nمدت موردنظر را انتخاب کنید:"
+            body += f"\n\n{escape(category.description)}"
+        body += "\n\nمدت موردنظر را انتخاب کنید:"
         await message.edit_text(body, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
         return
 
@@ -133,7 +140,7 @@ async def _render_plan_list(
 ) -> None:
     category = await product_catalog.get_category(category_id)
     if not category:
-        await message.edit_text("این دسته دیگر موجود نیست.")
+        await message.edit_text("این پنل دیگر موجود نیست.")
         return
     rows = []
     for plan in plans:
@@ -147,7 +154,7 @@ async def _render_plan_list(
         ])
     back = f"planmarket:c:{source}:{category_id}" if duration_key else f"planmarket:root:{source}"
     rows.append([await _button("بازگشت", back, icon_key="back", fallback="⬅️")])
-    body = f"📦 <b>پلن‌های {escape(category.name)}</b>"
+    body = f"{await _panel_heading(category)}\n\n<b>پلن‌های قابل خرید</b>"
     if duration_label:
         body += f"\n🗓 {escape(duration_label)}"
     body += "\n\nپلن موردنظر را انتخاب کنید:"
@@ -164,16 +171,16 @@ async def _render_plan_detail(
     category = await product_catalog.get_category(category_id)
     from database import db
     plan = await db.get_plan_by_id(plan_id)
-    if not category or not category.is_active or not plan or not plan.is_active:
+    if not category or not category.is_active or not category.provider_enabled or not plan or not plan.is_active:
         await message.edit_text("این پلن دیگر برای فروش فعال نیست.")
         return
     if category.rebecca_service_id not in service_marketplace_service.plan_service_ids(plan):
-        await message.edit_text("این پلن دیگر در این دسته قرار ندارد.")
+        await message.edit_text("این پلن دیگر برای این پنل تعریف نشده است.")
         return
     description = await product_catalog.plan_description(plan_id)
     body = (
         f"📦 <b>{escape(plan.name)}</b>\n"
-        f"📁 {escape(category.name)}\n\n"
+        f"{await _panel_heading(category)}\n\n"
     )
     if description:
         body += f"{escape(description)}\n\n"
@@ -188,7 +195,7 @@ async def _render_plan_detail(
     else:
         back = f"planmarket:c:{source}:{category_id}"
     rows = [
-        [await _button("✅ انتخاب این پلن", _plan_callback(source, plan_id), fallback="✅")],
+        [await _button("انتخاب این پلن", _plan_callback(source, plan_id), icon_key="success", fallback="✅")],
         [await _button("بازگشت", back, icon_key="back", fallback="⬅️")],
     ]
     await message.edit_text(body, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
@@ -274,7 +281,7 @@ async def plan_storefront_plan(callback: CallbackQuery, state: FSMContext):
 
 @plan_storefront_router.callback_query(F.data.startswith("svcmarket:s:"))
 async def old_service_button_compat(callback: CallbackQuery, state: FSMContext):
-    """Old already-sent service buttons are translated to the new public category."""
+    """Old already-sent service buttons are translated to the canonical panel identity."""
     parts = (callback.data or "").split(":")
     if len(parts) != 4 or parts[2] not in {"a", "p"} or config.PANEL_PROVIDER != "rebecca":
         return
@@ -286,8 +293,8 @@ async def old_service_button_compat(callback: CallbackQuery, state: FSMContext):
         await callback.answer("این گزینه قدیمی شده؛ دوباره وارد خرید شوید.", show_alert=True)
         return
     category = await product_catalog.get_category_by_service(old_service.rebecca_service_id)
-    if not category or not category.is_active:
-        await callback.answer("این دسته در حال حاضر فعال نیست.", show_alert=True)
+    if not category or not category.is_active or not category.provider_enabled:
+        await callback.answer("این پنل در حال حاضر فعال نیست.", show_alert=True)
         return
     await state.clear()
     await _render_category(callback.message, parts[2], category.id)
