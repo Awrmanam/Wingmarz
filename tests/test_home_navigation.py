@@ -22,6 +22,16 @@ def test_inactive_panel_owner_is_still_an_admin_home_user(monkeypatch):
     assert "تمدید/افزایش" in text
 
 
+def test_home_copy_is_composed_from_independently_editable_sections(monkeypatch):
+    monkeypatch.setitem(home.config.MESSAGES, "home_public_title", "TITLE")
+    monkeypatch.setitem(home.config.MESSAGES, "home_public_body", "BODY")
+    monkeypatch.setitem(home.config.MESSAGES, "home_public_footer", "FOOTER")
+    assert home._public_home_text() == "TITLE\n\nBODY\n\nFOOTER"
+
+    monkeypatch.setitem(home.config.MESSAGES, "home_public_body", "")
+    assert home._public_home_text() == "TITLE\n\nFOOTER"
+
+
 def test_user_without_panel_record_is_public(monkeypatch):
     monkeypatch.setattr(home.db, "get_admins_for_user", AsyncMock(return_value=[]))
     assert run(home.has_admin_account(42)) is False
