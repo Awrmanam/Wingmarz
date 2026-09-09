@@ -1,12 +1,10 @@
 """Handlers package composition."""
 
-# The bot registers style_admin_router before legacy sudo/admin/public routers.
-# Operational children intentionally upgrade a small set of callbacks while
-# preserving the legacy handlers as fallbacks.
 from .style_admin import style_admin_router
-# All template defaults are registered by config before routers are imported.
+from .trial_category_ui import trial_category_router
 from .trial_ui_v2 import trial_ui_v2_router
 from .operations_bootstrap import operations_bootstrap_router
+from .product_center import product_center_router
 from .plan_storefront import plan_storefront_router
 from .service_marketplace import service_marketplace_router
 from .service_marketplace_settings import service_marketplace_settings_router
@@ -20,22 +18,20 @@ from .operations_public import operations_public_router
 from .control_center import control_center_router
 
 style_admin_router.include_router(operations_bootstrap_router)
-# One trial presentation router owns current and historical service callbacks.
+# Public trial pickers use presentation categories, never Rebecca inbound names.
+style_admin_router.include_router(trial_category_router)
 style_admin_router.include_router(trial_ui_v2_router)
-# Paid Rebecca purchases are plan-first: provider/inbound mappings stay internal.
+# Central product manager owns sales_manage before legacy sales handlers.
+style_admin_router.include_router(product_center_router)
+# Paid purchases are category-first; provider mappings remain internal.
 style_admin_router.include_router(plan_storefront_router)
-# Service-aware routes remain for trial/settings and as backward-compatible fallbacks.
+# Service-aware routes remain for provisioning/settings and compatibility.
 style_admin_router.include_router(service_marketplace_router)
 style_admin_router.include_router(service_marketplace_settings_router)
 style_admin_router.include_router(trial_experience_router)
-# Categorized editor owns text/button entry points.
 style_admin_router.include_router(ui_editor_v2_router)
-# Clean button catalog remains available for shared loading/detail behavior.
 style_admin_router.include_router(premium_ui_clean_buttons_router)
-# Detailed text/button editors remain as fallback handlers.
 style_admin_router.include_router(premium_ui_admin_router)
-# SUDO dashboard owns SUDO /start first. Role-aware navigation then owns regular
-# admin /start plus every home/back alias; public /start remains the final path.
 style_admin_router.include_router(operations_router)
 style_admin_router.include_router(home_navigation_router)
 style_admin_router.include_router(operations_public_router)
