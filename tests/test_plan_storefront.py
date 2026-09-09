@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 
 from aiogram.types import InlineKeyboardButton
 
+from database import db as database_db
 from handlers import plan_storefront as store
 
 
@@ -21,26 +22,34 @@ def _plan(plan_id, name, days, services="10", price=100_000):
         name=name,
         price=price,
         time_limit_seconds=days * 86400,
+        traffic_limit_bytes=100 * 1024**3,
+        max_users=30,
+        is_active=True,
         rebecca_service_ids=services,
     )
 
 
-def test_paid_storefront_hides_rebecca_inbound_and_shows_plans(monkeypatch):
+def _category():
+    return SimpleNamespace(
+        id=3,
+        rebecca_service_id=10,
+        name="WireGuard",
+        description="دسته عمومی",
+        is_active=True,
+    )
+
+
+def test_paid_storefront_shows_public_category_not_rebecca_inbound(monkeypatch):
     monkeypatch.setattr(store, "_button", fake_button)
     monkeypatch.setattr(
-        store,
-        "list_services",
-        AsyncMock(return_value=[SimpleNamespace(rebecca_service_id=10, display_name="Wire")]),
+        store.product_catalog,
+        "categories",
+        AsyncMock(return_value=[_category()]),
     )
     monkeypatch.setattr(
-        store.db,
-        "get_plans",
+        store.product_catalog,
+        "plans_for_category",
         AsyncMock(return_value=[_plan(1, "اقتصادی", 30)]),
-    )
-    monkeypatch.setattr(
-        store.service_marketplace_service,
-        "duration_groups_enabled",
-        AsyncMock(return_value=True),
     )
     message = SimpleNamespace(edit_text=AsyncMock())
 
@@ -48,27 +57,18 @@ def test_paid_storefront_hides_rebecca_inbound_and_shows_plans(monkeypatch):
 
     text = message.edit_text.call_args.args[0]
     assert "Wire" not in text
-    assert "پلن" in text
+    assert "نوع پنل" in text
     rows = message.edit_text.call_args.kwargs["reply_markup"].inline_keyboard
-    assert rows[0][0].callback_data == "admin_order_1"
-    assert "اقتصادی" in rows[0][0].text
-    assert not any(
-        (button.callback_data or "").startswith("svcmarket:s:")
-        for row in rows
-        for button in row
-    )
+    assert rows[0][0].callback_data == "planmarket:c:a:3"
+    assert "WireGuard" in rows[0][0].text
 
 
-def test_duration_groups_stay_optional_without_exposing_inbound(monkeypatch):
+def test_duration_groups_are_optional_inside_public_category(monkeypatch):
     monkeypatch.setattr(store, "_button", fake_button)
+    monkeypatch.setattr(store.product_catalog, "get_category", AsyncMock(return_value=_category()))
     monkeypatch.setattr(
-        store,
-        "list_services",
-        AsyncMock(return_value=[SimpleNamespace(rebecca_service_id=10, display_name="Wire")]),
-    )
-    monkeypatch.setattr(
-        store.db,
-        "get_plans",
+        store.product_catalog,
+        "plans_for_category",
         AsyncMock(return_value=[_plan(1, "یک ماهه", 30), _plan(2, "سه ماهه", 90)]),
     )
     monkeypatch.setattr(
@@ -78,30 +78,34 @@ def test_duration_groups_stay_optional_without_exposing_inbound(monkeypatch):
     )
     message = SimpleNamespace(edit_text=AsyncMock())
 
-    run(store._render_storefront(message, "p"))
+    run(store._render_category(message, "p", 3))
 
     text = message.edit_text.call_args.args[0]
-    assert "Wire" not in text
+    assert "WireGuard" in text
+    assert "Wire</" not in text
     rows = message.edit_text.call_args.kwargs["reply_markup"].inline_keyboard
     callbacks = [button.callback_data for row in rows for button in row]
-    assert "planmarket:d:p:2592000" in callbacks
-    assert "planmarket:d:p:7776000" in callbacks
+    assert "planmarket:d:p:3:2592000" in callbacks
+    assert "planmarket:d:p:3:7776000" in callbacks
 
 
-def test_plans_mapped_only_to_inactive_services_are_hidden(monkeypatch):
-    monkeypatch.setattr(
-        store,
-        "list_services",
-        AsyncMock(return_value=[SimpleNamespace(rebecca_service_id=10, display_name="Active")]),
-    )
-    monkeypatch.setattr(
-        store.db,
-        "get_plans",
-        AsyncMock(return_value=[
-            _plan(1, "فعال", 30, services="10"),
-            _plan(2, "غیرفعال", 30, services="20"),
-        ]),
-    )
+def test_plan_detail_keeps_provider_mapping_internal(monkeypatch):
+    monkeypatch.setattr(store, "_button", fake_button)
+    monkeypatch.setattr(store.product_catalog, "get_category", AsyncMock(return_value=_category()))
+    monkeypatch.setattr(store.product_catalog, "plan_description", AsyncMock(return_value="پلن مناسب مصرف روزانه"))
+    monkeypatch.setattr(database_db, "get_plan_by_id", AsyncMock(return_value=_plan(1, "اقتصادی", 30)))
+    message = SimpleNamespace(edit_text=AsyncMock())
 
-    plans = run(store._sellable_plans())
-    assert [plan.id for plan in plans] == [1]
+    run(store._render_plan_detail(message, "a", 3, 1, None))
+
+    text = message.edit_text.call_args.args[0]
+    assert "WireGuard" in text
+    assert "اقتصادی" in text
+    assert "100 GB" in text
+    assert "30" in text or "1 ماهه" in text
+    lowered = text.lower()
+    assert "service id" not in lowered
+    assert "service_id" not in lowered
+    assert "rebecca" not in lowered
+    rows = message.edit_text.call_args.kwargs["reply_markup"].inline_keyboard
+    assert rows[0][0].callback_data == "admin_order_1"
