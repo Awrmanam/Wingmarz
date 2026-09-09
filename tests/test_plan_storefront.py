@@ -103,6 +103,9 @@ def test_plan_detail_keeps_provider_mapping_internal(monkeypatch):
     assert "اقتصادی" in text
     assert "100 GB" in text
     assert "30" in text or "1 ماهه" in text
-    assert "10" not in text  # Rebecca service id must not leak.
+    lowered = text.lower()
+    assert "service id" not in lowered
+    assert "service_id" not in lowered
+    assert "rebecca" not in lowered
     rows = message.edit_text.call_args.kwargs["reply_markup"].inline_keyboard
     assert rows[0][0].callback_data == "admin_order_1"
