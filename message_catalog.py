@@ -10,13 +10,17 @@ UI_MESSAGES = {
     'sales_empty': 'فعلاً سرویسی برای خرید آماده نیست.\nلطفاً کمی بعد دوباره سر بزنید یا با پشتیبانی تماس بگیرید.',
     'sales_plan_select': '<b>{service}</b>\n\nپلن موردنظر را انتخاب کنید:',
     'sales_duration_select': '<b>{service}</b>\n\nمدت سرویس را انتخاب کنید:',
+    'sales_plan_select_public': '🛒 <b>پلن‌های نمایندگی</b>\n\nپلن موردنظر را انتخاب کنید:',
+    'sales_duration_select_public': '🛒 <b>پلن‌های نمایندگی</b>\n\nمدت موردنظر را انتخاب کنید:',
 }
 UI_TITLES = {
     'customer_home': 'خوش‌آمدگویی مشتری', 'support_home': 'صفحه پشتیبانی',
     'support_subject': 'درخواست عنوان تیکت', 'support_body': 'درخواست متن تیکت',
     'support_submitted': 'ثبت موفق تیکت', 'support_reply': 'پاسخ پشتیبانی',
     'sales_service_select': 'انتخاب سرویس خرید', 'sales_empty': 'نبود سرویس آماده فروش',
-    'sales_plan_select': 'انتخاب پلن', 'sales_duration_select': 'انتخاب مدت',
+    'sales_plan_select': 'انتخاب پلن قدیمی', 'sales_duration_select': 'انتخاب مدت قدیمی',
+    'sales_plan_select_public': 'انتخاب پلن نمایندگی',
+    'sales_duration_select_public': 'انتخاب مدت پلن نمایندگی',
 }
 
 TRIAL_UI_DEFAULTS: dict[str, str] = {
