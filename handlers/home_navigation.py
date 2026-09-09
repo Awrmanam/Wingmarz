@@ -16,7 +16,7 @@ async def has_admin_account(user_id: int) -> bool:
     """Return True when the Telegram user owns any panel record, active or not.
 
     Home/navigation identity is intentionally broader than operational authorization:
-    an expired or disabled reseller still needs the admin home in order to renew,
+    an expired or disabled reseller still needs the reseller home in order to renew,
     inspect the account, or reactivate it.
     """
     try:
@@ -33,15 +33,36 @@ class RegularAdminHome(Filter):
         return await has_admin_account(user_id)
 
 
+def _join_home_sections(*keys: str) -> str:
+    """Compose independently editable home blocks without forcing empty gaps."""
+    parts = [str(config.MESSAGES.get(key, "")).strip() for key in keys]
+    return "\n\n".join(part for part in parts if part)
+
+
 async def _admin_home_text(user_id: int) -> str:
     admins = await db.get_admins_for_user(int(user_id))
     active_count = sum(1 for admin in admins if bool(getattr(admin, "is_active", False)))
-    text = config.MESSAGES["welcome_admin"]
+    text = _join_home_sections(
+        "home_reseller_title",
+        "home_reseller_body",
+        "home_reseller_footer",
+    )
+    if not text:
+        text = str(config.MESSAGES.get("welcome_admin", "خوش آمدید."))
     if active_count > 1:
         text += f"\n\n🔹 شما {active_count} پنل فعال دارید."
     elif admins and active_count == 0:
         text += "\n\n⚠️ در حال حاضر پنل فعالی ندارید؛ از تمدید/افزایش برای فعال‌سازی مجدد استفاده کنید."
     return text
+
+
+def _public_home_text() -> str:
+    text = _join_home_sections(
+        "home_public_title",
+        "home_public_body",
+        "home_public_footer",
+    )
+    return text or str(config.MESSAGES.get("customer_home", "خوش آمدید."))
 
 
 async def render_home(message: Message, user_id: int, *, edit: bool) -> None:
@@ -67,7 +88,7 @@ async def render_home(message: Message, user_id: int, *, edit: bool) -> None:
 
     from handlers.public_handlers import get_public_main_keyboard
 
-    text = config.MESSAGES["customer_home"]
+    text = _public_home_text()
     if edit:
         await message.edit_text(text, reply_markup=get_public_main_keyboard())
     else:
@@ -84,11 +105,7 @@ async def regular_admin_start(message: Message, state: FSMContext):
     F.data.in_({"back_to_admin_main", "public_back_main", "svcmarket:home"})
 )
 async def role_aware_back(callback: CallbackQuery, state: FSMContext):
-    """All home/back aliases converge on the same role-aware home screen.
-
-    This also prevents an old/stale admin callback from exposing the reseller menu
-    to a public user and prevents expired resellers from falling into the public UI.
-    """
+    """All home/back aliases converge on the same role-aware home screen."""
     await state.clear()
     await render_home(callback.message, callback.from_user.id, edit=True)
     await callback.answer()
