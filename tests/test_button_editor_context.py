@@ -1,85 +1,80 @@
 from pathlib import Path
-from types import SimpleNamespace
 
-from handlers.button_editor_context import ButtonContext, button_context
-
-
-def item(callback, text="دکمه", display=None):
-    return SimpleNamespace(callback_data=callback, default_text=text, display_text=display)
+from ui_presentation_registry import resolve_button, screen_for
 
 
-def ctx(callback, text="دکمه") -> ButtonContext | None:
-    return button_context(item(callback, text))
+def resolved(callback, text="دکمه"):
+    return resolve_button(callback, text).button
 
 
-def test_customer_main_and_reseller_buttons_are_contextualized():
-    assert ctx("public_buy_reseller", "🛒 خرید پنل نمایندگی") == ButtonContext(
-        "customer", "sales", "منوی مشتری → خرید پنل", 0
-    )
-    assert ctx("admin_buy_reseller", "🛒 خرید پنل نمایندگی").context == "منوی نماینده → خرید پنل"
-    assert ctx("my_info", "اطلاعات من").category == "account"
-    assert ctx("admin_renew", "تمدید/افزایش").category == "account"
+def test_customer_home_buttons_map_to_real_screens():
+    assert resolved("public_buy_reseller", "خرید پنل نمایندگی").screen == "public.home"
+    assert resolved("svcmarket:trial", "تست رایگان").screen == "home.shared"
+    assert resolved("support:home", "پشتیبانی").screen == "home.shared"
+    assert resolved("my_info", "اطلاعات من").screen == "reseller.home"
+    assert resolved("admin_renew", "تمدید/افزایش").screen == "reseller.home"
 
 
-def test_trial_customer_and_trial_admin_are_separate_everywhere():
-    public_trial = ctx("svcmarket:trial", "🧪 تست رایگان")
-    config_trial = ctx("trialv2:choose:config", "کانفیگ تست")
-    admin_cooldown = ctx("ops:trial:cooldown", "فاصله دریافت")
-    admin_services = ctx("ux:trialadmin:plans", "پنل‌های قابل تست")
-
-    assert public_trial.scope == "customer" and public_trial.category == "trial"
-    assert config_trial.scope == "customer" and config_trial.category == "trial"
-    assert admin_cooldown.scope == "manage" and admin_cooldown.category == "trial_admin"
-    assert admin_services.scope == "manage" and admin_services.category == "trial_admin"
+def test_trial_editor_contains_only_canonical_customer_controls():
+    assert resolved("trialv2:choose:config", "کانفیگ تست").screen == "trial.home"
+    assert resolved("trialv2:choose:panel", "پنل نمایندگی تست").screen == "trial.home"
+    assert resolve_button("svcmarket:trial:config", "کانفیگ تست").button is None
+    assert resolve_button("ops:trial:request", "تست رایگان").button is None
+    assert resolve_button("ops:trial:request", "تست رایگان").excluded_reason
 
 
-def test_management_dashboard_is_not_mixed_with_customer_ui():
-    assert ctx("cc:orders:0", "سفارش‌ها").scope == "manage"
-    assert ctx("cc:buttons", "دکمه‌ها و منوها").category == "content"
-    assert ctx("sudo_menu_backup", "ابزارها و بکاپ").category == "tools"
-    assert ctx("sudo_menu_settings", "تنظیمات").category == "settings"
+def test_dynamic_business_records_are_not_editable_buttons():
+    for callback, text in [
+        ("trialv2:cfg:12", "WireGuard"),
+        ("trialv2:panel:12", "WireGuard"),
+        ("planmarket:c:p:5", "WireGuard · 3 پلن"),
+        ("planmarket:p:p:5:14:30d", "اقتصادی · 180,000 ت"),
+        ("cc:user:356770827", "356770827"),
+        ("cc:order:91", "اقتصادی · در انتظار"),
+        ("ops:disc:item:4", "RETURN10"),
+        ("order_approve_91", "تأیید و صدور"),
+    ]:
+        result = resolve_button(callback, text)
+        assert result.button is None
+        assert result.excluded_reason
 
 
-def test_support_is_split_by_real_audience():
-    assert ctx("support:home", "پشتیبانی").scope == "customer"
-    assert ctx("support:new", "ایجاد تیکت").category == "support"
-    assert ctx("cc:tickets:0", "پشتیبانی و تیکت").scope == "manage"
+def test_internal_and_legacy_editor_controls_are_hidden():
+    for callback in ["pui:b:12", "uiv2:bc:trial:0", "uiv3:scope:customer", "uiv4:scope:customer", "style:emojis"]:
+        result = resolve_button(callback, "دکمه")
+        assert result.button is None
+        assert result.excluded_reason
 
 
-def test_dynamic_business_rows_never_pollute_button_editor():
-    assert ctx("trialv2:cfg:12", "WireGuard") is None
-    assert ctx("trialv2:panel:12", "WireGuard") is None
-    assert ctx("planmarket:c:p:5", "WireGuard · 3 پلن") is None
-    assert ctx("planmarket:p:p:5:14:30d", "اقتصادی · 180,000 ت") is None
-    assert ctx("cc:user:356770827", "356770827") is None
-    assert ctx("cc:order:91", "اقتصادی · در انتظار") is None
-    assert ctx("ops:disc:item:4", "RETURN10") is None
+def test_duplicate_dashboard_callback_is_disambiguated_by_visible_identity():
+    sales = resolved("sudo_menu_sales", "🛒 فروش و تعرفه‌ها")
+    finance = resolved("sudo_menu_sales", "💵 مالی و پرداخت")
+    assert sales and finance
+    assert sales.key != finance.key
+    assert sales.title == "فروش و تعرفه‌ها"
+    assert finance.title == "مالی و پرداخت"
 
 
-def test_order_action_instances_are_not_listed_as_hundreds_of_buttons():
-    assert ctx("order_approve_91", "تأیید و صدور") is None
-    assert ctx("order_reject_91", "رد سفارش") is None
-    assert ctx("order_retry_91", "بررسی و تلاش دوباره") is None
+def test_explicit_dashboard_style_button_survives_internal_style_filter():
+    item = resolved("style:menu", "ایموجی و استایل")
+    assert item and item.screen == "admin.dashboard"
 
 
-def test_internal_editor_controls_are_never_editable():
-    assert ctx("pui:b:12", "تغییر متن") is None
-    assert ctx("uiv2:bc:trial:0", "تست رایگان") is None
-    assert ctx("uiv3:scope:customer", "کاربر و نماینده") is None
+def test_screen_titles_are_human_readable_not_technical_routes():
+    for key in ["public.home", "trial.home", "admin.dashboard", "admin.products", "admin.settings"]:
+        title = screen_for(key).title.lower()
+        assert not any(word in title for word in ("callback", "handler", "legacy", "fsm", "route"))
 
 
-def test_unknown_static_button_goes_to_separate_bucket_not_wrong_feature():
-    result = ctx("future_feature_home", "قابلیت آینده")
-    assert result == ButtonContext("manage", "other", "سایر دکمه‌های ثابت", 90)
-
-
-def test_context_router_precedes_obsolete_substring_editor():
+def test_context_router_precedes_obsolete_editor():
     source = Path("handlers/__init__.py").read_text(encoding="utf-8")
     assert source.index("include_router(button_editor_context_router)") < source.index("include_router(ui_editor_v2_router)")
 
 
-def test_legacy_trial_only_logic_is_gone():
+def test_editor_is_registry_driven_and_has_screen_level_navigation():
     source = Path("handlers/button_editor_context.py").read_text(encoding="utf-8")
-    assert "trial_button_context" not in source
-    assert "legacy_category_redirect" in source
-    assert 'F.data == "cc:buttons"' in source
+    assert "resolve_button" in source
+    assert "uiv4:screen:" in source
+    assert "ButtonContext" not in source
+    assert "مسیر سازگاری" not in source
+    assert "دسترسی کاربر" not in source

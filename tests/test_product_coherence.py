@@ -289,8 +289,9 @@ def test_static_button_catalog_is_ready_without_visiting_every_menu(isolated):
         async with aiosqlite.connect(isolated) as conn:
             rows = await (await conn.execute('SELECT callback_data FROM styled_button_catalog')).fetchall()
         callbacks = {r[0] for r in rows}
-        assert {'public_buy_reseller','support:home','trialv2:root'} <= callbacks
-        assert not any(c.startswith(('pui:','puc:','uiv2:','style:')) for c in callbacks)
+        assert {'public_buy_reseller','support:home','trialv2:root','style:menu'} <= callbacks
+        assert not any(c.startswith(('pui:','puc:','uiv2:','uiv3:','uiv4:')) for c in callbacks)
+        assert not any(c.startswith('style:') and c != 'style:menu' for c in callbacks)
     run(scenario())
 
 
