@@ -10,7 +10,13 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message, BufferedInputFile
-from trial_delivery import connection_url, save_connections, load_connections
+from trial_delivery import (
+    connection_url,
+    save_connections,
+    load_connections,
+    load_active_trial,
+    load_latest_connections,
+)
 
 import config
 
@@ -68,6 +74,39 @@ async def _template(key: str, **values: Any) -> str:
 
 async def _home_callback(user_id: int) -> str:
     return "back_to_admin_main" if await db.is_admin_authorized(int(user_id)) else "public_back_main"
+
+
+async def _active_config_result(user_id: int) -> dict[str, Any] | None:
+    """Rebuild the delivery card for the caller's still-active config trial.
+
+    Trial issuance is recorded in ``trial_issues``. Reopening it must never issue
+    a second Rebecca user or touch cooldown state. The subscription URL is read
+    from the owner-bound issue row; private fallback links are also owner-bound.
+    """
+    if str(config.PANEL_PROVIDER or "").lower() != "rebecca":
+        return None
+    issue = await load_active_trial(int(user_id), provider="rebecca")
+    if not issue:
+        return None
+    expire_at = int(issue.get("expire_at") or 0)
+    if expire_at <= int(time.time()):
+        return None
+    settings = await operations_service.get_trial_settings()
+    subscription_url = connection_url(issue.get("subscription_url"))
+    links: list[str] = []
+    if not subscription_url:
+        links = await load_latest_connections(int(user_id), expires_after=int(time.time()))
+    return {
+        "provider": "rebecca",
+        "service_id": issue.get("service_id"),
+        "service_name": "",
+        "username": str(issue.get("provider_username") or ""),
+        "subscription_url": subscription_url,
+        "links": links,
+        "expire_at": expire_at,
+        "traffic_bytes": int(settings["traffic_bytes"]),
+        "reopened": True,
+    }
 
 
 async def _trial_service_rows(trial_type: str) -> list[list[Any]]:
@@ -137,6 +176,11 @@ async def trial_root(callback: CallbackQuery, state: FSMContext):
 )
 async def trial_config_picker(callback: CallbackQuery, state: FSMContext):
     await state.clear()
+    active = await _active_config_result(callback.from_user.id)
+    if active:
+        await render_config_result(callback.message, callback.from_user.id, active, edit=True)
+        await callback.answer("تست فعال شما")
+        return
     await _render_service_picker(callback.message, callback.from_user.id, "config")
     await callback.answer()
 
@@ -156,6 +200,10 @@ async def trial_config_command(message: Message, state: FSMContext):
     if config.PANEL_PROVIDER != "rebecca":
         from handlers.trial_experience import public_config_trial_command
         await public_config_trial_command(message, state)
+        return
+    active = await _active_config_result(message.from_user.id)
+    if active:
+        await render_config_result(message, message.from_user.id, active, edit=False)
         return
     rows = await _trial_service_rows("config")
     rows.append([await _button("بازگشت", "trialv2:root", fallback="⬅️")])
