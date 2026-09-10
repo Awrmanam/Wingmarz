@@ -45,8 +45,7 @@ class PremiumUIService:
 
     A button's presentation identity is ``(callback_data, default_text)``. This
     matters because two visible buttons may intentionally share one callback
-    while having different labels (for example two dashboard entry points).
-    callback_data itself is never changed.
+    while having different labels. callback_data itself is never changed.
     """
 
     def __init__(self, db_path: str | None = None):
@@ -115,7 +114,7 @@ class PremiumUIService:
             for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
                 if not isinstance(node, ast.Call):
                     continue
-                name = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, 'attr', '')
+                name = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
                 if name not in {"_button", "_btn", "styled_button", "InlineKeyboardButton"}:
                     continue
                 kwargs = {kw.arg: literal(kw.value) for kw in node.keywords}
@@ -178,8 +177,17 @@ class PremiumUIService:
                 try:
                     validate_template(str(body), self._base_messages[key])
                 except ValueError:
-                    continue  # Keep invalid historic overrides in storage for repair, use safe defaults.
+                    continue
                 config.MESSAGES[key] = PremiumTemplateString(body)
+
+    @staticmethod
+    def _catalog_callback_allowed(callback_data: str) -> bool:
+        """Catalog real presentation buttons, never editor implementation controls."""
+        if callback_data.startswith(("pui:", "puc:", "uiv2:", "uiv3:", "uiv4:")):
+            return False
+        if callback_data.startswith("style:") and callback_data != "style:menu":
+            return False
+        return True
 
     async def catalog_button(
         self,
@@ -193,7 +201,7 @@ class PremiumUIService:
         identity = (callback_data, default_text)
         if (
             not callback_data
-            or callback_data.startswith(("pui:", "puc:", "uiv2:", "style:"))
+            or not self._catalog_callback_allowed(callback_data)
             or len(callback_data.encode("utf-8")) > 64
             or not default_text
             or identity in self._catalog_seen
@@ -328,9 +336,12 @@ class PremiumUIService:
                 if display_text is None and emoji_key is None:
                     await conn.execute("DELETE FROM styled_button_overrides WHERE button_id=?", (item_id,))
                 else:
-                    await conn.execute("""INSERT INTO styled_button_overrides(button_id,display_text,emoji_key)
+                    await conn.execute(
+                        """INSERT INTO styled_button_overrides(button_id,display_text,emoji_key)
                         VALUES(?,?,?) ON CONFLICT(button_id) DO UPDATE SET display_text=excluded.display_text,
-                        emoji_key=excluded.emoji_key,updated_at=CURRENT_TIMESTAMP""", (item_id, display_text, emoji_key))
+                        emoji_key=excluded.emoji_key,updated_at=CURRENT_TIMESTAMP""",
+                        (item_id, display_text, emoji_key),
+                    )
             await conn.commit()
         for _, text in variants:
             identity = (item.callback_data, text)
