@@ -9,8 +9,8 @@ from ui_presentation_registry import BUTTONS, SCREENS, resolve_button
 
 
 ROOT = Path(__file__).resolve().parents[1]
-HANDLERS = ROOT / "handlers"
 CONSTRUCTORS = {"InlineKeyboardButton", "styled_button", "_button", "_btn"}
+SKIP_PARTS = {"tests", ".git", ".venv", "venv", "__pycache__"}
 
 
 def _literal(node):
@@ -25,9 +25,16 @@ def _literal(node):
     return None
 
 
+def _source_files():
+    for path in sorted(ROOT.rglob("*.py")):
+        if any(part in SKIP_PARTS for part in path.parts):
+            continue
+        yield path
+
+
 def _static_buttons():
     rows = []
-    for path in sorted(HANDLERS.glob("*.py")):
+    for path in _source_files():
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
@@ -39,7 +46,7 @@ def _static_buttons():
             text = _literal(node.args[0]) if node.args else kwargs.get("text")
             callback = _literal(node.args[1]) if len(node.args) > 1 else kwargs.get("callback_data")
             if callback and text:
-                rows.append((path.name, node.lineno, callback, text))
+                rows.append((str(path.relative_to(ROOT)), node.lineno, callback, text))
     return rows
 
 
@@ -57,13 +64,13 @@ def test_dashboard_menu_specs_are_all_explicitly_registered():
     assert not missing, f"dashboard buttons missing from registry: {missing}"
 
 
-def test_all_static_handler_buttons_are_registered_or_intentionally_excluded():
+def test_all_static_buttons_repo_wide_are_registered_or_intentionally_excluded():
     missing = []
     for filename, lineno, callback, text in _static_buttons():
         result = resolve_button(callback, text)
         if result.button is None and result.excluded_reason is None:
             missing.append(f"{filename}:{lineno}  {callback!r}  {text!r}")
-    assert not missing, "Static visible buttons need presentation metadata or an explicit exclusion:\n" + "\n".join(missing[:120])
+    assert not missing, "Static visible buttons need presentation metadata or an explicit exclusion:\n" + "\n".join(missing[:160])
 
 
 def test_normal_registry_never_uses_developer_language():
