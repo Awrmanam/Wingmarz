@@ -1,11 +1,6 @@
 from pathlib import Path
-from types import SimpleNamespace
 
 from ui_presentation_registry import resolve_button, screen_for
-
-
-def item(callback, text="دکمه", display=None):
-    return SimpleNamespace(callback_data=callback, default_text=text, display_text=display)
 
 
 def resolved(callback, text="دکمه"):
@@ -14,7 +9,8 @@ def resolved(callback, text="دکمه"):
 
 def test_customer_home_buttons_map_to_real_screens():
     assert resolved("public_buy_reseller", "خرید پنل نمایندگی").screen == "public.home"
-    assert resolved("svcmarket:trial", "تست رایگان").screen == "public.home"
+    assert resolved("svcmarket:trial", "تست رایگان").screen == "home.shared"
+    assert resolved("support:home", "پشتیبانی").screen == "home.shared"
     assert resolved("my_info", "اطلاعات من").screen == "reseller.home"
     assert resolved("admin_renew", "تمدید/افزایش").screen == "reseller.home"
 
@@ -44,7 +40,7 @@ def test_dynamic_business_records_are_not_editable_buttons():
 
 
 def test_internal_and_legacy_editor_controls_are_hidden():
-    for callback in ["pui:b:12", "uiv2:bc:trial:0", "uiv3:scope:customer", "uiv4:scope:customer"]:
+    for callback in ["pui:b:12", "uiv2:bc:trial:0", "uiv3:scope:customer", "uiv4:scope:customer", "style:emojis"]:
         result = resolve_button(callback, "دکمه")
         assert result.button is None
         assert result.excluded_reason
@@ -57,6 +53,11 @@ def test_duplicate_dashboard_callback_is_disambiguated_by_visible_identity():
     assert sales.key != finance.key
     assert sales.title == "فروش و تعرفه‌ها"
     assert finance.title == "مالی و پرداخت"
+
+
+def test_explicit_dashboard_style_button_survives_internal_style_filter():
+    item = resolved("style:menu", "ایموجی و استایل")
+    assert item and item.screen == "admin.dashboard"
 
 
 def test_screen_titles_are_human_readable_not_technical_routes():
