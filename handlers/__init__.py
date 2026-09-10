@@ -1,7 +1,6 @@
 """Handlers package composition."""
 
 from .style_admin import style_admin_router
-from .trial_category_ui import trial_category_router
 from .trial_ui_v2 import trial_ui_v2_router
 from .operations_bootstrap import operations_bootstrap_router
 from .product_center import product_center_router
@@ -20,8 +19,9 @@ from .operations_public import operations_public_router
 from .control_center import control_center_router
 
 style_admin_router.include_router(operations_bootstrap_router)
-# Trials and paid purchases consume the same canonical customer-facing panel name.
-style_admin_router.include_router(trial_category_router)
+# trial_ui_v2 is the single canonical owner of config/panel trial entry callbacks.
+# Keeping a second router on the same callbacks caused the category picker to
+# consume the event before active-trial restoration could run.
 style_admin_router.include_router(trial_ui_v2_router)
 style_admin_router.include_router(product_center_router)
 style_admin_router.include_router(plan_storefront_router)

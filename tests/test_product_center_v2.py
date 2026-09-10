@@ -89,7 +89,6 @@ def test_category_rename_updates_canonical_rebecca_display_name(tmp_path):
             async with aiosqlite.connect(path) as conn:
                 async with conn.execute("SELECT display_name FROM rebecca_services WHERE rebecca_service_id=7") as cur:
                     assert (await cur.fetchone())[0] == "WireGuard VIP"
-            # A later sync must preserve the same single source of truth.
             refreshed = await service.get_category(category.id)
             assert refreshed.name == "WireGuard VIP"
         asyncio.run(scenario())
@@ -172,7 +171,7 @@ def test_panel_icon_candidates_reuse_registered_owner_key():
 
 
 def test_trial_picker_uses_canonical_panel_layer():
-    source = open("handlers/trial_category_ui.py", encoding="utf-8").read()
+    source = open("handlers/trial_ui_v2.py", encoding="utf-8").read()
     assert "category.name" in source
     assert "service.display_name" not in source
     assert "resolve_panel_icon_key" in source

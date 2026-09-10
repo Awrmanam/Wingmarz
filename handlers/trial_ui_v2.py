@@ -29,6 +29,7 @@ from message_catalog import TRIAL_UI_DEFAULTS
 from database import db
 from operations_service import OperationsError, operations_service
 from premium_ui_service import premium_ui_service
+from product_catalog import product_catalog
 from service_marketplace_service import service_marketplace_service
 from style_engine import style_engine
 from trial_experience_service import trial_experience_service
@@ -110,20 +111,29 @@ async def _active_config_result(user_id: int) -> dict[str, Any] | None:
 
 
 async def _trial_service_rows(trial_type: str) -> list[list[Any]]:
+    """Build trial choices from the same central panel identity used elsewhere.
+
+    Rebecca's provider/inbound name remains internal. The owner-defined panel
+    name and its matching Premium Emoji are the only identity shown here.
+    """
     services = await service_marketplace_service.trial_services(trial_type)
     rows: list[list[Any]] = []
     for service in services:
+        category = await product_catalog.get_category_by_service(service.rebecca_service_id)
+        if not category or not category.is_active or not category.provider_enabled:
+            continue
         callback_data = (
             f"trialv2:cfg:{int(service.id)}"
             if trial_type == "config"
             else f"trialv2:panel:{int(service.id)}"
         )
+        icon_key = await product_catalog.resolve_panel_icon_key(category)
         rows.append([
             await _button(
-                str(service.display_name),
+                category.name,
                 callback_data,
-                icon_key="rebecca",
-                fallback="🔌",
+                icon_key=icon_key,
+                fallback=None if icon_key else "📁",
             )
         ])
     return rows
@@ -142,7 +152,7 @@ async def _render_root(message: Message, user_id: int) -> None:
 
 
 async def _render_service_picker(message: Message, user_id: int, trial_type: str) -> None:
-    if config.PANEL_PROVIDER != "rebecca":
+    if str(config.PANEL_PROVIDER or "").lower() != "rebecca":
         from handlers.trial_experience import _render_trial_plans
         await _render_trial_plans(message, trial_type)
         return
@@ -197,7 +207,7 @@ async def trial_panel_picker(callback: CallbackQuery, state: FSMContext):
 @trial_ui_v2_router.message(Command("test"))
 async def trial_config_command(message: Message, state: FSMContext):
     await state.clear()
-    if config.PANEL_PROVIDER != "rebecca":
+    if str(config.PANEL_PROVIDER or "").lower() != "rebecca":
         from handlers.trial_experience import public_config_trial_command
         await public_config_trial_command(message, state)
         return
@@ -216,7 +226,7 @@ async def trial_config_command(message: Message, state: FSMContext):
 @trial_ui_v2_router.message(Command("paneltest"))
 async def trial_panel_command(message: Message, state: FSMContext):
     await state.clear()
-    if config.PANEL_PROVIDER != "rebecca":
+    if str(config.PANEL_PROVIDER or "").lower() != "rebecca":
         from handlers.trial_experience import public_panel_trial_command
         await public_panel_trial_command(message, state)
         return
@@ -241,6 +251,17 @@ async def issue_config_trial(callback: CallbackQuery, state: FSMContext):
     if not catalog_id:
         await callback.answer("نامعتبر", show_alert=True)
         return
+
+    # Idempotency guard: an old/stale service-picker message must never issue a
+    # second config while the same user already owns an active trial. This also
+    # protects us if a legacy callback reaches this handler directly.
+    await state.clear()
+    active = await _active_config_result(callback.from_user.id)
+    if active:
+        await render_config_result(callback.message, callback.from_user.id, active, edit=True)
+        await callback.answer("تست فعال شما")
+        return
+
     service = await service_marketplace_service.get_service_by_catalog_id(catalog_id)
     if not service:
         await callback.answer("این سرویس دیگر فعال نیست.", show_alert=True)
@@ -254,15 +275,17 @@ async def issue_config_trial(callback: CallbackQuery, state: FSMContext):
         await callback.answer(str(exc), show_alert=True)
         return
 
-    await state.clear()
     await render_config_result(callback.message, callback.from_user.id, result, edit=True)
     await callback.answer("تست آماده شد")
 
 
 async def render_config_result(message, user_id, result, *, edit=False):
     minutes = max(1, math.ceil((int(result["expire_at"]) - time.time()) / 60))
-    body = await _template("trial_v2_config_success",
-                           traffic=await format_traffic_size(int(result["traffic_bytes"])), minutes=minutes)
+    body = await _template(
+        "trial_v2_config_success",
+        traffic=await format_traffic_size(int(result["traffic_bytes"])),
+        minutes=minutes,
+    )
     rows = []
     url = connection_url(result.get("subscription_url"))
     if not url:
@@ -286,8 +309,10 @@ async def trial_connection_file(callback):
     if not links:
         await callback.answer("لینک منقضی شده یا متعلق به شما نیست.", show_alert=True)
         return
-    await callback.message.answer_document(BufferedInputFile("\n".join(links).encode(), filename="connection.txt"),
-                                           caption="فایل اتصال تست شما")
+    await callback.message.answer_document(
+        BufferedInputFile("\n".join(links).encode(), filename="connection.txt"),
+        caption="فایل اتصال تست شما",
+    )
     await callback.answer()
 
 
