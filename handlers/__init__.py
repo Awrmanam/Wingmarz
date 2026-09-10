@@ -12,6 +12,7 @@ from .service_marketplace_settings import service_marketplace_settings_router
 from .trial_experience import trial_experience_router
 from .premium_ui_clean_buttons import premium_ui_clean_buttons_router
 from .premium_ui_admin import premium_ui_admin_router
+from .button_editor_context import button_editor_context_router
 from .ui_editor_v2 import ui_editor_v2_router
 from .operations import operations_router
 from .home_navigation import home_navigation_router
@@ -30,6 +31,8 @@ style_admin_router.include_router(panel_experience_router)
 style_admin_router.include_router(service_marketplace_router)
 style_admin_router.include_router(service_marketplace_settings_router)
 style_admin_router.include_router(trial_experience_router)
+# Contextual button editor must precede the generic categorized editor.
+style_admin_router.include_router(button_editor_context_router)
 style_admin_router.include_router(ui_editor_v2_router)
 style_admin_router.include_router(premium_ui_clean_buttons_router)
 style_admin_router.include_router(premium_ui_admin_router)
