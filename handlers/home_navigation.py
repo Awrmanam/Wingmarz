@@ -7,6 +7,7 @@ from aiogram.types import CallbackQuery, Message
 
 import config
 from database import db
+from handlers.home_keyboards import public_home_keyboard, reseller_home_keyboard
 
 
 home_navigation_router = Router(name="home_navigation")
@@ -66,6 +67,7 @@ def _public_home_text() -> str:
 
 
 async def render_home(message: Message, user_id: int, *, edit: bool) -> None:
+    """Single role-aware home renderer with runtime-editable styled keyboards."""
     user_id = int(user_id)
     if user_id in config.SUDO_ADMINS:
         from handlers.operations import _edit_dashboard, _send_dashboard
@@ -77,22 +79,20 @@ async def render_home(message: Message, user_id: int, *, edit: bool) -> None:
         return
 
     if await has_admin_account(user_id):
-        from handlers.admin_handlers import get_admin_keyboard
-
         text = await _admin_home_text(user_id)
+        keyboard = await reseller_home_keyboard()
         if edit:
-            await message.edit_text(text, reply_markup=get_admin_keyboard())
+            await message.edit_text(text, reply_markup=keyboard)
         else:
-            await message.answer(text, reply_markup=get_admin_keyboard())
+            await message.answer(text, reply_markup=keyboard)
         return
 
-    from handlers.public_handlers import get_public_main_keyboard
-
     text = _public_home_text()
+    keyboard = await public_home_keyboard()
     if edit:
-        await message.edit_text(text, reply_markup=get_public_main_keyboard())
+        await message.edit_text(text, reply_markup=keyboard)
     else:
-        await message.answer(text, reply_markup=get_public_main_keyboard())
+        await message.answer(text, reply_markup=keyboard)
 
 
 @home_navigation_router.message(CommandStart(), RegularAdminHome())
