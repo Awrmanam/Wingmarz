@@ -56,6 +56,23 @@ def test_button_catalog_and_text_override_are_persistent(tmp_path):
     asyncio.run(scenario())
 
 
+def test_catalog_keeps_real_style_dashboard_entry_but_ignores_editor_controls(tmp_path):
+    service = PremiumUIService(str(tmp_path / "pui.db"))
+
+    async def scenario():
+        await service.ensure_schema()
+        await service.catalog_button("style:menu", "ایموجی و استایل", "style", "🎨")
+        await service.catalog_button("style:emojis", "Premium Emojiها", None, None)
+        await service.catalog_button("uiv4:scope:customer", "کاربر و نماینده", None, None)
+        await service.catalog_button("uiv3:scope:customer", "کاربر و نماینده", None, None)
+        items, _ = await service.list_buttons(page_size=20)
+        assert [(item.callback_data, item.default_text) for item in items] == [
+            ("style:menu", "ایموجی و استایل")
+        ]
+
+    asyncio.run(scenario())
+
+
 def test_same_callback_can_have_independent_visible_button_overrides(tmp_path):
     service = PremiumUIService(str(tmp_path / "pui.db"))
 
