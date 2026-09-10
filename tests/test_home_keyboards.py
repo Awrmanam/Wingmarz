@@ -1,9 +1,8 @@
 import asyncio
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
+
+from aiogram.types import InlineKeyboardButton
 
 from handlers import home_keyboards
-from handlers import home_navigation
 
 
 def run(coro):
@@ -15,7 +14,7 @@ def test_public_home_keyboard_uses_runtime_style_engine(monkeypatch):
 
     async def fake_styled(text, **kwargs):
         calls.append((text, kwargs))
-        return SimpleNamespace(text=text, callback_data=kwargs.get("callback_data"))
+        return InlineKeyboardButton(text=text, callback_data=kwargs.get("callback_data"))
 
     monkeypatch.setattr(home_keyboards.style_engine, "styled_button", fake_styled)
     keyboard = run(home_keyboards.public_home_keyboard())
@@ -30,7 +29,7 @@ def test_public_home_keyboard_uses_runtime_style_engine(monkeypatch):
 
 def test_reseller_home_keyboard_preserves_business_callbacks(monkeypatch):
     async def fake_styled(text, **kwargs):
-        return SimpleNamespace(text=text, callback_data=kwargs.get("callback_data"))
+        return InlineKeyboardButton(text=text, callback_data=kwargs.get("callback_data"))
 
     monkeypatch.setattr(home_keyboards.style_engine, "styled_button", fake_styled)
     keyboard = run(home_keyboards.reseller_home_keyboard())
