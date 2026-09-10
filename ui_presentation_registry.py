@@ -61,7 +61,6 @@ CATEGORY_META = {
 
 
 SCREENS: dict[str, ScreenDef] = {
-    # Customer / reseller
     "public.home": ScreenDef("public.home", "customer", "main", "صفحه اصلی مشتری", 0),
     "reseller.home": ScreenDef("reseller.home", "customer", "main", "صفحه اصلی نماینده", 1),
     "home.shared": ScreenDef("home.shared", "customer", "main", "دکمه‌های مشترک صفحه اصلی", 2),
@@ -78,8 +77,6 @@ SCREENS: dict[str, ScreenDef] = {
     "reseller.renew": ScreenDef("reseller.renew", "customer", "account", "تمدید و افزایش", 1),
     "reseller.cleanup": ScreenDef("reseller.cleanup", "customer", "account", "پاکسازی کاربران نماینده", 2),
     "support.home": ScreenDef("support.home", "customer", "support", "پشتیبانی", 0),
-
-    # Management
     "admin.dashboard": ScreenDef("admin.dashboard", "manage", "dashboard", "مرکز مدیریت ربات", 0),
     "admin.navigation": ScreenDef("admin.navigation", "manage", "dashboard", "ناوبری مدیریت", 90),
     "admin.panels": ScreenDef("admin.panels", "manage", "products", "مرکز پنل‌ها", 0),
@@ -111,9 +108,6 @@ def _clean(value: str | None) -> str:
 
 
 BUTTONS: tuple[ButtonDef, ...] = (
-    # Customer/reseller home. Shared entries appear once because the current
-    # persistence identity is callback_data + default_text, so one edit affects
-    # the same visible control on both homes.
     ButtonDef("public.home.buy", "public.home", "خرید پنل نمایندگی", "public_buy_reseller", rank=0),
     ButtonDef("reseller.home.info", "reseller.home", "اطلاعات من", "my_info", rank=0),
     ButtonDef("reseller.home.report", "reseller.home", "گزارش من", "my_report", rank=1),
@@ -124,23 +118,21 @@ BUTTONS: tuple[ButtonDef, ...] = (
     ButtonDef("home.shared.trial", "home.shared", "تست رایگان", "svcmarket:trial", rank=0),
     ButtonDef("home.shared.support", "home.shared", "پشتیبانی", "support:home", rank=1),
     ButtonDef("reseller.navigation.back", "reseller.navigation", "بازگشت", "back_to_admin_main", rank=0, navigation_type="back"),
-
-    # Trial customer UI. Old compatibility/access aliases are intentionally hidden.
     ButtonDef("trial.home.config", "trial.home", "کانفیگ تست", "trialv2:choose:config", rank=0),
     ButtonDef("trial.home.panel", "trial.home", "پنل نمایندگی تست", "trialv2:choose:panel", rank=1),
     ButtonDef("trial.home.back", "trial.home", "بازگشت", "svcmarket:home", rank=90, navigation_type="back"),
     ButtonDef("trial.config.back", "trial.config", "بازگشت", "trialv2:root", rank=90, navigation_type="back"),
-
-    # Support
     ButtonDef("support.home.new", "support.home", "ایجاد تیکت", "support:new", rank=0),
     ButtonDef("support.home.back", "support.home", "بازگشت", "public_back_main", rank=90, navigation_type="back"),
-
-    # Regular reseller cleanup confirmation screens.
     ButtonDef("reseller.cleanup.confirm_expired", "reseller.cleanup", "تأیید حذف کاربران منقضی", "global_cleanup_confirm", rank=0),
     ButtonDef("reseller.cleanup.confirm_quota", "reseller.cleanup", "تأیید حذف کاربران با سهمیه تمام‌شده", "global_small_quota_cleanup_confirm", rank=1),
 
-    # Main management dashboard. Duplicate callback sudo_menu_sales is resolved
-    # by the visible default text and stays two separate presentation identities.
+    # Customer checkout actions. Same callback may intentionally have two visible texts.
+    ButtonDef("payment.checkout.discount", "payment.checkout", "اعمال کد تخفیف", "ux:checkout:code", rank=0),
+    ButtonDef("payment.checkout.continue", "payment.checkout", "ادامه به پرداخت", "ux:checkout:nocode", "ادامه به پرداخت", 1),
+    ButtonDef("payment.checkout.no_discount", "payment.checkout", "ادامه بدون تخفیف", "ux:checkout:nocode", "ادامه بدون تخفیف", 2),
+
+    # Main management dashboard.
     ButtonDef("admin.dashboard.sales", "admin.dashboard", "فروش و تعرفه‌ها", "sudo_menu_sales", "فروش و تعرفه‌ها", 0),
     ButtonDef("admin.dashboard.panels", "admin.dashboard", "مرکز پنل‌ها", "sudo_menu_panels", rank=1),
     ButtonDef("admin.dashboard.orders", "admin.dashboard", "سفارش‌ها", "cc:orders:0", rank=2),
@@ -160,43 +152,50 @@ BUTTONS: tuple[ButtonDef, ...] = (
     ButtonDef("admin.dashboard.settings", "admin.dashboard", "تنظیمات", "sudo_menu_settings", rank=16),
     ButtonDef("admin.navigation.home", "admin.navigation", "خانه", "back_to_main", rank=0, navigation_type="home"),
 
-    # Panel center and reseller provisioning wizards.
+    # Panel center and panel creation/import flows.
     ButtonDef("admin.panels.cleanup", "admin.panels", "پاکسازی", "sudo_menu_cleanup", rank=0),
     ButtonDef("admin.panels.reports", "admin.panels", "گزارشات", "sudo_menu_reports", rank=1),
-    ButtonDef("admin.panels.add", "admin.panels", "افزودن ادمین", "add_admin", rank=2),
-    ButtonDef("admin.panels.edit", "admin.panels", "ویرایش پنل", "edit_panel", rank=3),
-    ButtonDef("admin.panels.activate", "admin.panels", "فعالسازی پنل", "activate_admin", rank=4),
-    ButtonDef("admin.panels.manage", "admin.panels", "مدیریت ادمین‌ها", "sudo_manage_admins", rank=5),
-    ButtonDef("admin.panels.auto_import", "admin.panels", "کشف خودکار ادمین", "auto_import_admins", rank=6),
-    ButtonDef("admin.panels.import", "admin.panels", "افزودن ادمین قبلی", "import_admin", rank=7),
-    ButtonDef("admin.panels.remove", "admin.panels", "حذف کامل پنل", "remove_admin", rank=8),
-    ButtonDef("admin.panels.list", "admin.panels", "لیست ادمین‌ها", "list_admins", rank=9),
+    ButtonDef("admin.panels.status", "admin.panels", "وضعیت ادمین‌ها", "admin_status", rank=2),
+    ButtonDef("admin.panels.add", "admin.panels", "افزودن ادمین", "add_admin", rank=3),
+    ButtonDef("admin.panels.edit", "admin.panels", "ویرایش پنل", "edit_panel", rank=4),
+    ButtonDef("admin.panels.edit_confirm", "admin.panels", "تأیید ویرایش پنل", "confirm_edit_panel", rank=5),
+    ButtonDef("admin.panels.activate", "admin.panels", "فعالسازی پنل", "activate_admin", rank=6),
+    ButtonDef("admin.panels.manage", "admin.panels", "مدیریت ادمین‌ها", "sudo_manage_admins", rank=7),
+    ButtonDef("admin.panels.manage_all", "admin.panels", "لیست همه ادمین‌ها", "manage_list_all", rank=8),
+    ButtonDef("admin.panels.auto_import", "admin.panels", "کشف خودکار ادمین", "auto_import_admins", rank=9),
+    ButtonDef("admin.panels.import", "admin.panels", "افزودن ادمین قبلی", "import_admin", rank=10),
+    ButtonDef("admin.panels.remove", "admin.panels", "حذف کامل پنل", "remove_admin", rank=11),
+    ButtonDef("admin.panels.list", "admin.panels", "لیست ادمین‌ها", "list_admins", rank=12),
     ButtonDef("admin.panels.refresh_import", "admin.panel_import", "بروزرسانی لیست", "auto_import_refresh", rank=0),
     ButtonDef("admin.panels.cancel_import", "admin.panel_import", "لغو", "auto_import_cancel", rank=90, navigation_type="back"),
+    ButtonDef("admin.panel_add.no_plan", "admin.panel_add", "ادامه بدون پلن", "add_pick_plan_0", rank=0),
     ButtonDef("admin.panel_add.renew_inherit", "admin.panel_add", "تمدید مطابق پلن", "add_renew_mode_inherit", rank=10),
     ButtonDef("admin.panel_add.renew_inc", "admin.panel_add", "تمدید تدریجی مجاز", "add_renew_mode_inc", rank=11),
     ButtonDef("admin.panel_add.renew_full", "admin.panel_add", "فقط تمدید کامل", "add_renew_mode_full", rank=12),
     ButtonDef("admin.panel_add.confirm", "admin.panel_add", "تأیید و ایجاد", "confirm_create_admin", rank=20),
+    ButtonDef("admin.panel_import.no_plan", "admin.panel_import", "ادامه بدون پلن", "import_pick_plan_0", rank=0),
     ButtonDef("admin.panel_import.renew_inherit", "admin.panel_import", "تمدید مطابق پلن", "import_renew_mode_inherit", rank=10),
     ButtonDef("admin.panel_import.renew_inc", "admin.panel_import", "تمدید تدریجی مجاز", "import_renew_mode_inc", rank=11),
     ButtonDef("admin.panel_import.renew_full", "admin.panel_import", "فقط تمدید کامل", "import_renew_mode_full", rank=12),
     ButtonDef("admin.panel_import.confirm", "admin.panel_import", "تأیید و افزودن", "confirm_import_admin", rank=20),
-
-    # Cleanup / maintenance
     ButtonDef("admin.cleanup.expired", "admin.panel_cleanup", "حذف منقضی‌های قدیمی", "sudo_cleanup_old_expired", rank=0),
     ButtonDef("admin.cleanup.quota", "admin.panel_cleanup", "حذف سهمیه‌های تمام‌شده", "sudo_cleanup_small_quota", rank=1),
     ButtonDef("admin.cleanup.reset", "admin.panel_cleanup", "ریست مصرف", "sudo_reset_usage", rank=2),
     ButtonDef("admin.cleanup.nonpayer", "admin.panel_cleanup", "ثبت عدم پرداخت", "sudo_non_payer", rank=3),
 
-    # Product/plan center
+    # Product/plan center.
     ButtonDef("admin.products.add_plan", "admin.products", "افزودن پلن", "sales_add", rank=0),
-    ButtonDef("admin.products.services", "admin.products", "اتصال پلن به سرویس", "sales_edit_services", rank=1),
-    ButtonDef("admin.products.rebecca", "admin.products", "سرویس‌های Rebecca", "rebecca_services", "سرویس‌های Rebecca", 2),
-    ButtonDef("admin.products.rebecca_manage", "admin.products", "مدیریت سرویس‌های Rebecca", "rebecca_services", "مدیریت سرویس‌های Rebecca", 3),
-    ButtonDef("admin.products.delete", "admin.products", "حذف پلن", "sales_delete", rank=4),
+    ButtonDef("admin.products.type_volume", "admin.products", "پلن حجمی", "sales_type_volume", rank=1),
+    ButtonDef("admin.products.type_time", "admin.products", "پلن پکیجی زمانی", "sales_type_time", rank=2),
+    ButtonDef("admin.products.renew_incremental", "admin.products", "تمدید تدریجی مجاز", "sales_renew_mode_incremental", rank=3),
+    ButtonDef("admin.products.renew_full", "admin.products", "فقط تمدید کامل", "sales_renew_mode_full", rank=4),
+    ButtonDef("admin.products.services", "admin.products", "اتصال پلن به سرویس", "sales_edit_services", rank=5),
+    ButtonDef("admin.products.rebecca", "admin.products", "سرویس‌های Rebecca", "rebecca_services", "سرویس‌های Rebecca", 6),
+    ButtonDef("admin.products.rebecca_manage", "admin.products", "مدیریت سرویس‌های Rebecca", "rebecca_services", "مدیریت سرویس‌های Rebecca", 7),
+    ButtonDef("admin.products.delete", "admin.products", "حذف پلن", "sales_delete", rank=8),
     ButtonDef("admin.products.back", "admin.products", "بازگشت", "pc:root", rank=90, navigation_type="back"),
 
-    # Rebecca service catalog screens.
+    # Rebecca service catalog.
     ButtonDef("admin.rebecca.add", "admin.rebecca", "افزودن سرویس", "rsvc:add", rank=0),
     ButtonDef("admin.rebecca.list", "admin.rebecca", "لیست سرویس‌ها", "rebecca_services", "لیست سرویس‌ها", 1),
     ButtonDef("admin.rebecca.custom_name", "admin.rebecca", "نام دلخواه", "radd:custom", rank=10),
@@ -205,10 +204,13 @@ BUTTONS: tuple[ButtonDef, ...] = (
     ButtonDef("admin.rebecca.selection_done", "admin.rebecca", "تأیید انتخاب", "rcp:done", rank=20),
     ButtonDef("admin.rebecca.manual_service", "admin.rebecca", "ورود دستی شناسه سرویس", "rcp:manual", rank=21),
 
-    # Finance/payment settings.
+    # Finance/payment.
     ButtonDef("admin.finance.cards", "admin.finance", "مدیریت کارت‌ها", "sales_cards", rank=0),
-    ButtonDef("admin.finance.billing", "admin.finance", "تعرفه تمدید", "set_billing", rank=1),
-    ButtonDef("admin.finance.login_url", "admin.finance", "آدرس ورود", "set_login_url", rank=2),
+    ButtonDef("admin.finance.card_add", "admin.finance", "افزودن کارت", "card_add", rank=1),
+    ButtonDef("admin.finance.card_delete", "admin.finance", "حذف کارت", "card_delete", rank=2),
+    ButtonDef("admin.finance.card_toggle", "admin.finance", "فعال یا غیرفعال کردن کارت", "card_toggle", rank=3),
+    ButtonDef("admin.finance.billing", "admin.finance", "تعرفه تمدید", "set_billing", rank=4),
+    ButtonDef("admin.finance.login_url", "admin.finance", "آدرس ورود", "set_login_url", rank=5),
 
     # Discounts.
     ButtonDef("admin.discounts.add", "admin.discounts", "ساخت کد تخفیف", "ops:disc:add", rank=0),
@@ -230,37 +232,27 @@ BUTTONS: tuple[ButtonDef, ...] = (
     ButtonDef("admin.panel_trial.users", "admin.panel_trial", "حد کاربر", "ux:paneltrial:set:users", rank=2),
     ButtonDef("admin.panel_trial.cooldown", "admin.panel_trial", "فاصله دریافت", "ux:paneltrial:set:cooldown", rank=3),
 
-    # Tickets/support management.
+    # Support, access, reports, broadcast, settings, tools.
     ButtonDef("admin.support.open", "admin.support", "تیکت‌های باز", "cc:tickets:open:0", rank=0),
     ButtonDef("admin.support.closed", "admin.support", "تیکت‌های بسته", "cc:tickets:closed:0", rank=1),
-
-    # Access.
     ButtonDef("admin.access.add", "admin.access", "افزودن مدیر", "ops:ba:add", rank=0),
-
-    # Reports and broadcast.
     ButtonDef("admin.reports.legacy", "admin.reports", "گزارشات تکمیلی", "sudo_menu_reports", "گزارشات قدیمی", 0),
     ButtonDef("admin.broadcast.all", "admin.broadcast", "ارسال به همه ادمین‌ها", "broadcast_all", rank=0),
     ButtonDef("admin.broadcast.active", "admin.broadcast", "ارسال به ادمین‌های فعال", "broadcast_active", rank=1),
     ButtonDef("admin.broadcast.confirm", "admin.broadcast", "تأیید ارسال", "broadcast_confirm", rank=20),
-
-    # Settings.
     ButtonDef("admin.settings.forced_join", "admin.settings", "کانال‌های اجباری", "forced_join_manage", rank=0),
-
-    # Backup/tools.
+    ButtonDef("admin.settings.forced_join_add", "admin.settings", "افزودن کانال اجباری", "forced_join_add", rank=1),
+    ButtonDef("admin.settings.forced_join_delete", "admin.settings", "حذف کانال اجباری", "forced_join_del", rank=2),
+    ButtonDef("admin.settings.forced_join_toggle", "admin.settings", "فعال یا غیرفعال کردن کانال", "forced_join_toggle", rank=3),
     ButtonDef("admin.tools.backup_now", "admin.tools", "بکاپ الان", "backup_now", rank=0),
     ButtonDef("admin.tools.backup_schedule", "admin.tools", "زمان‌بندی بکاپ", "backup_schedule", rank=1),
     ButtonDef("admin.tools.backup_restore", "admin.tools", "ریستور بکاپ", "backup_restore", rank=2),
 )
 
-
 _BY_CALLBACK: dict[str, list[ButtonDef]] = {}
 for _button in BUTTONS:
     _BY_CALLBACK.setdefault(_button.callback_data, []).append(_button)
 
-
-# Implementation-only controls are hidden from the normal editor. Explicit
-# ButtonDefs are resolved before these rules, so e.g. style:menu can stay a real
-# dashboard button while the internal style editor controls remain hidden.
 _HIDDEN_PREFIX_REASONS: tuple[tuple[str, str], ...] = (
     ("pui:", "کنترل داخلی ویرایشگر"),
     ("puc:", "کنترل داخلی ویرایشگر"),
@@ -322,7 +314,6 @@ def resolve_button(callback_data: str, default_text: str | None = None) -> Butto
     callback = str(callback_data or "")
     if not callback:
         return ButtonResolution(None, "callback خالی")
-
     candidates = _BY_CALLBACK.get(callback, [])
     if candidates:
         if len(candidates) == 1:
@@ -332,7 +323,6 @@ def resolve_button(callback_data: str, default_text: str | None = None) -> Butto
             if candidate.default_text and _clean(candidate.default_text) == wanted:
                 return ButtonResolution(candidate, None)
         return ButtonResolution(None, "دکمه نمایشی مشترک و مبهم")
-
     reason = _excluded(callback)
     if reason:
         return ButtonResolution(None, reason)
