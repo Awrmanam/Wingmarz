@@ -2,6 +2,7 @@
 
 from .style_admin import style_admin_router
 from .trial_ui_v2 import trial_ui_v2_router
+from .panel_trial_restore import panel_trial_restore_router
 from .operations_bootstrap import operations_bootstrap_router
 from .product_center import product_center_router
 from .plan_storefront import plan_storefront_router
@@ -16,12 +17,15 @@ from .ui_editor_v2 import ui_editor_v2_router
 from .operations import operations_router
 from .home_navigation import home_navigation_router
 from .operations_public import operations_public_router
+from .support_v2 import support_v2_router
+from .tariffs import tariffs_router
 from .control_center import control_center_router
 
 style_admin_router.include_router(operations_bootstrap_router)
-# trial_ui_v2 is the single canonical owner of config/panel trial entry callbacks.
-# Keeping a second router on the same callbacks caused the category picker to
-# consume the event before active-trial restoration could run.
+# Active panel-trial restoration must run before the issuance/cooldown router so
+# old Telegram messages cannot accidentally create or request a second trial.
+style_admin_router.include_router(panel_trial_restore_router)
+# trial_ui_v2 is the single canonical owner of config/panel trial issuance.
 style_admin_router.include_router(trial_ui_v2_router)
 style_admin_router.include_router(product_center_router)
 style_admin_router.include_router(plan_storefront_router)
@@ -39,4 +43,8 @@ style_admin_router.include_router(premium_ui_admin_router)
 style_admin_router.include_router(operations_router)
 style_admin_router.include_router(home_navigation_router)
 style_admin_router.include_router(operations_public_router)
+# User-facing support and tariffs intercept their legacy callbacks before the
+# older control-center fallback handlers.
+style_admin_router.include_router(support_v2_router)
+style_admin_router.include_router(tariffs_router)
 style_admin_router.include_router(control_center_router)

@@ -5,10 +5,11 @@ from urllib.parse import quote
 import httpx
 
 import config
+from rebecca_permissions import permissions_are_user_only, standard_user_only_permissions
 
 
 class RebeccaAPIError(RuntimeError):
-    def __init__(self, message: str, *, status_code: Optional[int] = None):
+    def __init__(self, message, *, status_code: Optional[int] = None):
         super().__init__(message)
         self.status_code = status_code
 
@@ -66,6 +67,10 @@ class RebeccaAPI:
             returned = {int(item.get("id")) if isinstance(item, dict) else int(item) for item in admin["services"]}
             if not set(services).issubset(returned):
                 raise RebeccaAPIError("Rebecca services verification failed")
+        # Rebecca's upstream Standard defaults currently expose Hosts. Wingmarz
+        # therefore always sends and verifies an explicit user-only profile.
+        if "permissions" in admin and not permissions_are_user_only(admin.get("permissions")):
+            raise RebeccaAPIError("Rebecca admin permissions verification failed")
         return admin
 
     async def create_admin_verified(
@@ -77,6 +82,7 @@ class RebeccaAPI:
             "username": username,
             "password": password,
             "role": "standard",
+            "permissions": standard_user_only_permissions(),
             "telegram_id": telegram_id,
             "data_limit": data_limit,
             "expire": expire,
@@ -102,6 +108,23 @@ class RebeccaAPI:
         admin = admin.get("admin", admin) if isinstance(admin, dict) else {}
         return self.verify_admin(admin, username, telegram_id, data_limit=data_limit,
                                  expire=expire, users_limit=users_limit, services=services)
+
+    async def enforce_standard_user_only(self, username: str) -> Dict[str, Any]:
+        """Downgrade one managed account to Standard + explicit user-only access."""
+        username = str(username or "").strip()
+        if not username:
+            raise RebeccaAPIError("Rebecca admin username is required")
+        data = await self._request(
+            "PUT",
+            f"/api/admin/{quote(username, safe='')}",
+            json={"role": "standard", "permissions": standard_user_only_permissions()},
+        )
+        admin = data.get("admin", data) if isinstance(data, dict) else {}
+        if not isinstance(admin, dict) or admin.get("username") != username or admin.get("role") != "standard":
+            raise RebeccaAPIError("Rebecca admin permission update verification failed")
+        if "permissions" in admin and not permissions_are_user_only(admin.get("permissions")):
+            raise RebeccaAPIError("Rebecca admin permission update verification failed")
+        return admin
 
     async def find_admin(self, username: str) -> Optional[Dict[str, Any]]:
         """Find an exact username through Rebecca's documented admin list."""
@@ -169,5 +192,6 @@ class RebeccaAPI:
         data = response.json()
         admins = data.get("admins", data) if isinstance(data, dict) else data
         return [item for item in admins if isinstance(item, dict)] if isinstance(admins, list) else []
+
 
 rebecca_api = RebeccaAPI()

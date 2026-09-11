@@ -18,9 +18,11 @@ def test_public_home_keyboard_uses_runtime_style_engine(monkeypatch):
 
     monkeypatch.setattr(home_keyboards.style_engine, "styled_button", fake_styled)
     keyboard = run(home_keyboards.public_home_keyboard())
+    callbacks = [button.callback_data for row in keyboard.inline_keyboard for button in row]
 
-    assert [row[0].callback_data for row in keyboard.inline_keyboard] == [
+    assert callbacks == [
         "public_buy_reseller",
+        "tariffs:home",
         "svcmarket:trial",
         "support:home",
     ]
@@ -42,6 +44,7 @@ def test_reseller_home_keyboard_preserves_business_callbacks(monkeypatch):
         "reactivate_users",
         "admin_buy_reseller",
         "admin_renew",
+        "tariffs:home",
         "svcmarket:trial",
         "support:home",
     ]
@@ -53,3 +56,4 @@ def test_home_renderer_no_longer_uses_legacy_direct_keyboard_builders():
     assert "get_public_main_keyboard" not in source
     assert "await reseller_home_keyboard()" in source
     assert "await public_home_keyboard()" in source
+    assert "CommandStart(), PublicHome()" in source

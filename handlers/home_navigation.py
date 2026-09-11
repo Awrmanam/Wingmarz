@@ -34,6 +34,14 @@ class RegularAdminHome(Filter):
         return await has_admin_account(user_id)
 
 
+class PublicHome(Filter):
+    async def __call__(self, message: Message) -> bool:
+        user_id = int(message.from_user.id)
+        if user_id in config.SUDO_ADMINS:
+            return False
+        return not await has_admin_account(user_id)
+
+
 def _join_home_sections(*keys: str) -> str:
     """Compose independently editable home blocks without forcing empty gaps."""
     parts = [str(config.MESSAGES.get(key, "")).strip() for key in keys]
@@ -97,6 +105,13 @@ async def render_home(message: Message, user_id: int, *, edit: bool) -> None:
 
 @home_navigation_router.message(CommandStart(), RegularAdminHome())
 async def regular_admin_start(message: Message, state: FSMContext):
+    await state.clear()
+    await render_home(message, message.from_user.id, edit=False)
+
+
+@home_navigation_router.message(CommandStart(), PublicHome())
+async def public_start(message: Message, state: FSMContext):
+    """Public /start uses the same canonical home renderer as every Back path."""
     await state.clear()
     await render_home(message, message.from_user.id, edit=False)
 
