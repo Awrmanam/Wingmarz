@@ -30,10 +30,17 @@ async def _button(
 
 
 async def public_home_keyboard() -> InlineKeyboardMarkup:
-    """Canonical editable keyboard for public/customer home."""
+    """Canonical editable keyboard for public/customer home.
+
+    The conversion path is deliberately ordered: buy first, then the two most
+    useful pre-purchase helpers (tariffs and trial), with support as fallback.
+    """
     return InlineKeyboardMarkup(inline_keyboard=[
         [await _button("خرید پنل نمایندگی", "public_buy_reseller", icon_key="buy", fallback="🛒")],
-        [await _button("تست رایگان", "svcmarket:trial", icon_key="test", fallback="🧪")],
+        [
+            await _button("تعرفه‌ها", "tariffs:home", icon_key="price", fallback="💰"),
+            await _button("تست رایگان", "svcmarket:trial", icon_key="test", fallback="🧪"),
+        ],
         [await _button("پشتیبانی", "support:home", icon_key="support", fallback="🎧")],
     ])
 
@@ -53,8 +60,13 @@ async def reseller_home_keyboard() -> InlineKeyboardMarkup:
             await _button(config.BUTTONS["my_users"], "my_users", icon_key="users", fallback="👥"),
             await _button(config.BUTTONS["reactivate_users"], "reactivate_users", icon_key="refresh", fallback="🔄"),
         ],
-        [await _button("خرید پنل نمایندگی", "admin_buy_reseller", icon_key="buy", fallback="🛒")],
-        [await _button(config.BUTTONS["renew"], "admin_renew", icon_key="renew", fallback="🔄")],
-        [await _button("تست رایگان", "svcmarket:trial", icon_key="test", fallback="🧪")],
+        [
+            await _button("خرید پنل نمایندگی", "admin_buy_reseller", icon_key="buy", fallback="🛒"),
+            await _button(config.BUTTONS["renew"], "admin_renew", icon_key="renew", fallback="🔄"),
+        ],
+        [
+            await _button("تعرفه‌ها", "tariffs:home", icon_key="price", fallback="💰"),
+            await _button("تست رایگان", "svcmarket:trial", icon_key="test", fallback="🧪"),
+        ],
         [await _button("پشتیبانی", "support:home", icon_key="support", fallback="🎧")],
     ])
