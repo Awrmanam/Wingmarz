@@ -6,6 +6,7 @@ import pytest
 
 import config
 from rebecca_api import RebeccaAPI, RebeccaConflict, RebeccaAPIError
+from rebecca_permissions import standard_user_only_permissions
 from handlers.sudo_handlers import _rebecca_username_base
 
 
@@ -49,10 +50,12 @@ def test_create_admin_exact_route_payload_and_verification(monkeypatch):
     assert request.method == "POST"
     assert payload == {
         "username": "arman_madani_4827", "password": "independent-password",
-        "role": "standard", "telegram_id": 42, "data_limit": 100,
+        "role": "standard", "permissions": standard_user_only_permissions(),
+        "telegram_id": 42, "data_limit": 100,
         "expire": 2_000_000_000, "users_limit": 7, "services": [1, 2],
     }
     assert payload["role"] not in {"reseller", "sudo", "full_access"}
+    assert payload["permissions"]["sections"]["hosts"] is False
     assert result["status"] == "active"
 
 
