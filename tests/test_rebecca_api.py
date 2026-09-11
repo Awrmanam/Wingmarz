@@ -6,7 +6,6 @@ import pytest
 
 import config
 from rebecca_api import RebeccaAPI, RebeccaConflict, RebeccaAPIError
-from rebecca_permissions import permissions_are_user_only, standard_user_only_permissions
 from handlers.sudo_handlers import _rebecca_username_base
 
 
@@ -19,40 +18,6 @@ def test_service_ids_are_unique_positive_integers():
     assert config._parse_rebecca_service_ids("1,2,1, 3") == (1, 2, 3)
     assert config._parse_rebecca_service_ids("0,2") == ()
     assert config._parse_rebecca_service_ids("1,nope") == ()
-
-
-
-def test_user_only_permissions_allow_user_actions_but_hide_infrastructure():
-    perms = standard_user_only_permissions()
-    assert all(value is True for key, value in perms["users"].items() if key != "max_data_limit_per_user")
-    assert all(value is False for value in perms["admin_management"].values())
-    assert all(value is False for value in perms["sections"].values())
-    assert perms["sections"]["hosts"] is False
-    assert all(value is False for value in perms["sudo"].values())
-    assert permissions_are_user_only(perms)
-
-
-def test_existing_admin_permission_reconciliation_uses_put(monkeypatch):
-    monkeypatch.setattr(config, "REBECCA_URL", "https://rebecca.example")
-    monkeypatch.setattr(config, "REBECCA_BEARER_TOKEN", "secret")
-    captured = []
-
-    async def handler(request):
-        body = __import__("json").loads(request.content)
-        captured.append((request.method, request.url.path, body))
-        return httpx.Response(200, json={
-            "username": "legacy_admin",
-            "role": "standard",
-            "permissions": body["permissions"],
-        })
-
-    transport, real_client = httpx.MockTransport(handler), httpx.AsyncClient
-    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: real_client(transport=transport, **kw))
-    result = asyncio.run(RebeccaAPI().enforce_standard_user_only("legacy_admin"))
-    assert captured[0][0:2] == ("PUT", "/api/admin/legacy_admin")
-    assert captured[0][2]["role"] == "standard"
-    assert captured[0][2]["permissions"]["sections"]["hosts"] is False
-    assert permissions_are_user_only(result["permissions"])
 
 
 def test_create_admin_exact_route_payload_and_verification(monkeypatch):
@@ -84,17 +49,14 @@ def test_create_admin_exact_route_payload_and_verification(monkeypatch):
     assert request.method == "POST"
     assert payload == {
         "username": "arman_madani_4827", "password": "independent-password",
-        "role": "standard", "permissions": standard_user_only_permissions(),
-        "telegram_id": 42, "data_limit": 100,
+        "role": "standard", "telegram_id": 42, "data_limit": 100,
         "expire": 2_000_000_000, "users_limit": 7, "services": [1, 2],
     }
     assert payload["role"] not in {"reseller", "sudo", "full_access"}
-    assert payload["permissions"]["sections"]["hosts"] is False
-    assert permissions_are_user_only(payload["permissions"])
     assert result["status"] == "active"
 
 
-def test_unlimited_values_are_null_and_conflict_is_retryable(moneretch):
+def test_unlimited_values_are_null_and_conflict_is_retryable(monkeypatch):
     monkeypatch.setattr(config, "REBECCA_URL", "https://rebecca.example")
     monkeypatch.setattr(config, "REBECCA_BEARER_TOKEN", "secret")
     seen = []
@@ -107,7 +69,7 @@ def test_unlimited_values_are_null_and_conflict_is_retryable(moneretch):
     real_client = httpx.AsyncClient
     monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: real_client(transport=transport, **kw))
     with pytest.raises(RebeccaConflict):
-        asyncio.run(RebecaAPI().create_admin_verified(
+        asyncio.run(RebeccaAPI().create_admin_verified(
             "user_9_1234", "password-long-enough", 9,
             data_limit=None, expire=None, users_limit=None, services=[9],
         ))
@@ -195,7 +157,7 @@ def test_official_admin_management_routes_and_url_encoding(monkeypatch):
 
 
 @pytest.mark.parametrize("payload", [True, -1, "12", None, {}, {"usage": {"used_traffic": 12}}])
-def test_admin_usage_rejects_invalid_response(monjåypatch, payload):
+def test_admin_usage_rejects_invalid_response(monkeypatch, payload):
     monkeypatch.setattr(config, "REBECCA_URL", "https://rebecca.example")
     async def handler(request):
         return httpx.Response(200, json=payload)
