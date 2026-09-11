@@ -99,13 +99,20 @@ def test_ticket_ui_has_confirmations_notifications_and_view_action():
 
 
 def test_tariffs_are_on_canonical_home_and_copy_is_runtime_editable():
-    source = Path("handlers/home_keyboards.py").read_text(encoding="utf-8")
-    assert '"tariffs:home"' in source
-    assert "تعرفه‌ها" in source
+    home_source = Path("handlers/home_keyboards.py").read_text(encoding="utf-8")
+    tariffs_source = Path("handlers/tariffs.py").read_text(encoding="utf-8")
+    assert '"tariffs:home"' in home_source
+    assert "تعرفه‌ها" in home_source
     assert "tariffs_page" in UI_MESSAGES
     assert UI_TITLES["tariffs_page"] == "صفحه تعرفه‌ها"
     resolved = resolve_button("tariffs:home", "تعرفه‌ها")
     assert resolved.button is not None
+    # Tariffs is deliberately content-only: one editable message plus one Back button.
+    assert '"tariffs_page"' in tariffs_source
+    assert "_buy_callback" not in tariffs_source
+    assert '"svcmarket:trial"' not in tariffs_source
+    assert tariffs_source.count("await _button(") == 1
+    assert '"⬅️ بازگشت"' in tariffs_source
 
 
 def test_active_panel_trial_restore_precedes_cooldown_and_issuance_router():
