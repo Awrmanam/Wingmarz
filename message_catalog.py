@@ -12,10 +12,14 @@ UI_MESSAGES = {
     # Kept for backwards compatibility with old already-rendered paths.
     'customer_home': 'خوش آمدید!\n\nاز کجا شروع کنیم؟',
     'support_home': '🎧 <b>پشتیبانی</b>\n\nچطور می‌توانیم کمکتان کنیم؟',
-    'support_subject': 'عنوان کوتاه درخواست را ارسال کنید:',
-    'support_body': 'متن درخواست را ارسال کنید:',
+    'support_subject': '📝 عنوان کوتاه درخواست را ارسال کنید:',
+    'support_body': '📝 متن درخواست را ارسال کنید:',
     'support_submitted': '✅ درخواست شما ثبت شد. پاسخ پشتیبانی همین‌جا ارسال می‌شود.',
     'support_reply': '🎧 <b>پاسخ پشتیبانی</b>\n\n{reply}',
+    'tariffs_page': (
+        '💰 <b>تعرفه‌ها</b>\n\n'
+        'متن تعرفه‌ها و توضیحات فروش را از بخش «مدیریت متن‌ها» با محتوای دلخواه خودتان تنظیم کنید.'
+    ),
     'sales_service_select': '🛒 <b>خرید پنل نمایندگی</b>\n\nپنل موردنظر را انتخاب کنید:',
     'sales_empty': 'فعلاً سرویسی برای خرید آماده نیست.\nلطفاً کمی بعد دوباره سر بزنید یا با پشتیبانی تماس بگیرید.',
     'sales_plan_select': '<b>{service}</b>\n\nپلن موردنظر را انتخاب کنید:',
@@ -37,6 +41,7 @@ UI_TITLES = {
     'support_body': 'درخواست متن تیکت',
     'support_submitted': 'ثبت موفق تیکت',
     'support_reply': 'پاسخ پشتیبانی',
+    'tariffs_page': 'صفحه تعرفه‌ها',
     'sales_service_select': 'انتخاب پنل خرید',
     'sales_empty': 'نبود سرویس آماده فروش',
     'sales_plan_select': 'انتخاب پلن قدیمی',
