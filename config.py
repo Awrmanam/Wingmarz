@@ -47,6 +47,14 @@ SUDO_ADMINS: List[int] = [
 # Database Configuration
 DATABASE_PATH = os.getenv("DATABASE_PATH", "bot_database.db")
 BACKUP_DIR = os.getenv("BACKUP_DIR", "").strip()
+BACKUP_AUTO_ENABLED = os.getenv("BACKUP_AUTO_ENABLED", "true").lower() in ["1", "true", "yes"]
+BACKUP_INTERVAL_HOURS = max(1, int(os.getenv("BACKUP_INTERVAL_HOURS", "1")))
+BACKUP_RETENTION_COUNT = max(1, int(os.getenv("BACKUP_RETENTION_COUNT", "24")))
+BACKUP_ZIP_PASSWORD = os.getenv("BACKUP_ZIP_PASSWORD", "").strip()
+BACKUP_INCLUDE_LOGS = os.getenv("BACKUP_INCLUDE_LOGS", "true").lower() in ["1", "true", "yes"]
+BACKUP_RECIPIENTS: List[int] = [
+    int(x) for x in os.getenv("BACKUP_RECIPIENTS", "").split(",") if x.strip()
+] or list(SUDO_ADMINS)
 
 # Monitoring Configuration
 MONITORING_INTERVAL = int(os.getenv("MONITORING_INTERVAL", "600"))  # 10 minutes in seconds

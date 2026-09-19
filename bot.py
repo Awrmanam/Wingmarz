@@ -108,9 +108,15 @@ class MarzbanAdminBot:
         self.scheduler = init_scheduler(self.bot)
         try:
             # Restore backup schedule setting on startup
-            val = await db.get_setting("backup_schedule")
-            if val and val.lower() in ("1h", "hour", "hourly"):
-                self.scheduler.schedule_backup_every_hour()
+            # v2 deliberately ignores a legacy "off" value once so this secure
+            # always-on backup rollout is enabled on existing installations.
+            val = await db.get_setting("backup_schedule_v2")
+            normalized = (val or "").strip().lower()
+            if normalized not in ("off", "0", "disable", "stop"):
+                if normalized.endswith("h") and normalized[:-1].isdigit():
+                    self.scheduler.schedule_backup(int(normalized[:-1]))
+                elif config.BACKUP_AUTO_ENABLED:
+                    self.scheduler.schedule_backup(config.BACKUP_INTERVAL_HOURS)
         except Exception as _e:
             logger.warning(f"Could not restore backup schedule: {_e}")
         

@@ -1,166 +1,277 @@
+"""Create and restore encrypted, self-contained Wingmarz backups."""
+
+from __future__ import annotations
+
 import asyncio
+import hashlib
+import json
 import os
+import secrets
+import shutil
+import sqlite3
+import tempfile
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from datetime import datetime
-import zipfile
+from typing import Iterable
+
+import pyzipper
 
 import config
 
 
-def _path_norm(p: Path) -> Path:
+APP_SETTING_NAMES = (
+    "BOT_TOKEN", "MARZBAN_URL", "MARZBAN_USERNAME", "MARZBAN_PASSWORD",
+    "PANEL_PROVIDER", "REBECCA_URL", "REBECCA_BEARER_TOKEN",
+    "REBECCA_LOGIN_URL", "REBECCA_SERVICE_IDS", "SUDO_ADMINS",
+    "DATABASE_PATH", "BACKUP_DIR", "MONITORING_INTERVAL", "WARNING_THRESHOLD",
+    "AUTO_DELETE_EXPIRED_USERS", "API_TIMEOUT", "MAX_RETRIES",
+    "BACKUP_AUTO_ENABLED", "BACKUP_INTERVAL_HOURS", "BACKUP_RETENTION_COUNT",
+    "BACKUP_ZIP_PASSWORD", "BACKUP_RECIPIENTS", "BACKUP_INCLUDE_LOGS",
+)
+
+
+@dataclass(frozen=True)
+class BackupArtifact:
+    path: Path
+    zip_password: str
+    database_password: str | None
+    database_engine: str
+    created_at: datetime
+    size_bytes: int
+
+
+def _resolved(path: Path) -> Path:
     try:
-        return p.resolve()
-    except Exception:
-        return p
+        return path.expanduser().resolve()
+    except OSError:
+        return path.expanduser().absolute()
 
 
-def _is_excluded(file_path: Path, exclude_paths: set[Path]) -> bool:
-    fp = _path_norm(file_path)
-    for ex in (exclude_paths or set()):
-        exn = _path_norm(ex)
-        try:
-            # Exclude if exact match or inside an excluded directory
-            if fp == exn or exn in fp.parents:
-                return True
-        except Exception:
-            # Best-effort; ignore path resolution errors
-            pass
-    # Additionally exclude any prior backup zip files by name to prevent recursive growth
-    name_lower = fp.name.lower()
-    if name_lower.startswith("backup-") and name_lower.endswith(".zip"):
-        return True
-    return False
-
-
-def _add_path_to_zip(zip_file: zipfile.ZipFile, source_path: Path, base_dir: Path, exclude_paths: set[Path] | None = None) -> None:
-    exclude_paths = exclude_paths or set()
-    if source_path.is_file():
-        if _is_excluded(source_path, exclude_paths):
-            return
-        arcname = source_path.relative_to(base_dir) if source_path.is_absolute() and base_dir in source_path.parents else source_path.name
-        zip_file.write(source_path, arcname=str(arcname))
-        return
-    for root, _, files in os.walk(source_path):
-        root_path = Path(root)
-        # Skip entire directory trees that are excluded
-        if _is_excluded(root_path, exclude_paths):
-            continue
-        for f in files:
-            file_path = root_path / f
-            if _is_excluded(file_path, exclude_paths):
-                continue
-            try:
-                arcname = file_path.relative_to(base_dir) if base_dir in file_path.parents else file_path.name
-            except Exception:
-                arcname = file_path.name
-            zip_file.write(file_path, arcname=str(arcname))
-
-
-async def create_backup_zip() -> Path:
-    """Create a zip backup of bot data and return the path to the zip file.
-
-    Contents:
-    - Database file (config.DATABASE_PATH)
-    - Data directory (parent of DATABASE_PATH), if exists
-    - bot.log (if exists in CWD)
-    - logs directory (./logs or /app/logs if exists)
-    """
-    # Detect actual database path and a reasonable base directory
-    def _detect_db_and_base() -> tuple[Path, Path]:
-        try:
-            configured = (getattr(config, "DATABASE_PATH", "") or "").strip()
-        except Exception:
-            configured = ""
-        candidates: list[Path] = []
-        if configured:
-            try:
-                candidates.append(Path(configured).expanduser().resolve())
-            except Exception:
-                candidates.append(Path(configured))
-        # Common locations
-        common_relatives = [
-            Path("data") / "bot_database.db",
-            Path("bot_database.db"),
-        ]
-        common_absolutes = [
+def _database_path() -> Path:
+    configured = str(getattr(config, "DATABASE_PATH", "") or "").strip()
+    candidates = []
+    if configured:
+        candidates.append(_resolved(Path(configured)))
+    candidates.extend(
+        _resolved(candidate)
+        for candidate in (
+            Path.cwd() / "data" / "bot_database.db",
+            Path.cwd() / "bot_database.db",
             Path("/app/data/bot_database.db"),
-        ]
-        cwd = Path.cwd()
-        for rel in common_relatives:
-            try:
-                candidates.append((cwd / rel).resolve())
-            except Exception:
-                candidates.append(cwd / rel)
-        candidates.extend(common_absolutes)
+        )
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return candidates[0] if candidates else _resolved(Path("bot_database.db"))
 
-        # Pick the first existing file
-        for cand in candidates:
-            try:
-                if cand.exists() and cand.is_file():
-                    return cand, cand.parent
-            except Exception:
-                continue
-        # Fallback: use configured (may not exist) and cwd as base
-        fallback = candidates[0] if candidates else (cwd / "bot_database.db")
-        try:
-            fallback = fallback.resolve()
-        except Exception:
-            pass
-        return fallback, (fallback.parent if fallback.parent.exists() else cwd)
 
-    db_path, base_dir = _detect_db_and_base()
+def _backup_dir(db_path: Path) -> Path:
+    configured = str(getattr(config, "BACKUP_DIR", "") or "").strip()
+    return _resolved(Path(configured)) if configured else _resolved(db_path.parent / "backups")
 
-    timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
-    backup_name = f"backup-{timestamp}.zip"
-    # Determine backup output directory
-    # Prefer configured BACKUP_DIR; otherwise use a dedicated 'backups' folder next to the DB (often a persistent volume)
-    configured_backup_dir = (getattr(config, "BACKUP_DIR", "") or "").strip()
-    if configured_backup_dir:
-        output_dir = Path(configured_backup_dir).expanduser().resolve()
-    else:
-        output_dir = (base_dir / "backups").resolve()
+
+def _serialize_setting(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (list, tuple, set)):
+        return ",".join(str(item) for item in value)
+    return str(value if value is not None else "")
+
+
+def _quote_env(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    return f'"{escaped}"'
+
+
+def _settings_text() -> str:
+    lines = ["# Wingmarz runtime settings", "# Contains secrets. Keep this file private."]
+    for name in APP_SETTING_NAMES:
+        value = getattr(config, name, os.getenv(name, ""))
+        lines.append(f"{name}={_quote_env(_serialize_setting(value))}")
+    return "\n".join(lines) + "\n"
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _sqlite_snapshot(source: Path, destination: Path) -> None:
+    if not source.is_file():
+        raise FileNotFoundError(f"Database file does not exist: {source}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    source_uri = f"file:{source.as_posix()}?mode=ro"
+    with sqlite3.connect(source_uri, uri=True, timeout=30) as source_db:
+        with sqlite3.connect(destination) as destination_db:
+            source_db.backup(destination_db)
+        with sqlite3.connect(destination) as check_db:
+            result = check_db.execute("PRAGMA quick_check").fetchone()
+            if not result or result[0] != "ok":
+                raise RuntimeError(f"SQLite backup integrity check failed: {result}")
+
+
+def _copy_optional_file(source: Path, destination: Path) -> None:
+    if source.is_file():
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+
+
+def _copy_runtime_data(source_dir: Path, destination_dir: Path, excluded: Iterable[Path]) -> None:
+    if not source_dir.is_dir():
+        return
+    excluded_paths = {_resolved(path) for path in excluded}
+    for source in source_dir.rglob("*"):
+        resolved = _resolved(source)
+        if any(resolved == item or item in resolved.parents for item in excluded_paths):
+            continue
+        if source.is_file():
+            relative = source.relative_to(source_dir)
+            target = destination_dir / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+
+
+def _write_manifest(staging_dir: Path, db_source: Path, created_at: datetime) -> None:
+    files = []
+    for path in sorted(item for item in staging_dir.rglob("*") if item.is_file()):
+        files.append({
+            "path": path.relative_to(staging_dir).as_posix(),
+            "size_bytes": path.stat().st_size,
+            "sha256": _sha256(path),
+        })
+    manifest = {
+        "format_version": 2,
+        "application": "Wingmarz",
+        "created_at_utc": created_at.isoformat(),
+        "database": {
+            "engine": "sqlite",
+            "source_name": db_source.name,
+            "snapshot_path": "database/bot_database.db",
+            "password": None,
+        },
+        "files": files,
+    }
+    (staging_dir / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+def _create_encrypted_zip(staging_dir: Path, destination: Path, password: str) -> None:
+    with pyzipper.AESZipFile(
+        destination, "w", compression=pyzipper.ZIP_DEFLATED, encryption=pyzipper.WZ_AES
+    ) as archive:
+        archive.setpassword(password.encode("utf-8"))
+        archive.setencryption(pyzipper.WZ_AES, nbits=256)
+        for path in sorted(item for item in staging_dir.rglob("*") if item.is_file()):
+            archive.write(path, path.relative_to(staging_dir).as_posix())
+
+
+def _prune_backups(output_dir: Path, keep: int) -> None:
+    keep = max(1, int(keep))
+    backups = sorted(
+        output_dir.glob("wingmarz-backup-*.zip"),
+        key=lambda item: item.stat().st_mtime,
+        reverse=True,
+    )
+    for old_backup in backups[keep:]:
+        old_backup.unlink(missing_ok=True)
+
+
+def _create_backup_sync() -> BackupArtifact:
+    db_path = _database_path()
+    output_dir = _backup_dir(db_path)
     output_dir.mkdir(parents=True, exist_ok=True)
-    backup_zip_path = output_dir / backup_name
+    created_at = datetime.now(timezone.utc)
+    timestamp = created_at.strftime("%Y%m%d-%H%M%S-%f")
+    destination = output_dir / f"wingmarz-backup-{timestamp}.zip"
+    configured_password = str(getattr(config, "BACKUP_ZIP_PASSWORD", "") or "").strip()
+    password = configured_password or secrets.token_urlsafe(18)
 
-    with zipfile.ZipFile(backup_zip_path, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-        # Database file
-        if db_path.exists():
-            _add_path_to_zip(zf, db_path, base_dir)
+    with tempfile.TemporaryDirectory(prefix="wingmarz-backup-") as temporary:
+        staging = Path(temporary)
+        snapshot = staging / "database" / "bot_database.db"
+        _sqlite_snapshot(db_path, snapshot)
 
-        # Data directory (parent of DB)
-        if base_dir.exists():
-            # Only include directory if it's likely a dedicated data dir
-            # e.g., '/app/data'; skip if base_dir is project root with many files
-            try:
-                if base_dir.name.lower() in ("data", "storage"):
-                    # Exclude the backups output directory and any prior backup zips to avoid recursive growth
-                    exclude: set[Path] = {backup_zip_path}
-                    # Avoid duplicating the database file inside the directory snapshot
-                    try:
-                        if db_path.exists():
-                            exclude.add(db_path)
-                    except Exception:
-                        pass
-                    try:
-                        # Only add output_dir to exclusions if it's inside base_dir
-                        if _path_norm(base_dir) in _path_norm(output_dir).parents or _path_norm(base_dir) == _path_norm(output_dir):
-                            exclude.add(output_dir)
-                    except Exception:
-                        pass
-                    _add_path_to_zip(zf, base_dir, base_dir, exclude_paths=exclude)
-            except Exception:
-                pass
+        settings_dir = staging / "configuration"
+        settings_dir.mkdir(parents=True, exist_ok=True)
+        (settings_dir / "settings.env").write_text(_settings_text(), encoding="utf-8")
+        _copy_optional_file(Path.cwd() / ".env", settings_dir / "original.env")
+        for filename in ("config.py", "docker-compose.yml", "Dockerfile", "requirements.txt"):
+            _copy_optional_file(Path.cwd() / filename, settings_dir / filename)
 
-        # bot.log in current working directory
-        bot_log = Path.cwd() / "bot.log"
-        if bot_log.exists():
-            _add_path_to_zip(zf, bot_log, Path.cwd())
+        data_dir = db_path.parent
+        if data_dir.name.lower() in {"data", "storage"}:
+            _copy_runtime_data(data_dir, staging / "runtime-data", excluded=(db_path, output_dir))
 
-        # logs directory in CWD or /app/logs
-        candidate_logs = [Path.cwd() / "logs", Path("/app/logs")] 
-        for logs_dir in candidate_logs:
-            if logs_dir.exists() and logs_dir.is_dir():
-                _add_path_to_zip(zf, logs_dir, logs_dir)
+        if bool(getattr(config, "BACKUP_INCLUDE_LOGS", True)):
+            _copy_optional_file(Path.cwd() / "bot.log", staging / "logs" / "bot.log")
+            logs_dir = Path.cwd() / "logs"
+            if logs_dir.is_dir():
+                _copy_runtime_data(logs_dir, staging / "logs", excluded=())
 
-    return backup_zip_path
+        _write_manifest(staging, db_path, created_at)
+        _create_encrypted_zip(staging, destination, password)
 
+    _prune_backups(output_dir, getattr(config, "BACKUP_RETENTION_COUNT", 24))
+    return BackupArtifact(
+        path=destination,
+        zip_password=password,
+        database_password=None,
+        database_engine="SQLite",
+        created_at=created_at,
+        size_bytes=destination.stat().st_size,
+    )
+
+
+async def create_backup_zip() -> BackupArtifact:
+    """Create an AES-256 archive containing a consistent DB snapshot and app settings."""
+    return await asyncio.to_thread(_create_backup_sync)
+
+
+def _select_database_member(names: list[str]) -> str:
+    preferred = "database/bot_database.db"
+    if preferred in names:
+        return preferred
+    expected_name = Path(config.DATABASE_PATH).name
+    candidates = [name for name in names if Path(name).name in {"bot_database.db", expected_name}]
+    if not candidates:
+        raise ValueError("Database file was not found in this backup")
+    return candidates[0]
+
+
+def _restore_database_sync(archive_path: Path, destination: Path, password: str | None) -> Path:
+    destination = _resolved(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f".{destination.name}.restore-{secrets.token_hex(4)}")
+    try:
+        with pyzipper.AESZipFile(archive_path, "r") as archive:
+            if password:
+                archive.setpassword(password.encode("utf-8"))
+            member = _select_database_member(archive.namelist())
+            with archive.open(member) as source, temporary.open("wb") as target:
+                shutil.copyfileobj(source, target)
+        with sqlite3.connect(temporary) as restored:
+            result = restored.execute("PRAGMA quick_check").fetchone()
+            if not result or result[0] != "ok":
+                raise ValueError(f"Restored SQLite database failed integrity check: {result}")
+        previous = destination.with_suffix(destination.suffix + ".bak")
+        if destination.exists():
+            shutil.copy2(destination, previous)
+        os.replace(temporary, destination)
+        return previous
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+async def restore_database_from_zip(
+    archive_path: str | Path, destination: str | Path, password: str | None
+) -> Path:
+    """Restore a validated SQLite snapshot and keep the previous DB as ``.bak``."""
+    return await asyncio.to_thread(
+        _restore_database_sync, Path(archive_path), Path(destination), password
+    )
