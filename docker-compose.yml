@@ -19,6 +19,13 @@ services:
       - MONITORING_INTERVAL=${MONITORING_INTERVAL:-600}
       - WARNING_THRESHOLD=${WARNING_THRESHOLD:-0.8}
       - DATABASE_PATH=/app/data/bot_database.db
+      - BACKUP_DIR=/app/data/backups
+      - BACKUP_AUTO_ENABLED=${BACKUP_AUTO_ENABLED:-true}
+      - BACKUP_INTERVAL_HOURS=${BACKUP_INTERVAL_HOURS:-1}
+      - BACKUP_RETENTION_COUNT=${BACKUP_RETENTION_COUNT:-24}
+      - BACKUP_ZIP_PASSWORD=${BACKUP_ZIP_PASSWORD:-}
+      - BACKUP_INCLUDE_LOGS=${BACKUP_INCLUDE_LOGS:-true}
+      - BACKUP_RECIPIENTS=${BACKUP_RECIPIENTS:-}
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs

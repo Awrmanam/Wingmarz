@@ -1,6 +1,6 @@
 import asyncio
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Dict
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -19,6 +19,7 @@ class MonitoringScheduler:
         self.scheduler = AsyncIOScheduler()
         self.is_running = False
         self.backup_job_id = "bot_backup_job"
+        self._backup_lock = asyncio.Lock()
 
     async def check_admin_limits(self, admin_user_id: int) -> LimitCheckResult:
         admin = await db.get_admin(admin_user_id)
@@ -279,35 +280,53 @@ class MonitoringScheduler:
         await self.monitor_all_admins()
 
     async def send_backup(self):
-        try:
-            from utils.backup import create_backup_zip
-            path = await create_backup_zip()
-            for sudo_id in config.SUDO_ADMINS:
-                try:
-                    from pathlib import Path
-                    from aiogram.types import FSInputFile
-                    p = Path(str(path))
-                    if p.exists():
-                        await self.bot.send_document(chat_id=sudo_id, document=FSInputFile(str(p)), caption=f"بکاپ خودکار: {p.name}")
-                    else:
-                        await self.bot.send_document(chat_id=sudo_id, document=str(path), caption=f"بکاپ خودکار: {p.name}")
-                except Exception:
-                    pass
-        except Exception as e:
-            print(f"Error creating/sending backup: {e}")
+        if self._backup_lock.locked():
+            print("Backup already in progress; skipping duplicate run")
+            return
+        async with self._backup_lock:
+            try:
+                from utils.backup import create_backup_zip
+                from utils.backup_delivery import send_backup_to_chat
 
-    def schedule_backup_every_hour(self):
+                artifact = await create_backup_zip()
+                failures = []
+                for chat_id in config.BACKUP_RECIPIENTS:
+                    try:
+                        await send_backup_to_chat(
+                            self.bot, chat_id, artifact, automatic=True
+                        )
+                    except Exception as exc:
+                        failures.append((chat_id, exc))
+                if failures:
+                    details = ", ".join(str(chat_id) for chat_id, _ in failures)
+                    raise RuntimeError(f"Backup delivery failed for chat IDs: {details}")
+                print(f"Encrypted backup delivered: {artifact.path.name}")
+            except Exception as e:
+                print(f"Error creating/sending backup: {e}")
+                for chat_id in config.BACKUP_RECIPIENTS:
+                    try:
+                        await self.bot.send_message(
+                            chat_id,
+                            "❌ ساخت یا ارسال بکاپ خودکار ناموفق بود. لطفاً لاگ ربات را بررسی کنید.",
+                        )
+                    except Exception:
+                        pass
+
+    def schedule_backup(self, hours: int | None = None):
         try:
+            interval_hours = max(1, int(hours or config.BACKUP_INTERVAL_HOURS))
             # Remove existing job if any
             job = self.scheduler.get_job(self.backup_job_id)
             if job:
                 self.scheduler.remove_job(self.backup_job_id)
-            # Schedule every 60 minutes from now to avoid minute-0 alignment issues
             self.scheduler.add_job(
                 self.send_backup,
-                trigger=IntervalTrigger(hours=1),
+                trigger=IntervalTrigger(
+                    hours=interval_hours,
+                    start_date=datetime.now() + timedelta(minutes=1),
+                ),
                 id=self.backup_job_id,
-                name="Hourly Bot Backup",
+                name=f"Wingmarz Backup Every {interval_hours}h",
                 replace_existing=True,
                 max_instances=1
             )
@@ -315,6 +334,10 @@ class MonitoringScheduler:
         except Exception as e:
             print(f"Error scheduling hourly backup: {e}")
             return False
+
+    def schedule_backup_every_hour(self):
+        """Backward-compatible wrapper used by older saved settings."""
+        return self.schedule_backup(1)
 
     def disable_backup_schedule(self):
         try:

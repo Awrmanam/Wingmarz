@@ -1,6 +1,5 @@
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.types import FSInputFile
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -947,13 +946,16 @@ async def backup_now(callback: CallbackQuery):
     await callback.answer("در حال ساخت بکاپ...", show_alert=False)
     try:
         from utils.backup import create_backup_zip
-        path = await create_backup_zip()
+        from utils.backup_delivery import send_backup_to_chat
+
+        artifact = await create_backup_zip()
         await callback.message.answer(config.MESSAGES["backup_created"]) 
         try:
-            p = Path(str(path))
-            await callback.message.answer_document(document=FSInputFile(str(p)), caption=f"بکاپ: {p.name}")
+            await send_backup_to_chat(
+                callback.bot, callback.from_user.id, artifact, automatic=False
+            )
         except Exception as send_err:
-            logger.error(f"Failed to send backup file {p}: {send_err}")
+            logger.error(f"Failed to send backup file {artifact.path}: {send_err}")
             await callback.message.answer("❌ خطا در ارسال فایل بکاپ.")
     except Exception as e:
         logger.error(f"Backup creation failed: {e}")
@@ -973,6 +975,7 @@ async def backup_now(callback: CallbackQuery):
 
 class BackupRestoreStates(StatesGroup):
     waiting_for_file = State()
+    waiting_for_password = State()
 
 @sudo_router.callback_query(F.data == "backup_restore")
 async def backup_restore_entry(callback: CallbackQuery, state: FSMContext):
@@ -993,91 +996,58 @@ async def backup_restore_receive(message: Message, state: FSMContext):
     if not message.document or not (message.document.file_name or '').lower().endswith('.zip'):
         await message.answer("لطفاً یک فایل ZIP معتبر ارسال کنید.")
         return
-    # Download file to /app/data (or CWD fallback)
+    # Download first, then ask for the password used by encrypted v2 backups.
     try:
-        from aiogram.types import FSInputFile
-        from pathlib import Path
-        import zipfile
-        import asyncio
-        import os
-        # Create download path
         target_dir = Path(config.DATABASE_PATH).resolve().parent
         target_dir.mkdir(parents=True, exist_ok=True)
-        local_zip = target_dir / f"restore-{message.document.file_name}"
-
-        # Download via bot API (aiogram v3)
+        safe_name = Path(message.document.file_name).name
+        local_zip = target_dir / f"restore-{safe_name}"
         file = await message.bot.get_file(message.document.file_id)
         await message.bot.download(file, destination=str(local_zip))
-
-        # Extract and replace DB
-        with zipfile.ZipFile(local_zip, 'r') as zf:
-            members = zf.namelist()
-            # Prefer exact DB file
-            db_rel = Path(config.DATABASE_PATH).name
-            db_member = None
-            for m in members:
-                if m.endswith(db_rel):
-                    db_member = m
-                    break
-            if not db_member:
-                # Try common names
-                for m in members:
-                    if m.endswith('bot_database.db'):
-                        db_member = m
-                        break
-            if not db_member:
-                await message.answer("❌ فایل دیتابیس در بکاپ پیدا نشد.")
-                await state.clear()
-                return
-            extract_tmp = target_dir / "_restore_tmp.db"
-            with zf.open(db_member, 'r') as src, open(extract_tmp, 'wb') as dst:
-                dst.write(src.read())
-
-        # Replace existing DB (backup current)
-        db_path = Path(config.DATABASE_PATH).resolve()
-        backup_old = db_path.with_suffix('.db.bak') if db_path.suffix else Path(str(db_path) + '.bak')
-        try:
-            if db_path.exists():
-                db_path.replace(backup_old)
-        except Exception:
-            pass
-        extract_tmp.replace(db_path)
-        await message.answer("✅ ریستور انجام شد. ربات تا چند لحظه دیگر با داده‌های جدید کار می‌کند.")
-        await state.clear()
-        # Optional: instruct user to restart container/service if needed
-        await message.answer("در صورت اجرای دائمی، برای اطمینان می‌توانید سرویس را ری‌استارت کنید.")
-        # Cleanup uploaded zip and temp file
-        try:
-            try:
-                local_zip.unlink(missing_ok=True)
-            except TypeError:
-                # Fallback for older Python
-                if local_zip.exists():
-                    local_zip.unlink()
-        except Exception:
-            pass
-        try:
-            try:
-                extract_tmp.unlink(missing_ok=True)
-            except TypeError:
-                if extract_tmp.exists():
-                    extract_tmp.unlink()
-        except Exception:
-            pass
+        await state.update_data(restore_zip_path=str(local_zip))
+        await state.set_state(BackupRestoreStates.waiting_for_password)
+        await message.answer(
+            "🔐 حالا رمز ZIP را ارسال کنید. برای بکاپ‌های قدیمیِ بدون رمز، عبارت <code>بدون رمز</code> را بفرستید.",
+            parse_mode="HTML",
+        )
     except Exception as e:
-        logger.error(f"Restore failed: {e}")
-        await message.answer("❌ خطا در ریستور بکاپ.")
+        logger.error(f"Backup download failed: {e}")
+        await message.answer("❌ خطا در دریافت فایل بکاپ.")
         await state.clear()
-        # Cleanup uploaded zip on failure as well
-        try:
-            if 'local_zip' in locals():
-                try:
-                    local_zip.unlink(missing_ok=True)
-                except TypeError:
-                    if local_zip.exists():
-                        local_zip.unlink()
-        except Exception:
-            pass
+
+
+@sudo_router.message(BackupRestoreStates.waiting_for_password, F.text)
+async def backup_restore_password(message: Message, state: FSMContext):
+    if message.from_user.id not in config.SUDO_ADMINS:
+        return
+    data = await state.get_data()
+    restore_zip_path = data.get("restore_zip_path")
+    if not restore_zip_path:
+        await message.answer("❌ فایل بکاپ موقت پیدا نشد؛ دوباره از منوی ریستور شروع کنید.")
+        await state.clear()
+        return
+    local_zip = Path(restore_zip_path)
+    normalized = message.text.strip()
+    password = None if normalized in {"بدون رمز", "none", "no password", "-"} else normalized
+    try:
+        from utils.backup import restore_database_from_zip
+
+        await restore_database_from_zip(local_zip, config.DATABASE_PATH, password)
+        await message.answer(
+            "✅ ریستور و بررسی سلامت دیتابیس انجام شد. نسخه قبلی با پسوند <code>.bak</code> نگه داشته شد.\n"
+            "برای اطمینان سرویس یا کانتینر را ری‌استارت کنید.",
+            parse_mode="HTML",
+        )
+    except (RuntimeError, ValueError) as exc:
+        logger.warning(f"Backup restore validation failed: {exc}")
+        await message.answer("❌ رمز اشتباه است یا فایل بکاپ معتبر نیست.")
+    except Exception as exc:
+        logger.error(f"Restore failed: {exc}")
+        await message.answer("❌ خطا در ریستور بکاپ؛ دیتابیس فعلی تغییر نکرد.")
+    finally:
+        if local_zip.is_file():
+            local_zip.unlink(missing_ok=True)
+        await state.clear()
 
 class BackupScheduleStates(StatesGroup):
     waiting_input = State()
@@ -1089,9 +1059,9 @@ async def backup_schedule_entry(callback: CallbackQuery, state: FSMContext):
         return
     text = (
         "⏱️ زمان‌بندی بکاپ\n\n"
-        "- برای فعال‌سازی بکاپ ساعتی، عدد 1h را بفرستید.\n"
+        "- برای فعال‌سازی، فاصله را به صورت 1h تا 168h بفرستید.\n"
         "- برای غیرفعالسازی، عبارت off را بفرستید.\n"
-        "(در حال حاضر فقط هر ساعت پشتیبانی می‌شود)"
+        f"(پیش‌فرض فعلی: هر {config.BACKUP_INTERVAL_HOURS} ساعت)"
     )
     await state.set_state(BackupScheduleStates.waiting_input)
     await callback.message.edit_text(text, reply_markup=None)
@@ -1104,7 +1074,7 @@ async def backup_schedule_set(message: Message, state: FSMContext):
     if txt in ("off", "0", "disable", "stop"):
         ok = scheduler.disable_backup_schedule() if scheduler else False
         if ok:
-            await db.set_setting("backup_schedule", "off")
+            await db.set_setting("backup_schedule_v2", "off")
             await message.answer("✅ تنظیم شد.")
         else:
             await message.answer("❌ خطا در غیرفعالسازی زمان‌بندی.")
@@ -1112,10 +1082,12 @@ async def backup_schedule_set(message: Message, state: FSMContext):
         # Return directly to admin main menu
         await message.answer(config.MESSAGES["welcome_sudo"], reply_markup=get_sudo_keyboard())
         return
-    if txt in ("1h", "hour", "hourly"):
-        ok = scheduler.schedule_backup_every_hour() if scheduler else False
+    match = re.fullmatch(r"(\d{1,3})h", txt)
+    if match and 1 <= int(match.group(1)) <= 168:
+        hours = int(match.group(1))
+        ok = scheduler.schedule_backup(hours) if scheduler else False
         if ok:
-            await db.set_setting("backup_schedule", "1h")
+            await db.set_setting("backup_schedule_v2", f"{hours}h")
             await message.answer("✅ تنظیم شد.")
         else:
             await message.answer("❌ خطا در ذخیره زمان‌بندی.")
@@ -1123,7 +1095,7 @@ async def backup_schedule_set(message: Message, state: FSMContext):
         # Return directly to admin main menu
         await message.answer(config.MESSAGES["welcome_sudo"], reply_markup=get_sudo_keyboard())
         return
-    await message.answer("فرمت نامعتبر. فقط '1h' یا 'off' مجاز است.")
+    await message.answer("فرمت نامعتبر. یک مقدار از 1h تا 168h یا off ارسال کنید.")
 
 @sudo_router.callback_query(F.data == "sudo_menu_reports")
 async def sudo_menu_reports(callback: CallbackQuery):
