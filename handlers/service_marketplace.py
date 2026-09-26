@@ -201,7 +201,7 @@ async def service_buy_admin(callback: CallbackQuery, state: FSMContext):
         from handlers.admin_handlers import admin_buy_reseller
         await admin_buy_reseller(callback)
         return
-    await _render_purchase_services(callback.message, "a")
+    await _render_provider_selection(callback.message, "a")
     await callback.answer()
 
 
@@ -212,7 +212,7 @@ async def service_buy_public(callback: CallbackQuery, state: FSMContext):
         from handlers.public_handlers import public_buy_reseller
         await public_buy_reseller(callback)
         return
-    await _render_purchase_services(callback.message, "p")
+    await _render_provider_selection(callback.message, "p")
     await callback.answer()
 
 
