@@ -20,10 +20,14 @@ def test_provider_registry_exposes_rebecca_and_sanaei_in_customer_order():
     assert get_panel_provider("sanaei").implemented is False
 
 
-def test_home_purchase_buttons_enter_provider_selection():
+def test_existing_purchase_callbacks_stay_backward_compatible():
     source = Path("handlers/home_keyboards.py").read_text(encoding="utf-8")
-    assert '"panelprov:root:p"' in source
-    assert '"panelprov:root:a"' in source
+    assert '"public_buy_reseller"' in source
+    assert '"admin_buy_reseller"' in source
+
+    marketplace = Path("handlers/service_marketplace.py").read_text(encoding="utf-8")
+    assert 'await _render_provider_selection(callback.message, "p")' in marketplace
+    assert 'await _render_provider_selection(callback.message, "a")' in marketplace
 
 
 def test_sanaei_provisioning_is_a_safe_placeholder():
