@@ -28,7 +28,7 @@ class PublicPaymentStates(StatesGroup):
 
 def get_public_main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🛒 خرید پنل نمایندگی", callback_data="panelprov:root:p")],
+        [InlineKeyboardButton(text="🛒 خرید پنل نمایندگی", callback_data="public_buy_reseller")],
         [InlineKeyboardButton(text="🧪 تست رایگان", callback_data="svcmarket:trial")],
         [InlineKeyboardButton(text="🎧 پشتیبانی", callback_data="support:home")],
     ])
