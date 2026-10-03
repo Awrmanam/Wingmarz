@@ -19,7 +19,9 @@ class MonitoringScheduler:
         self.scheduler = AsyncIOScheduler()
         self.is_running = False
         self.backup_job_id = "bot_backup_job"
+        self.payg_job_id = "payg_billing_job"
         self._backup_lock = asyncio.Lock()
+        self._payg_lock = asyncio.Lock()
 
     async def check_admin_limits(self, admin_user_id: int) -> LimitCheckResult:
         admin = await db.get_admin(admin_user_id)
@@ -85,9 +87,9 @@ class MonitoringScheduler:
                 exceeded=limits_exceeded,
                 warning=warning_needed,
                 limits_data={
-                    "user_percentage": user_percentage,           # ratios 0..1
-                    "traffic_percentage": traffic_percentage,     # ratios 0..1
-                    "time_percentage": time_percentage,           # ratios 0..1
+                    "user_percentage": user_percentage,
+                    "traffic_percentage": traffic_percentage,
+                    "time_percentage": time_percentage,
                     "current_users": admin_stats.total_users,
                     "max_users": admin.max_users,
                     "current_traffic": 0,
@@ -116,19 +118,17 @@ class MonitoringScheduler:
             if result.limits_data.get("time_percentage", 0) >= 1.0:
                 reasons.append("تجاوز از محدودیت زمان اعتبار")
             if result.limits_data.get("user_percentage", 0) >= 1.0:
-                 reasons.append("تجاوز از محدودیت تعداد کاربر")
+                reasons.append("تجاوز از محدودیت تعداد کاربر")
             if result.limits_data.get("traffic_percentage", 0) >= 1.0:
-                 reasons.append("تجاوز از محدودیت ترافیک")
+                reasons.append("تجاوز از محدودیت ترافیک")
 
             reason = " و ".join(reasons)
-            if not reason: # Should not happen if result.exceeded is True, but as a safeguard
+            if not reason:
                 reason = "تجاوز از محدودیت‌ها"
 
             success = await deactivate_admin_panel_by_id(result.admin_id, reason)
             if success:
-                # include admin_id so notifier can include marzban username and new password
                 await notify_admin_deactivation(self.bot, result.admin_user_id, reason, admin_id=result.admin_id)
-                # notify the affected admin directly
                 try:
                     from utils.notify import notify_admin_deactivated
                     await notify_admin_deactivated(self.bot, result.admin_user_id, reason)
@@ -152,7 +152,6 @@ class MonitoringScheduler:
             if not result.warning:
                 return
 
-            # Send granular warnings for each resource at 60/70/80/90
             levels = [0.6, 0.7, 0.8, 0.9]
             mapping = [
                 ("زمان", result.limits_data.get("time_percentage", 0)),
@@ -161,7 +160,6 @@ class MonitoringScheduler:
             ]
             for label, value in mapping:
                 for level in levels:
-                    # If value passed this level (and below 100%)
                     if level <= value < 1.0:
                         await notify_limit_warning(
                             self.bot,
@@ -169,7 +167,7 @@ class MonitoringScheduler:
                             f"{label}",
                             value
                         )
-                        break  # only highest crossed level per resource per run
+                        break
 
         except Exception as e:
             print(f"Error handling limit warning for admin {result.admin_user_id}: {e}")
@@ -221,7 +219,6 @@ class MonitoringScheduler:
     async def monitor_all_admins(self):
         try:
             print(f"Starting monitoring check at {datetime.now()}")
-            # Only cleanup expired users if enabled
             if config.AUTO_DELETE_EXPIRED_USERS:
                 await self.cleanup_expired_users()
             admins = await db.get_all_admins()
@@ -250,16 +247,42 @@ class MonitoringScheduler:
         except Exception as e:
             print(f"Error in monitor_all_admins: {e}")
 
+    async def sync_payg_billing(self):
+        """Synchronize Rebecca PAYG usage and wallet charging in the background."""
+        if self._payg_lock.locked():
+            print("PAYG billing sync already in progress; skipping duplicate run")
+            return
+        async with self._payg_lock:
+            try:
+                from payg_service import payg_service
+
+                results = await payg_service.sync_all_accounts()
+                if results:
+                    print(f"PAYG billing sync completed for {len(results)} account(s)")
+            except Exception as exc:
+                print(f"PAYG billing sync failed: {type(exc).__name__}: {exc}")
+
     async def start(self):
         if self.is_running:
             print("Scheduler is already running")
             return
 
         if config.PANEL_PROVIDER == "rebecca":
+            interval = max(60, int(config.MONITORING_INTERVAL))
             print("Marzban monitoring disabled in Rebecca provider mode")
-            # The scheduler may still contain provider-independent backup jobs.
+            self.scheduler.add_job(
+                self.sync_payg_billing,
+                trigger=IntervalTrigger(seconds=interval),
+                id=self.payg_job_id,
+                name="PAYG Billing Sync",
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+            )
             self.scheduler.start()
             self.is_running = True
+            print(f"PAYG billing scheduler started. Will sync every {interval} seconds.")
+            await self.sync_payg_billing()
             return
         print("Starting monitoring scheduler...")
 
@@ -315,7 +338,6 @@ class MonitoringScheduler:
     def schedule_backup(self, hours: int | None = None):
         try:
             interval_hours = max(1, int(hours or config.BACKUP_INTERVAL_HOURS))
-            # Remove existing job if any
             job = self.scheduler.get_job(self.backup_job_id)
             if job:
                 self.scheduler.remove_job(self.backup_job_id)
@@ -358,10 +380,12 @@ class MonitoringScheduler:
         print("Monitoring scheduler stopped.")
 
     def get_status(self) -> Dict:
+        jobs = self.scheduler.get_jobs() if self.is_running else []
+        next_runs = [job.next_run_time for job in jobs if getattr(job, "next_run_time", None)]
         return {
             "running": self.is_running,
-            "jobs": len(self.scheduler.get_jobs()) if self.is_running else 0,
-            "next_run": str(self.scheduler.get_job("admin_monitor").next_run_time) if self.is_running else None
+            "jobs": len(jobs),
+            "next_run": str(min(next_runs)) if next_runs else None
         }
 
 
