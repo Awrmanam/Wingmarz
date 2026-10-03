@@ -206,7 +206,11 @@ async def plan_storefront_admin(callback: CallbackQuery, state: FSMContext):
     if config.PANEL_PROVIDER != "rebecca":
         return
     await state.clear()
-    await _render_storefront(callback.message, "a")
+    # This router is registered before the PAYG/service marketplace routers.
+    # Delegate the entry point explicitly so buyers reach the PAYG-aware flow
+    # instead of being trapped in the legacy fixed-plan-only storefront.
+    from handlers.service_marketplace import _render_provider_selection
+    await _render_provider_selection(callback.message, "a")
     await callback.answer()
 
 
@@ -215,7 +219,8 @@ async def plan_storefront_public(callback: CallbackQuery, state: FSMContext):
     if config.PANEL_PROVIDER != "rebecca":
         return
     await state.clear()
-    await _render_storefront(callback.message, "p")
+    from handlers.service_marketplace import _render_provider_selection
+    await _render_provider_selection(callback.message, "p")
     await callback.answer()
 
 
