@@ -11,6 +11,7 @@ from .operations_bootstrap import operations_bootstrap_router
 from .product_center import product_center_router
 from .plan_storefront import plan_storefront_router
 from .panel_experience import panel_experience_router
+from .payg_offers import payg_offers_router
 from .payg_entry import payg_entry_router
 from .payg import payg_router
 from .service_marketplace import service_marketplace_router
@@ -37,8 +38,9 @@ style_admin_router.include_router(product_center_router)
 style_admin_router.include_router(plan_storefront_router)
 # Renewal/extension also resolves panel identity through the same catalog.
 style_admin_router.include_router(panel_experience_router)
-# PAYG intercepts provider selection before the legacy marketplace so a buyer
-# can choose between wallet billing and the existing fixed/monthly plans.
+# Service-specific PAYG owns the Rebecca storefront and pricing screens. Keep it
+# ahead of the legacy provider-wide PAYG handlers for backwards compatibility.
+style_admin_router.include_router(payg_offers_router)
 style_admin_router.include_router(payg_entry_router)
 style_admin_router.include_router(payg_router)
 # Provider-specific routes remain internal for discovery/provisioning/settings.
