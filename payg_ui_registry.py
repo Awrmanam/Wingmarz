@@ -11,6 +11,7 @@ from ui_presentation_registry import ButtonDef
 
 _DEFS = (
     ButtonDef("admin.finance.payg.home", "admin.finance", "مدیریت PAYG و کیف پول", "paygadmin:home", rank=20),
+    ButtonDef("admin.finance.payg.service_home", "admin.finance", "تعرفه‌های PAYG بر اساس سرویس", "paygsvcadmin:home", rank=20),
     ButtonDef("admin.finance.payg.toggle", "admin.finance", "فعال یا غیرفعال کردن PAYG", "paygadmin:toggle", rank=21),
     ButtonDef("admin.finance.payg.rate", "admin.finance", "نرخ هر گیگ PAYG", "paygadmin:set:rate", rank=22),
     ButtonDef("admin.finance.payg.minimum", "admin.finance", "حداقل شارژ PAYG", "paygadmin:set:minimum", rank=23),

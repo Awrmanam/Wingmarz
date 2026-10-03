@@ -23,7 +23,7 @@ def _ns(*parts: str) -> str:
     return ":".join(str(part) for part in parts)
 
 
-async def _render_billing_mode(message: Message, source: str, provider_key: str) -> None:
+async def _render_provider_storefront(message: Message, source: str, provider_key: str) -> None:
     provider = get_panel_provider(provider_key)
     if provider is None:
         await message.edit_text("Provider نامعتبر است.")
@@ -36,46 +36,40 @@ async def _render_billing_mode(message: Message, source: str, provider_key: str)
             ]]),
         )
         return
-    if provider.key == "rebecca" and config.PANEL_PROVIDER != "rebecca":
-        await message.edit_text(
-            "⚠️ صدور Rebecca در این نصب فعال نیست.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="🔙 بازگشت", callback_data=_ns("panelprov", "root", source))
-            ]]),
-        )
+    if provider.key == "rebecca":
+        if config.PANEL_PROVIDER != "rebecca":
+            await message.edit_text(
+                "⚠️ صدور Rebecca در این نصب فعال نیست.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="🔙 بازگشت", callback_data=_ns("panelprov", "root", source))
+                ]]),
+            )
+            return
+        from handlers.payg_offers import render_service_storefront
+        await render_service_storefront(message, source)
         return
-    settings = await payg_service.get_settings(provider.key)
-    payg_suffix = "" if settings and int(settings.get("enabled") or 0) else " · غیرفعال"
     await message.edit_text(
-        f"🧩 <b>{provider.label}</b>\n\nنوع خرید را انتخاب کنید:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(
-                text=f"⚡ اعتباری PAYG{payg_suffix}",
-                callback_data=_ns("payg", "offer", source, provider.key),
-            )],
-            [InlineKeyboardButton(
-                text="📦 پلن کامل / ماهانه",
-                callback_data=_ns("payg", "fixed", source, provider.key),
-            )],
-            [InlineKeyboardButton(text="🔙 بازگشت", callback_data=_ns("panelprov", "root", source))],
-        ]),
+        "این Provider هنوز برای فروش آماده نشده است.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="🔙 بازگشت", callback_data=_ns("panelprov", "root", source))
+        ]]),
     )
 
 
-# This router is deliberately mounted before service_marketplace_router. It
-# upgrades the provider-selection skeleton into a billing-mode selector while
-# preserving all legacy purchase callbacks behind the fixed-plan branch.
+# Provider selection now opens a service-first storefront. Each Rebecca service
+# can independently expose PAYG and/or fixed/monthly products.
 @payg_entry_router.callback_query(F.data.startswith("panelprov:select:"))
-async def provider_billing_selector(callback: CallbackQuery, state: FSMContext):
+async def provider_service_storefront(callback: CallbackQuery, state: FSMContext):
     parts = (callback.data or "").split(":")
     if len(parts) != 4 or parts[2] not in {"a", "p"}:
         await callback.answer("نامعتبر", show_alert=True)
         return
     await state.clear()
-    await _render_billing_mode(callback.message, parts[2], parts[3])
+    await _render_provider_storefront(callback.message, parts[2], parts[3])
     await callback.answer()
 
 
+# Backwards-compatible fixed-plan callback kept for old messages/buttons.
 @payg_entry_router.callback_query(F.data.startswith("payg:fixed:"))
 async def fixed_purchase_selected(callback: CallbackQuery, state: FSMContext):
     parts = (callback.data or "").split(":")
@@ -90,7 +84,6 @@ async def fixed_purchase_selected(callback: CallbackQuery, state: FSMContext):
 
 @payg_entry_router.callback_query(F.data == "sudo_menu_sales")
 async def sales_menu_with_payg(callback: CallbackQuery):
-    """Keep the legacy sales menu intact while adding one PAYG entry."""
     if callback.from_user.id not in config.SUDO_ADMINS:
         return
     await callback.message.edit_text(
@@ -101,7 +94,11 @@ async def sales_menu_with_payg(callback: CallbackQuery):
                 InlineKeyboardButton(text=config.BUTTONS["sales_cards"], callback_data="sales_cards"),
                 InlineKeyboardButton(text=config.BUTTONS["set_billing"], callback_data="set_billing"),
             ],
-            [InlineKeyboardButton(text="⚡ مدیریت PAYG و کیف پول", callback_data=_ns("paygadmin", "home"))],
+            [InlineKeyboardButton(
+                text="⚡ تعرفه‌های PAYG بر اساس سرویس",
+                callback_data="paygsvcadmin:home",
+            )],
+            [InlineKeyboardButton(text="🔌 سرویس‌های Rebecca", callback_data="rebecca_services")],
             [InlineKeyboardButton(text=config.BUTTONS["set_login_url"], callback_data="set_login_url")],
             [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="back_to_main")],
         ]),
@@ -114,11 +111,9 @@ async def payg_admin_command(message: Message, state: FSMContext):
     if message.from_user.id not in config.SUDO_ADMINS:
         return
     await state.clear()
-    from handlers.payg import _render_admin_home
-    # The renderer uses edit_text for callback screens; command entry needs a
-    # small adapter with an editable message, so send a placeholder first.
-    sent = await message.answer("⚡ در حال بارگذاری تنظیمات PAYG...")
-    await _render_admin_home(sent)
+    from handlers.payg_offers import render_admin_home
+    sent = await message.answer("⚡ در حال بارگذاری تعرفه‌های PAYG...")
+    await render_admin_home(sent)
 
 
 async def _billing_tick(bot: Bot) -> None:
@@ -132,7 +127,7 @@ async def _billing_tick(bot: Bot) -> None:
                     result.user_id,
                     "🔴 <b>اعتبار PAYG شما تمام شد.</b>\n\n"
                     f"بدهی مصرف ثبت‌شده: <b>{result.outstanding_toman:,} تومان</b>\n"
-                    "پنل موقتاً غیرفعال شده است. از مسیر خرید → PAYG اعتبار را افزایش دهید.",
+                    "پنل موقتاً غیرفعال شده است. از مسیر خرید → سرویس → PAYG اعتبار را افزایش دهید.",
                 )
             elif result.old_status == "suspended" and result.new_status == "active":
                 await bot.send_message(

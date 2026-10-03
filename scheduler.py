@@ -19,9 +19,7 @@ class MonitoringScheduler:
         self.scheduler = AsyncIOScheduler()
         self.is_running = False
         self.backup_job_id = "bot_backup_job"
-        self.payg_job_id = "payg_billing_job"
         self._backup_lock = asyncio.Lock()
-        self._payg_lock = asyncio.Lock()
 
     async def check_admin_limits(self, admin_user_id: int) -> LimitCheckResult:
         admin = await db.get_admin(admin_user_id)
@@ -247,45 +245,20 @@ class MonitoringScheduler:
         except Exception as e:
             print(f"Error in monitor_all_admins: {e}")
 
-    async def sync_payg_billing(self):
-        """Synchronize Rebecca PAYG usage and wallet charging in the background."""
-        if self._payg_lock.locked():
-            print("PAYG billing sync already in progress; skipping duplicate run")
-            return
-        async with self._payg_lock:
-            try:
-                from payg_service import payg_service
-
-                results = await payg_service.sync_all_accounts()
-                if results:
-                    print(f"PAYG billing sync completed for {len(results)} account(s)")
-            except Exception as exc:
-                print(f"PAYG billing sync failed: {type(exc).__name__}: {exc}")
-
     async def start(self):
         if self.is_running:
             print("Scheduler is already running")
             return
 
         if config.PANEL_PROVIDER == "rebecca":
-            interval = max(60, int(config.MONITORING_INTERVAL))
+            # PAYG billing is owned by handlers.payg_entry. This scheduler stays
+            # alive only for provider-independent jobs such as automated backup.
             print("Marzban monitoring disabled in Rebecca provider mode")
-            self.scheduler.add_job(
-                self.sync_payg_billing,
-                trigger=IntervalTrigger(seconds=interval),
-                id=self.payg_job_id,
-                name="PAYG Billing Sync",
-                replace_existing=True,
-                max_instances=1,
-                coalesce=True,
-            )
             self.scheduler.start()
             self.is_running = True
-            print(f"PAYG billing scheduler started. Will sync every {interval} seconds.")
-            await self.sync_payg_billing()
             return
-        print("Starting monitoring scheduler...")
 
+        print("Starting monitoring scheduler...")
         self.scheduler.add_job(
             self.monitor_all_admins,
             trigger=IntervalTrigger(seconds=config.MONITORING_INTERVAL),
@@ -299,7 +272,6 @@ class MonitoringScheduler:
         self.is_running = True
 
         print(f"Monitoring scheduler started. Will check every {config.MONITORING_INTERVAL} seconds.")
-
         await self.monitor_all_admins()
 
     async def send_backup(self):
