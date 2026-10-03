@@ -14,6 +14,7 @@ import config
 from authorization import is_staff
 from database import db
 from operations_service import OperationsError, operations_service
+from panel_providers import get_panel_provider, list_panel_providers
 from premium_ui_service import premium_ui_service
 from service_marketplace_service import service_marketplace_service
 from style_engine import style_engine
@@ -67,6 +68,92 @@ async def _home_callback_for(user_id: int) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Provider selection skeleton
+# ---------------------------------------------------------------------------
+
+async def _render_provider_selection(message: Message, source: str) -> None:
+    """Show the provider step before the existing paid marketplace.
+
+    Rebecca continues into the current production purchase flow. Sanaei stays
+    visible as a deliberate placeholder until its API adapter is implemented.
+    """
+    if source not in {"a", "p"}:
+        raise ValueError("invalid provider-selection source")
+
+    rows = []
+    for provider in list_panel_providers():
+        suffix = "" if provider.implemented else " · به‌زودی"
+        rows.append([
+            await _button(
+                f"{provider.label}{suffix}",
+                f"panelprov:select:{source}:{provider.key}",
+                fallback="🧩",
+            )
+        ])
+    home = "back_to_admin_main" if source == "a" else "public_back_main"
+    rows.append([await _button("بازگشت", home, icon_key="back", fallback="⬅️")])
+    await message.edit_text(
+        "🧩 <b>نوع پنل را انتخاب کنید</b>\n\n"
+        "بعد از انتخاب Provider، پلن‌ها و سرویس‌های همان پنل نمایش داده می‌شوند.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+
+
+@service_marketplace_router.callback_query(F.data.startswith("panelprov:root:"))
+async def panel_provider_root(callback: CallbackQuery, state: FSMContext):
+    source = (callback.data or "").rsplit(":", 1)[-1]
+    if source not in {"a", "p"}:
+        await callback.answer("نامعتبر", show_alert=True)
+        return
+    await state.clear()
+    await _render_provider_selection(callback.message, source)
+    await callback.answer()
+
+
+@service_marketplace_router.callback_query(F.data.startswith("panelprov:select:"))
+async def panel_provider_select(callback: CallbackQuery, state: FSMContext):
+    parts = (callback.data or "").split(":")
+    if len(parts) != 4 or parts[2] not in {"a", "p"}:
+        await callback.answer("نامعتبر", show_alert=True)
+        return
+    source, provider_key = parts[2], parts[3]
+    provider = get_panel_provider(provider_key)
+    if provider is None:
+        await callback.answer("Provider نامعتبر است.", show_alert=True)
+        return
+
+    await state.clear()
+    if not provider.implemented:
+        await callback.message.edit_text(
+            f"🧩 <b>{escape(provider.label)}</b>\n\n"
+            "اسکلت این Provider آماده شده، اما اتصال API و صدور خودکار آن هنوز فعال نشده است.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                await _button("بازگشت", f"panelprov:root:{source}", icon_key="back", fallback="⬅️")
+            ]]),
+        )
+        await callback.answer()
+        return
+
+    if provider.key == "rebecca":
+        # The current order issuer is still selected by the legacy global
+        # provider flag. Keep this guard until provider is persisted per order.
+        if config.PANEL_PROVIDER != "rebecca":
+            await callback.message.edit_text(
+                "⚠️ صدور Rebecca در این نصب فعال نیست. ابتدا backend چند-Provider باید کامل شود.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                    await _button("بازگشت", f"panelprov:root:{source}", icon_key="back", fallback="⬅️")
+                ]]),
+            )
+            await callback.answer()
+            return
+        await _render_purchase_services(callback.message, source)
+        await callback.answer()
+        return
+
+    await callback.answer("این Provider هنوز آماده نیست.", show_alert=True)
+
+
+# ---------------------------------------------------------------------------
 # Service-first paid purchase
 # ---------------------------------------------------------------------------
 
@@ -114,7 +201,7 @@ async def service_buy_admin(callback: CallbackQuery, state: FSMContext):
         from handlers.admin_handlers import admin_buy_reseller
         await admin_buy_reseller(callback)
         return
-    await _render_purchase_services(callback.message, "a")
+    await _render_provider_selection(callback.message, "a")
     await callback.answer()
 
 
@@ -125,7 +212,7 @@ async def service_buy_public(callback: CallbackQuery, state: FSMContext):
         from handlers.public_handlers import public_buy_reseller
         await public_buy_reseller(callback)
         return
-    await _render_purchase_services(callback.message, "p")
+    await _render_provider_selection(callback.message, "p")
     await callback.answer()
 
 
