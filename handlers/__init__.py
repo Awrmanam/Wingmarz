@@ -1,5 +1,9 @@
 """Handlers package composition."""
 
+# Register PAYG presentation metadata before UI editor routers inspect the
+# central registry.
+import payg_ui_registry as _payg_ui_registry  # noqa: F401
+
 from .style_admin import style_admin_router
 from .trial_ui_v2 import trial_ui_v2_router
 from .panel_trial_restore import panel_trial_restore_router
