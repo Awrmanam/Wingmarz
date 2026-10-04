@@ -12,6 +12,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 import config
 from panel_providers import get_panel_provider
 from payg_service import payg_service
+from payg_usage_alerts import payg_usage_alert_service
 
 
 logger = logging.getLogger(__name__)
@@ -116,9 +117,37 @@ async def payg_admin_command(message: Message, state: FSMContext):
     await render_admin_home(sent)
 
 
+async def _send_usage_alerts(bot: Bot, account_id: int) -> None:
+    alerts = await payg_usage_alert_service.pending_alerts(account_id)
+    for alert in alerts:
+        lines = [
+            "📊 <b>گزارش مصرف PAYG</b>",
+            "",
+            f"مصرف شما از <b>{alert.milestone_gb} GB</b> عبور کرد.",
+            f"🌐 مصرف ثبت‌شده فعلی: <b>{alert.current_usage_gb:.2f} GB</b>",
+            f"💵 تعرفه: <b>{alert.rate_toman_per_gb:,} تومان / GB</b>",
+            f"💸 هزینه هر 10GB: <b>{alert.interval_cost_toman:,} تومان</b>",
+            f"🧾 مجموع کسرشده از کیف پول: <b>{alert.charged_total_toman:,} تومان</b>",
+            f"💰 موجودی فعلی: <b>{alert.balance_toman:,} تومان</b>",
+        ]
+        if alert.outstanding_toman > 0:
+            lines.append(f"⚠️ بدهی مصرف ثبت‌شده: <b>{alert.outstanding_toman:,} تومان</b>")
+        else:
+            lines.append("✅ هزینه مصرف از موجودی PAYG شما کسر شده است.")
+        await bot.send_message(alert.user_id, "\n".join(lines))
+        # Persist only after Telegram accepted the message. A failed send is
+        # retried on the next billing tick instead of silently losing the alert.
+        await payg_usage_alert_service.mark_sent(alert.account_id, alert.milestone_gb)
+
+
 async def _billing_tick(bot: Bot) -> None:
     results = await payg_service.sync_all_accounts()
     for result in results:
+        try:
+            await _send_usage_alerts(bot, result.account_id)
+        except Exception:
+            logger.exception("Failed to send PAYG usage alert for account %s", result.account_id)
+
         if result.old_status == result.new_status:
             continue
         try:
@@ -142,6 +171,7 @@ async def _billing_tick(bot: Bot) -> None:
 async def _start_payg_scheduler(bot: Bot) -> None:
     global _payg_scheduler
     await payg_service.ensure_schema()
+    await payg_usage_alert_service.ensure_schema()
     if _payg_scheduler and _payg_scheduler.running:
         return
     interval = max(60, min(int(getattr(config, "MONITORING_INTERVAL", 600)), 300))
