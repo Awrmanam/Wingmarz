@@ -3,6 +3,7 @@
 # Register PAYG presentation metadata before UI editor routers inspect the
 # central registry.
 import payg_ui_registry as _payg_ui_registry  # noqa: F401
+import config
 
 from .style_admin import style_admin_router
 from .trial_ui_v2 import trial_ui_v2_router
@@ -11,6 +12,7 @@ from .operations_bootstrap import operations_bootstrap_router
 from .product_center import product_center_router
 from .plan_storefront import plan_storefront_router
 from .panel_experience import panel_experience_router
+from .rebecca_admin_sync import rebecca_admin_sync_router
 from .payg_offers import payg_offers_router
 from .payg_entry import payg_entry_router
 from .payg import payg_router
@@ -38,6 +40,10 @@ style_admin_router.include_router(product_center_router)
 style_admin_router.include_router(plan_storefront_router)
 # Renewal/extension also resolves panel identity through the same catalog.
 style_admin_router.include_router(panel_experience_router)
+# In Rebecca mode, account info/report/users must be sourced from Rebecca's
+# live APIs before the legacy Marzban-backed admin router can consume them.
+if config.PANEL_PROVIDER == "rebecca":
+    style_admin_router.include_router(rebecca_admin_sync_router)
 # Service-specific PAYG owns the Rebecca storefront and pricing screens. Keep it
 # ahead of the legacy provider-wide PAYG handlers for backwards compatibility.
 style_admin_router.include_router(payg_offers_router)
