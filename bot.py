@@ -22,7 +22,7 @@ from handlers.public_handlers import public_router
 from scheduler import init_scheduler
 from style_engine import style_engine
 from utils.bold_fix_bot import BoldFixBot
-from kyc_middleware import KycGateMiddleware
+from kyc_middleware import KycGateMiddleware, KycMessageGateMiddleware
 
 
 # Configure logging
@@ -76,6 +76,7 @@ class MarzbanAdminBot:
         self.dp.message.outer_middleware(ForcedJoinMiddleware(self.bot))
         self.dp.callback_query.outer_middleware(ForcedJoinMiddleware(self.bot))
         # KYC gates sensitive regular-admin panel actions after forced-join.
+        self.dp.message.outer_middleware(KycMessageGateMiddleware())
         self.dp.callback_query.outer_middleware(KycGateMiddleware())
         
         # Setup routers - IMPORTANT: Register state-specific routers FIRST
