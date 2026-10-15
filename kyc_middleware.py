@@ -4,7 +4,7 @@ import re
 from typing import Any, Awaitable, Callable
 
 from aiogram.dispatcher.middlewares.base import BaseMiddleware
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 import config
 from database import db
@@ -127,4 +127,51 @@ class KycGateMiddleware(BaseMiddleware):
             await event.answer()
             return None
 
+        return await handler(event, data)
+
+
+_PROTECTED_COMMANDS = {
+    "/my_info", "/اطلاعات_من",
+    "/my_report", "/گزارش_من",
+    "/my_users", "/کاربران_من",
+}
+
+
+class KycMessageGateMiddleware(BaseMiddleware):
+    """Protect direct admin-report commands that can bypass callback navigation."""
+
+    async def __call__(
+        self,
+        handler: Callable[[Message, dict[str, Any]], Awaitable[Any]],
+        event: Message,
+        data: dict[str, Any],
+    ) -> Any:
+        if not isinstance(event, Message) or not event.from_user:
+            return await handler(event, data)
+        if event.from_user.id in config.SUDO_ADMINS:
+            return await handler(event, data)
+
+        text = str(event.text or "").strip().split(maxsplit=1)[0].lower()
+        # Telegram may append @bot_username to a command.
+        text = text.split("@", 1)[0]
+        if text not in _PROTECTED_COMMANDS:
+            return await handler(event, data)
+        if await kyc_service.is_approved(event.from_user.id):
+            return await handler(event, data)
+
+        admins = [a for a in await db.get_admins_for_user(event.from_user.id) if a.is_active]
+        if not admins:
+            return await handler(event, data)
+
+        required = [a for a in admins if await kyc_service.is_required(int(a.id))]
+        exempt = [a for a in admins if not await kyc_service.is_required(int(a.id))]
+        if required and not exempt:
+            await event.answer(
+                "🪪 <b>برای دسترسی به اطلاعات پنل ابتدا KYC را تکمیل کنید.</b>",
+                reply_markup=await _kyc_gate_keyboard(),
+            )
+            return None
+
+        # With mixed panels the command may show panel selection; the callback
+        # middleware then enforces KYC on the selected required panel.
         return await handler(event, data)
