@@ -130,3 +130,8 @@ def test_sync_one_rebinds_existing_local_panel_to_authoritative_telegram_id(monk
     assert kwargs["max_users"] == 10
     assert kwargs["max_total_traffic"] == 20 * 1024**3
     assert kwargs["username"] == "tgname"
+
+
+def test_sudo_start_does_not_consume_regular_user_start():
+    source = open("handlers/sudo_handlers.py", encoding="utf-8").read()
+    assert '@sudo_router.message(Command("start"), F.from_user.id.in_(config.SUDO_ADMINS))' in source
