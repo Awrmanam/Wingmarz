@@ -41,6 +41,7 @@ def get_admin_keyboard() -> InlineKeyboardMarkup:
         ]
     ]
     buttons.extend([
+        [InlineKeyboardButton(text="🪪 وضعیت احراز هویت", callback_data="kyc:status")],
         [InlineKeyboardButton(text="🧪 تست رایگان", callback_data="svcmarket:trial")],
         [InlineKeyboardButton(text="🎧 پشتیبانی", callback_data="support:home")],
     ])
@@ -101,23 +102,78 @@ async def show_panel_selection_or_execute(message_or_callback: Message | Callbac
 
 @admin_router.message(Command("start"))
 async def admin_start(message: Message):
-    """Start command for regular admins."""
+    """Start regular admins, auto-linking Rebecca identities by telegram_id."""
     if message.from_user.id in config.SUDO_ADMINS:
         return
 
-    if not await db.is_admin_authorized(message.from_user.id):
-        # Show public menu instead of unauthorized for normal users
+    # Rebecca is the source of truth for ownership. A panel whose telegram_id
+    # matches this Telegram account becomes available without a manual bot import.
+    if config.PANEL_PROVIDER == "rebecca":
+        try:
+            from rebecca_identity_link import sync_rebecca_admins_for_telegram
+            await sync_rebecca_admins_for_telegram(
+                message.from_user.id,
+                telegram_username=message.from_user.username,
+                first_name=message.from_user.first_name,
+                last_name=message.from_user.last_name,
+            )
+        except Exception as exc:
+            logger.warning("Rebecca identity auto-link failed for %s: %s", message.from_user.id, exc)
+
+    admins = await db.get_admins_for_user(message.from_user.id)
+    active_admins = [admin for admin in admins if admin.is_active]
+    if not active_admins:
         from handlers.public_handlers import get_public_main_keyboard
         await message.answer("به ربات خوش آمدید!", reply_markup=get_public_main_keyboard())
         return
 
-    admins = await db.get_admins_for_user(message.from_user.id)
-    active_admins = [admin for admin in admins if admin.is_active]
-    
+    from kyc_service import kyc_service
+    approved = await kyc_service.is_approved(message.from_user.id)
+    required_admins = [
+        admin for admin in active_admins
+        if await kyc_service.is_required(int(admin.id))
+    ]
+    exempt_admins = [
+        admin for admin in active_admins
+        if not await kyc_service.is_required(int(admin.id))
+    ]
+
+    # If every active panel requires KYC, do not expose the admin dashboard until
+    # the identity review is approved. Mixed accounts can still use exempt panels.
+    if required_admins and not approved and not exempt_admins:
+        profile = await kyc_service.get_profile(message.from_user.id)
+        status = str((profile or {}).get("status") or "not_submitted")
+        if status == "pending":
+            text = (
+                "🪪 <b>احراز هویت شما در انتظار بررسی است.</b>\n\n"
+                "بعد از تأیید، دسترسی پنل‌ها خودکار باز می‌شود."
+            )
+        elif status == "rejected":
+            text = (
+                "🔴 <b>احراز هویت قبلی تأیید نشد.</b>\n\n"
+                "برای دسترسی به پنل، مدرک را دوباره ارسال کنید."
+            )
+        else:
+            text = (
+                "🪪 <b>احراز هویت برای دسترسی به پنل الزامی است.</b>\n\n"
+                "ثبت KYC فقط یک بار انجام می‌شود و پس از تأیید برای تمام پنل‌های "
+                "نیازمند احراز همین حساب معتبر خواهد بود."
+            )
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🪪 شروع/ارسال مجدد KYC", callback_data="kyc:start")],
+            [InlineKeyboardButton(text="📋 وضعیت احراز هویت", callback_data="kyc:status")],
+        ])
+        await message.answer(text, reply_markup=kb)
+        return
+
     welcome_message = config.MESSAGES["welcome_admin"]
     if len(active_admins) > 1:
         welcome_message += f"\n\n🔹 شما {len(active_admins)} پنل فعال دارید."
-    
+    if required_admins and not approved:
+        welcome_message += (
+            "\n\n🟡 KYC شما هنوز تأیید نشده؛ فعلاً فقط پنل‌های معاف از KYC در دسترس‌اند."
+        )
+
     await message.answer(welcome_message, reply_markup=get_admin_keyboard())
 
 
