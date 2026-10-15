@@ -1299,14 +1299,9 @@ def get_panel_list_keyboard(admins: List[AdminModel], action: str) -> InlineKeyb
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-@sudo_router.message(Command("start"))
+@sudo_router.message(Command("start"), F.from_user.id.in_(config.SUDO_ADMINS))
 async def sudo_start(message: Message):
-    """Start command for sudo users."""
-    if message.from_user.id not in config.SUDO_ADMINS:
-        from handlers.public_handlers import get_public_main_keyboard
-        await message.answer("به ربات خوش آمدید!", reply_markup=get_public_main_keyboard())
-        return
-    
+    """Start command reserved for sudo users only."""
     await message.answer(
         config.MESSAGES["welcome_sudo"],
         reply_markup=get_sudo_keyboard()
