@@ -251,8 +251,11 @@ async def kyc_admin_toggle(callback: CallbackQuery):
     current = await kyc_service.is_required(admin_id)
     await kyc_service.set_required(admin_id, not current)
     new_text = "اجباری" if not current else "معاف"
-    await callback.answer(f"KYC این پنل: {new_text}", show_alert=True)
-    # Return to the canonical admin-management detail page so all actions stay available.
-    callback.data = f"manage_panel_{admin_id}"
-    from handlers.sudo_handlers import manage_panel_selected
-    await manage_panel_selected(callback)
+    await callback.message.edit_text(
+        f"✅ سیاست KYC پنل تغییر کرد.\n\nوضعیت جدید: <b>{new_text}</b>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 بازگشت به پنل", callback_data=f"manage_panel_{admin_id}")],
+            [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="sudo_manage_admins")],
+        ]),
+    )
+    await callback.answer()
