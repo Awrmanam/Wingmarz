@@ -3,9 +3,11 @@
 # Register PAYG presentation metadata before UI editor routers inspect the
 # central registry.
 import payg_ui_registry as _payg_ui_registry  # noqa: F401
+import kyc_ui_registry as _kyc_ui_registry  # noqa: F401
 import config
 
 from .style_admin import style_admin_router
+from .kyc import kyc_router
 from .trial_ui_v2 import trial_ui_v2_router
 from .panel_trial_restore import panel_trial_restore_router
 from .operations_bootstrap import operations_bootstrap_router
@@ -30,6 +32,7 @@ from .support_v2 import support_v2_router
 from .tariffs import tariffs_router
 from .control_center import control_center_router
 
+style_admin_router.include_router(kyc_router)
 style_admin_router.include_router(operations_bootstrap_router)
 # Active panel-trial restoration must run before the issuance/cooldown router so
 # old Telegram messages cannot accidentally create or request a second trial.

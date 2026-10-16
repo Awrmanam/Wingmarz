@@ -1299,14 +1299,9 @@ def get_panel_list_keyboard(admins: List[AdminModel], action: str) -> InlineKeyb
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-@sudo_router.message(Command("start"))
+@sudo_router.message(Command("start"), F.from_user.id.in_(config.SUDO_ADMINS))
 async def sudo_start(message: Message):
-    """Start command for sudo users."""
-    if message.from_user.id not in config.SUDO_ADMINS:
-        from handlers.public_handlers import get_public_main_keyboard
-        await message.answer("به ربات خوش آمدید!", reply_markup=get_public_main_keyboard())
-        return
-    
+    """Start command reserved for sudo users only."""
     await message.answer(
         config.MESSAGES["welcome_sudo"],
         reply_markup=get_sudo_keyboard()
@@ -3844,6 +3839,7 @@ async def sudo_manage_admins_entry(callback: CallbackQuery, state: FSMContext):
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📋 لیست همه ادمین‌ها", callback_data="manage_list_all")],
+        [InlineKeyboardButton(text="🪪 KYCهای در انتظار", callback_data="kycadmin:pending")],
         [InlineKeyboardButton(text="🛒 مدیریت فروش", callback_data="sales_manage")],
         [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="back_to_main")]
     ])
@@ -3858,6 +3854,12 @@ async def manage_list_all(callback: CallbackQuery, state: FSMContext):
         await callback.answer("غیرمجاز", show_alert=True)
         return
     await state.clear()
+    if config.PANEL_PROVIDER == "rebecca":
+        try:
+            from rebecca_identity_link import sync_all_rebecca_admin_identities
+            await sync_all_rebecca_admin_identities()
+        except Exception as exc:
+            logger.warning("Rebecca identity mirror refresh failed: %s", exc)
     admins = await db.get_all_admins()
     if not admins:
         await callback.answer("ادمینی یافت نشد.", show_alert=True)
@@ -3918,8 +3920,24 @@ async def manage_panel_selected(callback: CallbackQuery):
             f"🔐 مرزبان: {admin.marzban_username or '-'}\n"
             f"✅ وضعیت: {'فعال' if admin.is_active else 'غیرفعال'}\n"
         )
+    from kyc_service import kyc_service
+    kyc_required = await kyc_service.is_required(admin.id)
+    kyc_profile = await kyc_service.get_profile(admin.user_id)
+    kyc_status = str((kyc_profile or {}).get("status") or "not_submitted")
+    kyc_status_text = {
+        "approved": "🟢 تأیید شده",
+        "pending": "🟡 در انتظار",
+        "rejected": "🔴 رد شده",
+        "not_submitted": "⚪ ثبت نشده",
+    }.get(kyc_status, "⚪ نامشخص")
+    info += (
+        f"🪪 KYC: {'اجباری' if kyc_required else 'معاف'}\n"
+        f"📋 وضعیت کاربر: {kyc_status_text}\n"
+    )
+    toggle_text = "🔓 معاف کردن از KYC" if kyc_required else "🔒 اجباری کردن KYC"
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="ℹ️ اطلاعات", callback_data=f"manage_action_info_{admin.id}")],
+        [InlineKeyboardButton(text=toggle_text, callback_data=f"kycadmin:toggle:{admin.id}")],
         [InlineKeyboardButton(text="🔄 فعالسازی", callback_data=f"manage_action_activate_{admin.id}"), InlineKeyboardButton(text="⛔ غیرفعالسازی", callback_data=f"manage_action_deactivate_{admin.id}")],
         [InlineKeyboardButton(text=config.BUTTONS["remove_admin"], callback_data=f"manage_action_delete_{admin.id}")],
         [InlineKeyboardButton(text="♻️ ریست زمان", callback_data=f"manage_action_reset_time_{admin.id}"), InlineKeyboardButton(text="♻️ ریست حجم", callback_data=f"manage_action_reset_traffic_{admin.id}")],
