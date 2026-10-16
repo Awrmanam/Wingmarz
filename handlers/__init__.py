@@ -3,6 +3,7 @@
 # Register PAYG presentation metadata before UI editor routers inspect the
 # central registry.
 import payg_ui_registry as _payg_ui_registry  # noqa: F401
+import kyc_ui_registry as _kyc_ui_registry  # noqa: F401
 import config
 
 from .style_admin import style_admin_router
