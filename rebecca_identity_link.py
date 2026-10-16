@@ -130,6 +130,8 @@ async def sync_rebecca_admins_for_telegram(
     for remote in remotes:
         if _telegram_id(remote) != int(telegram_id):
             continue
+        if str(remote.get("role") or "").strip().lower() != "standard":
+            continue
         admin_id = await _sync_one(
             remote,
             telegram_username=telegram_username,
@@ -153,6 +155,8 @@ async def sync_all_rebecca_admin_identities() -> int:
     count = 0
     for remote in remotes:
         if _telegram_id(remote) is None:
+            continue
+        if str(remote.get("role") or "").strip().lower() != "standard":
             continue
         if await _sync_one(remote) is not None:
             count += 1
