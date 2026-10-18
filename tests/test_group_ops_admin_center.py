@@ -8,6 +8,8 @@ from group_ops_service import GroupOpsService
 from handlers.group_ops import _domain_value, _merge_subscription_settings, _support_value
 from rebecca_admin_ops import _percent_rank, _time_rank
 from rebecca_api import RebeccaAPI
+import rebecca_renewal as renewal
+from types import SimpleNamespace
 from scheduler import MonitoringScheduler
 import config
 
@@ -186,3 +188,85 @@ def test_rebecca_scheduler_has_group_ops_jobs_but_no_duplicate_payg(monkeypatch)
             await scheduler.stop()
 
     run(scenario())
+
+
+def test_incremental_rebecca_renewal_updates_remote_and_local(monkeypatch):
+    admin = SimpleNamespace(
+        id=7,
+        user_id=555,
+        marzban_username="seller",
+        max_total_time=30 * 86400,
+        validity_days=30,
+    )
+    order = {
+        "id": 91,
+        "status": "submitted",
+        "target_admin_id": 7,
+        "apply_as_reset": 0,
+        "delta_traffic_bytes": 10 * 1024**3,
+        "delta_time_seconds": 30 * 86400,
+        "delta_users": 5,
+    }
+    monkeypatch.setattr(renewal.db, "get_admin_by_id", AsyncMock(return_value=admin))
+    monkeypatch.setattr(renewal.db, "update_admin", AsyncMock(return_value=True))
+    monkeypatch.setattr(renewal.db, "update_order", AsyncMock(return_value=True))
+    monkeypatch.setattr(renewal.rebecca_api, "find_admin", AsyncMock(return_value={
+        "username": "seller",
+        "data_limit": 100 * 1024**3,
+        "expire": 4_000_000_000,
+        "users_limit": 20,
+    }))
+    update_remote = AsyncMock(return_value={"username": "seller"})
+    monkeypatch.setattr(renewal.rebecca_api, "update_admin_fields", update_remote)
+    monkeypatch.setattr(renewal.group_ops_service, "audit", AsyncMock())
+
+    result = run(renewal.apply_rebecca_renewal(order, 999))
+
+    assert result.admin_id == 7
+    assert result.user_id == 555
+    payload = update_remote.await_args.args[1]
+    assert payload["data_limit"] == 110 * 1024**3
+    assert payload["expire"] == 4_000_000_000 + 30 * 86400
+    assert payload["users_limit"] == 25
+    renewal.db.update_order.assert_awaited_once_with(91, status="approved", approved_by=999)
+
+
+def test_full_rebecca_renewal_resets_usage(monkeypatch):
+    admin = SimpleNamespace(
+        id=8,
+        user_id=777,
+        marzban_username="seller2",
+        max_total_time=10,
+        validity_days=1,
+    )
+    plan = SimpleNamespace(
+        id=3,
+        name="Pro 90",
+        traffic_limit_bytes=300 * 1024**3,
+        time_limit_seconds=90 * 86400,
+        max_users=50,
+    )
+    order = {
+        "id": 92,
+        "status": "submitted",
+        "target_admin_id": 8,
+        "apply_as_reset": 1,
+        "plan_id": 3,
+    }
+    monkeypatch.setattr(renewal.db, "get_admin_by_id", AsyncMock(return_value=admin))
+    monkeypatch.setattr(renewal.db, "get_plan_by_id", AsyncMock(return_value=plan))
+    monkeypatch.setattr(renewal.db, "update_admin", AsyncMock(return_value=True))
+    monkeypatch.setattr(renewal.db, "update_order", AsyncMock(return_value=True))
+    monkeypatch.setattr(renewal.rebecca_api, "find_admin", AsyncMock(return_value={
+        "username": "seller2", "data_limit": 1, "expire": 1, "users_limit": 1
+    }))
+    monkeypatch.setattr(renewal.rebecca_api, "update_admin_fields", AsyncMock(return_value={"username": "seller2"}))
+    reset = AsyncMock(return_value={"username": "seller2"})
+    monkeypatch.setattr(renewal.rebecca_api, "reset_admin_usage", reset)
+    monkeypatch.setattr(renewal.group_ops_service, "audit", AsyncMock())
+
+    result = run(renewal.apply_rebecca_renewal(order, 999))
+
+    assert result.admin_id == 8
+    reset.assert_awaited_once_with("seller2")
+    renewal.db.update_order.assert_awaited_once_with(92, status="approved", approved_by=999)
