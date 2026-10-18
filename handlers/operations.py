@@ -18,6 +18,7 @@ from authorization import is_staff
 from database import db
 from operations_service import DiscountQuote, OperationsError, operations_service
 from style_engine import style_engine
+from group_ops_service import group_ops_service
 
 
 operations_router = Router(name="operations")
@@ -539,6 +540,16 @@ async def _notify_free_order(bot, order_id: int, user_id: int, plan_name: str, f
         await _button("رد", f"order_reject_{order_id}", fallback="❌"),
     ]]
     suffix = f"\n🎟 کد: <code>{escape(code)}</code>" if code else ""
+    try:
+        await group_ops_service.send_text(
+            bot,
+            "orders",
+            f"🧾 <b>سفارش رایگان آماده تأیید #{order_id}</b>\n"
+            f"👤 <code>{user_id}</code>\n📦 {escape(plan_name)}\n💵 {final_price:,} تومان{suffix}",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+        )
+    except Exception:
+        pass
     for sudo_id in config.SUDO_ADMINS:
         try:
             await bot.send_message(
@@ -562,6 +573,20 @@ async def _create_checkout_order(callback: CallbackQuery | _MessageCheckoutAdapt
     if not order_id:
         await callback.answer("خطا در ثبت سفارش.", show_alert=True)
         return
+    try:
+        if await group_ops_service.claim_event(f"order:{order_id}:created"):
+            await group_ops_service.send_text(
+                callback.bot,
+                "orders",
+                "🛒 <b>سفارش جدید</b>\n\n"
+                f"🧾 سفارش: <code>#{order_id}</code>\n"
+                f"👤 User ID: <code>{callback.from_user.id}</code>\n"
+                f"🔗 Username: {('@' + escape(callback.from_user.username)) if callback.from_user.username else '—'}\n"
+                f"📦 پلن: <b>{escape(plan.name)}</b>\n"
+                f"💵 مبلغ: <b>{final_price:,}</b> تومان",
+            )
+    except Exception:
+        pass
     if quote:
         try:
             await operations_service.record_redemption(quote, callback.from_user.id, order_id)
