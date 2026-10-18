@@ -79,6 +79,15 @@ def _support_value(raw: str) -> str:
     raise ValueError("لینک پشتیبانی باید @username یا URL کامل http(s) باشد")
 
 
+def _merge_subscription_settings(raw: Any, key: str, value: str) -> dict[str, Any]:
+    settings = dict(raw) if isinstance(raw, dict) else {}
+    if value:
+        settings[str(key)] = value
+    else:
+        settings.pop(str(key), None)
+    return settings
+
+
 def _domain_value(raw: str) -> str | None:
     value = str(raw or "").strip().lower().rstrip(".")
     if value in {"-", "none", "null", "حذف"}:
@@ -472,13 +481,10 @@ async def _update_subscription_override(message: Message, state: FSMContext, key
         raise ValueError("ادمین پیدا نشد")
     current = await rebecca_api.get_admin_subscription_settings(str(admin.marzban_username))
     remote_id = int(current.get("id") or 0)
-    settings = current.get("subscription_settings")
-    settings = dict(settings) if isinstance(settings, dict) else {}
-    before = settings.get(key)
-    if value:
-        settings[key] = value
-    else:
-        settings.pop(key, None)
+    existing_settings = current.get("subscription_settings")
+    existing_settings = dict(existing_settings) if isinstance(existing_settings, dict) else {}
+    before = existing_settings.get(key)
+    settings = _merge_subscription_settings(existing_settings, key, value)
     updated = await rebecca_api.update_admin_subscription_settings(
         remote_id, {"subscription_settings": settings}
     )
