@@ -204,12 +204,26 @@ def test_definitive_rejection_releases_reservation(monkeypatch, rebecca, status)
     assert db.cleared == 1 and db.order["status"] == "pending"
 
 
-def test_rebecca_renewal_is_blocked(monkeypatch, rebecca):
+def test_rebecca_renewal_uses_provider_renewal_path(monkeypatch, rebecca):
+    import rebecca_renewal
     db, callback = FakeDB(order_type="renew"), FakeCallback()
     monkeypatch.setattr(sudo, "db", db)
+
+    async def apply(order, actor_id):
+        db.order["status"] = "approved"
+        return SimpleNamespace(admin_id=8, user_id=42, message="✅ تمدید Rebecca اعمال شد.")
+
+    monkeypatch.setattr(rebecca_renewal, "apply_rebecca_renewal", apply)
+
+    async def group_send(*args, **kwargs):
+        return True
+
+    monkeypatch.setattr(sudo.group_ops_service, "send_text", group_send)
     run(sudo.order_approve(callback))
-    assert db.order["status"] == "pending"
-    assert "پشتیبانی" in callback.answers[-1][0]
+
+    assert db.order["status"] == "approved"
+    assert callback.message.edits[-1] == "✅ سفارش تأیید و تمدید Rebecca اعمال شد."
+    assert any("تمدید Rebecca" in text for _uid, text, _kwargs in callback.bot.sent)
 
 
 def test_normal_modules_keep_original_marzban_singleton():
