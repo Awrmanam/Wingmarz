@@ -23,6 +23,7 @@ from scheduler import init_scheduler
 from style_engine import style_engine
 from utils.bold_fix_bot import BoldFixBot
 from kyc_middleware import KycGateMiddleware, KycMessageGateMiddleware
+from group_ops_middleware import GroupOpsErrorMiddleware
 
 
 # Configure logging
@@ -73,6 +74,8 @@ class MarzbanAdminBot:
             logger.warning(f"Error testing Marzban API: {e}")
         
         # Register forced-join middleware BEFORE routers so it gates everything
+        self.dp.message.outer_middleware(GroupOpsErrorMiddleware())
+        self.dp.callback_query.outer_middleware(GroupOpsErrorMiddleware())
         self.dp.message.outer_middleware(ForcedJoinMiddleware(self.bot))
         self.dp.callback_query.outer_middleware(ForcedJoinMiddleware(self.bot))
         # KYC gates sensitive regular-admin panel actions after forced-join.
