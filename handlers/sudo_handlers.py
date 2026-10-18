@@ -4744,7 +4744,6 @@ async def order_approve(callback: CallbackQuery):
                     await callback.answer("خطا در ذخیره رزرو Rebecca.", show_alert=True)
                     return
             except Exception as exc:
-                from rebecca_api import RebeccaAPIError
                 if isinstance(exc, RebeccaAPIError) and exc.definitive:
                     if not await db.clear_rebecca_reservation(oid, new_username, lease_token):
                         await callback.answer("وضعیت محلی صدور نیاز به بررسی دارد.", show_alert=True)
