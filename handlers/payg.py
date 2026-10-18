@@ -10,6 +10,8 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 import config
 from database import db
 from payg_service import PaygError, PaygInsufficientFunds, payg_service
+from group_ops_service import group_ops_service
+from trust_service import trust_service
 from utils.rebecca import credential_message
 
 
@@ -287,12 +289,27 @@ async def payg_receipt_received(message: Message, state: FSMContext):
         InlineKeyboardButton(text="✅ تأیید شارژ", callback_data=f"paygadmin:approve:{topup_id}"),
         InlineKeyboardButton(text="❌ رد", callback_data=f"paygadmin:reject:{topup_id}"),
     ]])
+    trusted = await trust_service.is_identity_approved(message.from_user.id)
+    auto_enabled = await trust_service.auto_approve_enabled(message.from_user.id)
     caption = (
         f"🧾 شارژ PAYG #{topup_id}\n"
         f"کاربر: <code>{message.from_user.id}</code>\n"
+        f"Username: {('@' + escape(message.from_user.username)) if message.from_user.username else '—'}\n"
         f"مبلغ: <b>{_money(int(topup['amount_toman']))}</b>\n"
-        f"نوع: {escape(str(topup['purpose']))}"
+        f"نوع: {escape(str(topup['purpose']))}\n"
+        f"🪪 Identity: <b>{'تأیید' if trusted else 'تأییدنشده'}</b>\n"
+        f"🤖 Auto Approve: <b>{'مجاز (نیازمند Bank Match)' if auto_enabled else 'خاموش'}</b>"
     )
+    try:
+        await group_ops_service.send_photo(
+            message.bot,
+            "payments" if trusted else "unverified",
+            file_id,
+            caption=caption,
+            reply_markup=kb,
+        )
+    except Exception:
+        pass
     for sudo_id in config.SUDO_ADMINS:
         try:
             await message.bot.send_photo(sudo_id, photo=file_id, caption=caption, reply_markup=kb)
@@ -576,6 +593,19 @@ async def payg_admin_approve(callback: CallbackQuery):
             caption=(callback.message.caption or "") + "\n\n✅ تأیید شد",
             reply_markup=None,
         )
+        await group_ops_service.audit(
+            actor_id=callback.from_user.id,
+            action="payg.topup.approve",
+            subject_type="topup",
+            subject_id=topup_id,
+            new_value={"user_id": int(topup["user_id"]), "amount_toman": int(topup["amount_toman"])},
+        )
+        await group_ops_service.send_text(
+            callback.bot,
+            "payments",
+            f"✅ شارژ PAYG <code>#{topup_id}</code> برای کاربر <code>{int(topup['user_id'])}</code> تأیید شد.\n"
+            f"💵 {_money(int(topup['amount_toman']))}",
+        )
         await callback.answer("شارژ تأیید شد ✅")
     except Exception as exc:
         # Payment approval may already have credited the wallet; never silently
@@ -605,5 +635,17 @@ async def payg_admin_reject(callback: CallbackQuery):
     await callback.message.edit_caption(
         caption=(callback.message.caption or "") + "\n\n❌ رد شد",
         reply_markup=None,
+    )
+    await group_ops_service.audit(
+        actor_id=callback.from_user.id,
+        action="payg.topup.reject",
+        subject_type="topup",
+        subject_id=topup_id,
+        new_value={"user_id": int(topup["user_id"]), "status": "rejected"},
+    )
+    await group_ops_service.send_text(
+        callback.bot,
+        "payments",
+        f"❌ شارژ PAYG <code>#{topup_id}</code> کاربر <code>{int(topup['user_id'])}</code> رد شد.",
     )
     await callback.answer("رد شد")

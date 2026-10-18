@@ -9,6 +9,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 import config
 from database import db
 from kyc_service import kyc_service
+from trust_service import trust_service
 
 
 _ROOT_ACTIONS = {
@@ -64,7 +65,7 @@ class KycGateMiddleware(BaseMiddleware):
         if callback_data.startswith(("kyc:", "kycreview:", "kycadmin:")):
             return await handler(event, data)
 
-        if await kyc_service.is_approved(user.id):
+        if await trust_service.is_identity_approved(user.id):
             return await handler(event, data)
 
         target_id = _target_admin_id(callback_data)
@@ -156,7 +157,7 @@ class KycMessageGateMiddleware(BaseMiddleware):
         text = text.split("@", 1)[0]
         if text not in _PROTECTED_COMMANDS:
             return await handler(event, data)
-        if await kyc_service.is_approved(event.from_user.id):
+        if await trust_service.is_identity_approved(event.from_user.id):
             return await handler(event, data)
 
         admins = [a for a in await db.get_admins_for_user(event.from_user.id) if a.is_active]

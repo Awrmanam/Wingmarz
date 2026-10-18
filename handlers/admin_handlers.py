@@ -13,6 +13,8 @@ from models.schemas import AdminModel, UsageReportModel
 from utils.notify import format_traffic_size, format_time_duration
 from marzban_api import marzban_api
 from rebecca_api import rebecca_api, RebeccaAPIError
+from group_ops_service import group_ops_service
+from trust_service import trust_service
 from datetime import datetime
 from aiogram.exceptions import TelegramBadRequest
 
@@ -20,6 +22,28 @@ logger = logging.getLogger(__name__)
 
 
 admin_router = Router()
+
+
+async def _mirror_admin_order_created(bot, order_id: int) -> None:
+    """Mirror reseller purchase/renew orders to the shared operations topic."""
+    try:
+        order = await db.get_order_by_id(int(order_id))
+        if not order:
+            return
+        if not await group_ops_service.claim_event(f"order:{int(order_id)}:created"):
+            return
+        await group_ops_service.send_text(
+            bot,
+            "orders",
+            "🛒 <b>سفارش نماینده ثبت شد</b>\n\n"
+            f"🧾 سفارش: <code>#{int(order_id)}</code>\n"
+            f"👤 User ID: <code>{int(order.get('user_id') or 0)}</code>\n"
+            f"📦 {escape(str(order.get('plan_name_snapshot') or 'سفارش پنل'))}\n"
+            f"💵 <b>{int(order.get('price_snapshot') or 0):,}</b> تومان\n"
+            f"نوع: <b>{escape(str(order.get('order_type') or 'purchase'))}</b>",
+        )
+    except Exception:
+        pass
 
 
 def get_admin_keyboard() -> InlineKeyboardMarkup:
@@ -122,13 +146,34 @@ async def admin_start(message: Message):
 
     admins = await db.get_admins_for_user(message.from_user.id)
     active_admins = [admin for admin in admins if admin.is_active]
+
+    from kyc_service import kyc_service
+    from trust_service import trust_service
+    from group_ops_service import group_ops_service
+
+    # Every /start is mirrored to the operations group when configured.
+    try:
+        kyc_status = await kyc_service.status(message.from_user.id)
+        manual_trust = await trust_service.is_manually_trusted(message.from_user.id)
+        await group_ops_service.notify_start(
+            message.bot,
+            message.from_user,
+            account_kind=(
+                f"ادمین Rebecca · {len(active_admins)} پنل"
+                if active_admins else "مشتری"
+            ),
+            kyc_status=kyc_status,
+            trusted=manual_trust,
+        )
+    except Exception:
+        pass
+
     if not active_admins:
         from handlers.public_handlers import get_public_main_keyboard
         await message.answer("به ربات خوش آمدید!", reply_markup=get_public_main_keyboard())
         return
 
-    from kyc_service import kyc_service
-    approved = await kyc_service.is_approved(message.from_user.id)
+    approved = await trust_service.is_identity_approved(message.from_user.id)
     required_admins = [
         admin for admin in active_admins
         if await kyc_service.is_required(int(admin.id))
@@ -451,6 +496,7 @@ async def admin_order(callback: CallbackQuery):
     if not order_id:
         await callback.answer("خطا در ثبت سفارش.", show_alert=True)
         return
+    await _mirror_admin_order_created(callback.bot, order_id)
     price_txt = f"{plan.price:,}"
     # Show manual payment cards
     cards = await db.get_cards(only_active=True)
@@ -521,6 +567,30 @@ async def admin_receive_payment_receipt(message: Message, state: FSMContext):
         [InlineKeyboardButton(text="❌ رد", callback_data=f"order_reject_{order_id}")],
         [InlineKeyboardButton(text="🔁 تلاش دوباره صدور", callback_data=f"order_retry_{order_id}")]
     ])
+    try:
+        trusted = await trust_service.is_identity_approved(message.from_user.id)
+        auto_enabled = await trust_service.auto_approve_enabled(message.from_user.id)
+        verification = await trust_service.payment_verification(order_id)
+        bank_state = str((verification or {}).get("state") or "unverified")
+        caption = (
+            f"🧾 <b>رسید سفارش/تمدید #{order_id}</b>\n"
+            f"👤 <code>{message.from_user.id}</code> "
+            f"{('@' + escape(message.from_user.username)) if message.from_user.username else ''}\n"
+            f"📦 {escape(plan.name if plan else order.get('plan_name_snapshot',''))}\n"
+            f"💵 <b>{int(order.get('price_snapshot',0)):,}</b> تومان\n"
+            f"🪪 Identity: <b>{'تأیید' if trusted else 'تأییدنشده'}</b>\n"
+            f"🤖 Auto Approve: <b>{'مجاز' if auto_enabled else 'خاموش'}</b>\n"
+            f"🏦 Bank Match: <b>{escape(bank_state)}</b>"
+        )
+        await group_ops_service.send_photo(
+            message.bot,
+            "payments" if trusted else "unverified",
+            file_id,
+            caption=caption,
+            reply_markup=kb,
+        )
+    except Exception:
+        pass
     try:
         for sudo_id in config.SUDO_ADMINS:
             await message.bot.send_message(chat_id=sudo_id, text=text, reply_markup=kb)
@@ -661,6 +731,7 @@ async def admin_full_renew_plan_selected(callback: CallbackQuery):
         await callback.answer("خطا در ثبت سفارش تمدید.", show_alert=True)
         return
     await db.update_order(order_id, order_type="renew", target_admin_id=admin_id, apply_as_reset=1)
+    await _mirror_admin_order_created(callback.bot, order_id)
     # Show payment instructions
     cards = await db.get_cards(only_active=True)
     lines = [
@@ -720,6 +791,7 @@ async def admin_renew_traffic_amount(callback: CallbackQuery, state: FSMContext)
     delta_bytes = gb * 1024 * 1024 * 1024
     order_id = await db.add_order(callback.from_user.id, plan_id=0, price_snapshot=price, plan_name_snapshot=f"تمدید حجم +{gb}GB")
     await db.update_order(order_id, order_type="renew", target_admin_id=admin_id, delta_traffic_bytes=delta_bytes)
+    await _mirror_admin_order_created(callback.bot, order_id)
     # نمایش کارت‌ها و دریافت رسید
     cards = await db.get_cards(only_active=True)
     lines = [
@@ -775,6 +847,7 @@ async def admin_renew_time_amount(callback: CallbackQuery, state: FSMContext):
     delta_seconds = days * 24 * 60 * 60
     order_id = await db.add_order(callback.from_user.id, plan_id=0, price_snapshot=price, plan_name_snapshot=f"تمدید زمان +{days} روز")
     await db.update_order(order_id, order_type="renew", target_admin_id=admin_id, delta_time_seconds=delta_seconds)
+    await _mirror_admin_order_created(callback.bot, order_id)
     cards = await db.get_cards(only_active=True)
     lines = [
         f"✅ سفارش تمدید ثبت شد.\n\nشناسه سفارش: {order_id}\nافزایش زمان: +{days} روز\nقیمت: {price:,} تومان\n",
@@ -828,6 +901,7 @@ async def admin_renew_users_amount(callback: CallbackQuery, state: FSMContext):
     price = users * rates['per_user_toman']
     order_id = await db.add_order(callback.from_user.id, plan_id=0, price_snapshot=price, plan_name_snapshot=f"افزایش کاربر +{users}")
     await db.update_order(order_id, order_type="renew", target_admin_id=admin_id, delta_users=users)
+    await _mirror_admin_order_created(callback.bot, order_id)
     cards = await db.get_cards(only_active=True)
     lines = [
         f"✅ سفارش تمدید ثبت شد.\n\nشناسه سفارش: {order_id}\nافزایش کاربر: +{users}\nقیمت: {price:,} تومان\n",

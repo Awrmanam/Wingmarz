@@ -255,6 +255,7 @@ for _button in BUTTONS:
     _BY_CALLBACK.setdefault(_button.callback_data, []).append(_button)
 
 _HIDDEN_PREFIX_REASONS: tuple[tuple[str, str], ...] = (
+    ("gops:", "کنترل داخلی مرکز عملیات"),
     ("pui:", "کنترل داخلی ویرایشگر"),
     ("puc:", "کنترل داخلی ویرایشگر"),
     ("uiv2:", "رابط قدیمی ویرایشگر"),
