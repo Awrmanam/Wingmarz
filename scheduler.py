@@ -19,7 +19,10 @@ class MonitoringScheduler:
         self.scheduler = AsyncIOScheduler()
         self.is_running = False
         self.backup_job_id = "bot_backup_job"
+        self.group_ops_admin_job_id = "group_ops_admin_alerts"
+        self.group_ops_daily_job_id = "group_ops_daily_summary"
         self._backup_lock = asyncio.Lock()
+        self._group_ops_lock = asyncio.Lock()
 
     async def check_admin_limits(self, admin_user_id: int) -> LimitCheckResult:
         admin = await db.get_admin(admin_user_id)
@@ -245,14 +248,69 @@ class MonitoringScheduler:
         except Exception as e:
             print(f"Error in monitor_all_admins: {e}")
 
+    async def sync_group_ops_admin_alerts(self):
+        if self._group_ops_lock.locked():
+            return
+        async with self._group_ops_lock:
+            try:
+                from rebecca_admin_ops import sync_rebecca_admin_alerts
+                await sync_rebecca_admin_alerts(self.bot)
+            except Exception as exc:
+                try:
+                    from group_ops_service import group_ops_service
+                    await group_ops_service.report_error(
+                        self.bot, exc, context="group-ops admin cron"
+                    )
+                except Exception:
+                    pass
+
+    async def send_group_ops_daily(self):
+        try:
+            from group_ops_service import group_ops_service
+            await group_ops_service.daily_summary(self.bot)
+        except Exception as exc:
+            try:
+                from group_ops_service import group_ops_service
+                await group_ops_service.report_error(
+                    self.bot, exc, context="group-ops daily summary"
+                )
+            except Exception:
+                pass
+
+    def _register_group_ops_jobs(self):
+        self.scheduler.add_job(
+            self.send_group_ops_daily,
+            trigger=CronTrigger(hour=23, minute=55),
+            id=self.group_ops_daily_job_id,
+            name="Group Ops Daily Summary",
+            replace_existing=True,
+            max_instances=1,
+        )
+        if config.PANEL_PROVIDER == "rebecca":
+            interval = max(60, int(config.MONITORING_INTERVAL))
+            self.scheduler.add_job(
+                self.sync_group_ops_admin_alerts,
+                trigger=IntervalTrigger(
+                    seconds=interval,
+                    start_date=datetime.now() + timedelta(seconds=15),
+                ),
+                id=self.group_ops_admin_job_id,
+                name="Rebecca Admin Alerts",
+                replace_existing=True,
+                max_instances=1,
+            )
+
     async def start(self):
         if self.is_running:
             print("Scheduler is already running")
             return
 
+        self._register_group_ops_jobs()
+
         if config.PANEL_PROVIDER == "rebecca":
-            # PAYG billing is owned by handlers.payg_entry. This scheduler stays
-            # alive only for provider-independent jobs such as automated backup.
+            # PAYG billing remains exclusively owned by handlers.payg_entry.
+            # This shared scheduler owns provider-independent backup/group jobs
+            # plus the Rebecca admin alert monitor; it never bills PAYG.
             print("Marzban monitoring disabled in Rebecca provider mode")
             self.scheduler.start()
             self.is_running = True
