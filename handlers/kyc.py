@@ -10,6 +10,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 import config
 from database import db
 from kyc_service import kyc_service
+from group_ops_service import group_ops_service
 
 
 kyc_router = Router(name="kyc")
@@ -127,8 +128,15 @@ async def kyc_document(message: Message, state: FSMContext):
     caption = (
         "🪪 <b>KYC جدید</b>\n"
         f"Telegram ID: <code>{message.from_user.id}</code>\n"
+        f"Username: {('@' + escape(message.from_user.username)) if message.from_user.username else '—'}\n"
         f"نام: <b>{escape(full_name)}</b>"
     )
+    try:
+        await group_ops_service.send_photo(
+            message.bot, "kyc", photo.file_id, caption=caption, reply_markup=review_kb
+        )
+    except Exception:
+        pass
     for sudo_id in config.SUDO_ADMINS:
         try:
             await message.bot.send_photo(
@@ -172,6 +180,18 @@ async def kyc_review_approve(callback: CallbackQuery):
         caption=(callback.message.caption or "") + "\n\n✅ <b>تأیید شد</b>",
     )
     await _notify_review_result(callback, user_id, True)
+    await group_ops_service.audit(
+        actor_id=callback.from_user.id,
+        action="kyc.approve",
+        subject_type="user",
+        subject_id=user_id,
+        new_value="approved",
+    )
+    await group_ops_service.send_text(
+        callback.bot,
+        "kyc",
+        f"✅ KYC کاربر <code>{user_id}</code> توسط <code>{callback.from_user.id}</code> تأیید شد.",
+    )
     await callback.answer("KYC تأیید شد")
 
 
@@ -188,6 +208,18 @@ async def kyc_review_reject(callback: CallbackQuery):
         caption=(callback.message.caption or "") + "\n\n❌ <b>رد شد</b>",
     )
     await _notify_review_result(callback, user_id, False)
+    await group_ops_service.audit(
+        actor_id=callback.from_user.id,
+        action="kyc.reject",
+        subject_type="user",
+        subject_id=user_id,
+        new_value="rejected",
+    )
+    await group_ops_service.send_text(
+        callback.bot,
+        "kyc",
+        f"❌ KYC کاربر <code>{user_id}</code> توسط <code>{callback.from_user.id}</code> رد شد.",
+    )
     await callback.answer("KYC رد شد")
 
 
