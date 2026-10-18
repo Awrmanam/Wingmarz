@@ -25,25 +25,107 @@ operations_router = Router(name="operations")
 
 
 MENU_SPECS = [
-    ("sudo_menu_sales", "فروش و تعرفه‌ها", "sales", "🛒"),
-    ("sudo_menu_panels", "مرکز پنل‌ها", "panel", "🧩"),
-    ("gops:home", "مرکز عملیات", "tools", "🧭"),
-    ("cc:orders:0", "سفارش‌ها", "orders", "🧾"),
-    ("sales_manage", "دسته‌بندی پلن‌ها", "plan", "📦"),
-    ("cc:users:0", "کاربران", "users", "👥"),
-    ("sudo_menu_sales", "مالی و پرداخت", "finance", "💵"),
-    ("cc:discounts", "تخفیف‌ها", "discount", "🎟"),
-    ("cc:test", "کانفیگ تست", "test", "🧪"),
-    ("cc:botadmins", "ادمین‌های ربات", "admin", "🧑‍💼"),
-    ("cc:stats", "آمار و گزارشات", "stats", "📊"),
-    ("sudo_menu_broadcast", "اطلاع‌رسانی", "broadcast", "📢"),
-    ("cc:tickets:0", "پشتیبانی و تیکت", "support", "🎧"),
-    ("style:menu", "ایموجی و استایل", "style", "🎨"),
-    ("cc:texts", "مدیریت متن‌ها", "text", "📝"),
-    ("cc:buttons", "دکمه‌ها و منوها", "buttons", "🔘"),
-    ("sudo_menu_backup", "ابزارها و بکاپ", "tools", "🧰"),
-    ("sudo_menu_settings", "تنظیمات", "settings", "⚙️"),
+    ("ops:hub:panels", "پنل‌ها و ادمین‌ها", "panel", "👥"),
+    ("ops:hub:sales", "فروش و سفارش‌ها", "sales", "🛒"),
+    ("ops:hub:finance", "مالی و پرداخت‌ها", "finance", "💳"),
+    ("ops:hub:access", "KYC و دسترسی‌ها", "admin", "🪪"),
+    ("ops:hub:users", "کاربران و پشتیبانی", "users", "🎧"),
+    ("ops:hub:monitor", "گزارش و مانیتورینگ", "stats", "📊"),
+    ("ops:hub:settings", "تنظیمات و ابزارها", "settings", "⚙️"),
+    ("ops:hub:content", "ظاهر و محتوا", "style", "🎨"),
 ]
+
+QUICK_ACTIONS = (
+    ("gops:admins:0", "مدیریت ادمین‌ها", "admin", "👥"),
+    ("cc:orders:0", "سفارش‌های در انتظار", "orders", "🧾"),
+)
+
+HUB_MENUS = {
+    "panels": {
+        "title": "👥 پنل‌ها و ادمین‌ها",
+        "body": "مدیریت پنل‌های Rebecca، جستجو، افزودن/حذف و عملیات روزمره ادمین‌ها.",
+        "items": (
+            ("gops:admins:0", "مدیریت کامل ادمین‌ها", "admin", "👥"),
+            ("gops:search", "جستجوی ادمین", "search", "🔎"),
+            ("sudo_menu_panels", "افزودن / واردکردن / حذف پنل", "panel", "🧩"),
+            ("admin_status", "وضعیت ادمین‌ها", "stats", "📡"),
+            ("rebecca_services", "سرویس‌های Rebecca", "plan", "🔌"),
+            ("gops:home", "مرکز عملیات و گروه", "tools", "🧭"),
+        ),
+    },
+    "sales": {
+        "title": "🛒 فروش و سفارش‌ها",
+        "body": "سفارش‌ها، پلن‌ها، تخفیف‌ها و تنظیمات فروش در یک بخش.",
+        "items": (
+            ("cc:orders:0", "سفارش‌های در انتظار", "orders", "🧾"),
+            ("sales_manage", "پلن‌ها و محصولات", "plan", "📦"),
+            ("cc:discounts", "کدهای تخفیف", "discount", "🎟"),
+            ("cc:test", "تست رایگان", "test", "🧪"),
+            ("paygsvcadmin:home", "تعرفه‌های PAYG", "finance", "⚡"),
+        ),
+    },
+    "finance": {
+        "title": "💳 مالی و پرداخت‌ها",
+        "body": "رسیدهای منتظر بررسی، کارت‌های بانکی، صورتحساب و پرداخت‌های PAYG.",
+        "items": (
+            ("cc:orders:submitted:0", "رسیدهای منتظر تأیید", "finance", "🧾"),
+            ("sales_cards", "کارت‌های بانکی", "finance", "💳"),
+            ("set_billing", "تنظیمات صورتحساب", "settings", "🧮"),
+            ("paygsvcadmin:home", "مدیریت PAYG", "finance", "⚡"),
+            ("gops:home", "گزارش پرداخت‌ها در گروه", "tools", "🧭"),
+        ),
+    },
+    "access": {
+        "title": "🪪 KYC و دسترسی‌ها",
+        "body": "احراز هویت، Trust، دسترسی مدیران ربات و محدودیت‌های دسترسی.",
+        "items": (
+            ("kycadmin:pending", "KYCهای در انتظار", "admin", "🪪"),
+            ("gops:admins:0", "Trust / Auto Approve کاربران", "admin", "🤝"),
+            ("cc:botadmins", "ادمین‌های ربات", "admin", "🧑‍💼"),
+            ("forced_join_manage", "عضویت اجباری", "settings", "📢"),
+            ("gops:home", "مرکز عملیات", "tools", "🧭"),
+        ),
+    },
+    "users": {
+        "title": "🎧 کاربران و پشتیبانی",
+        "body": "کاربران، تیکت‌ها و اطلاع‌رسانی به مشتری‌ها و نماینده‌ها.",
+        "items": (
+            ("cc:users:0", "لیست کاربران", "users", "👤"),
+            ("cc:tickets:0", "تیکت‌های پشتیبانی", "support", "🎫"),
+            ("sudo_menu_broadcast", "ارسال پیام همگانی", "broadcast", "📣"),
+        ),
+    },
+    "monitor": {
+        "title": "📊 گزارش و مانیتورینگ",
+        "body": "آمار فروش، سلامت پنل‌ها و وضعیت سیستم و Group Ops.",
+        "items": (
+            ("cc:stats", "آمار و گزارشات", "stats", "📊"),
+            ("sudo_menu_reports", "گزارشات تکمیلی", "stats", "📈"),
+            ("admin_status", "وضعیت ادمین‌ها", "stats", "📡"),
+            ("gops:status", "وضعیت Group Ops", "tools", "🧭"),
+            ("gops:home", "مرکز عملیات", "tools", "🛠"),
+        ),
+    },
+    "settings": {
+        "title": "⚙️ تنظیمات و ابزارها",
+        "body": "تنظیمات عمومی، بکاپ و ابزارهای نگهداری ربات.",
+        "items": (
+            ("sudo_menu_settings", "تنظیمات عمومی", "settings", "⚙️"),
+            ("sudo_menu_backup", "بکاپ و ریستور", "tools", "🗄"),
+            ("set_login_url", "آدرس ورود پنل", "settings", "🔗"),
+            ("gops:home", "تنظیمات گروه مدیریت", "tools", "🧭"),
+        ),
+    },
+    "content": {
+        "title": "🎨 ظاهر و محتوا",
+        "body": "متن‌ها، دکمه‌ها، منوها و Premium Emojiهای ربات.",
+        "items": (
+            ("style:menu", "ایموجی و استایل", "style", "✨"),
+            ("cc:texts", "مدیریت متن‌ها", "text", "📝"),
+            ("cc:buttons", "دکمه‌ها و منوها", "buttons", "🔘"),
+        ),
+    },
+}
 
 
 class DiscountStates(StatesGroup):
@@ -103,41 +185,97 @@ async def _menu_label(callback_data: str, default: str) -> str:
 
 
 async def build_operational_dashboard_keyboard() -> InlineKeyboardMarkup:
+    """Compact two-level dashboard: daily shortcuts + eight logical sections."""
+    rows = []
+
+    quick = []
+    for callback_data, default, icon_key, fallback in QUICK_ACTIONS:
+        label = await _menu_label(callback_data, default)
+        quick.append(await _button(label, callback_data, icon_key=icon_key, fallback=fallback))
+    if quick:
+        rows.append(quick)
+
     rendered = []
     for callback_data, default, icon_key, fallback in MENU_SPECS:
         visible = await operations_service.menu_is_visible(callback_data)
         if not visible:
-            rendered.append(None)
             continue
         label = await _menu_label(callback_data, default)
         rendered.append(await _button(label, callback_data, icon_key=icon_key, fallback=fallback))
 
-    rows = []
-    visible_items = [item for item in rendered if item is not None]
-    for idx in range(0, len(visible_items), 2):
-        rows.append(visible_items[idx:idx + 2])
+    for idx in range(0, len(rendered), 2):
+        rows.append(rendered[idx:idx + 2])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _safe_count(conn: aiosqlite.Connection, sql: str, params=()) -> int:
+    try:
+        async with conn.execute(sql, params) as cur:
+            row = await cur.fetchone()
+        return int((row or [0])[0] or 0)
+    except aiosqlite.OperationalError:
+        return 0
 
 
 async def _dashboard_text() -> str:
     async with aiosqlite.connect(config.DATABASE_PATH) as conn:
-        stats = {}
-        for key, sql in {
-            "orders": "SELECT COUNT(*) FROM orders",
-            "pending": "SELECT COUNT(*) FROM orders WHERE status IN ('pending','submitted')",
-            "admins": "SELECT COUNT(*) FROM admins WHERE is_active=1",
-            "plans": "SELECT COUNT(*) FROM plans WHERE is_active=1",
-        }.items():
-            try:
-                async with conn.execute(sql) as cur:
-                    stats[key] = int((await cur.fetchone())[0] or 0)
-            except aiosqlite.OperationalError:
-                stats[key] = 0
+        pending_orders = await _safe_count(
+            conn, "SELECT COUNT(*) FROM orders WHERE status IN ('pending','submitted')"
+        )
+        active_admins = await _safe_count(conn, "SELECT COUNT(*) FROM admins WHERE is_active=1")
+        active_plans = await _safe_count(conn, "SELECT COUNT(*) FROM plans WHERE is_active=1")
+        pending_kyc = await _safe_count(
+            conn, "SELECT COUNT(*) FROM kyc_profiles WHERE status='pending'"
+        )
+        pending_payg = await _safe_count(
+            conn, "SELECT COUNT(*) FROM payg_service_topups WHERE status='submitted'"
+        ) + await _safe_count(
+            conn, "SELECT COUNT(*) FROM payg_topups WHERE status='submitted'"
+        )
+
+    alerts = []
+    if pending_orders:
+        alerts.append(f"🧾 {pending_orders} سفارش در انتظار")
+    if pending_kyc:
+        alerts.append(f"🪪 {pending_kyc} KYC در انتظار")
+    if pending_payg:
+        alerts.append(f"💳 {pending_payg} شارژ PAYG در انتظار")
+
+    alert_text = "\n".join(f"• {item}" for item in alerts) if alerts else "✅ مورد فوری برای بررسی ندارید."
     return (
-        "🏠 <b>مرکز مدیریت ربات</b>\n\n"
-        f"🧾 سفارش‌ها: <b>{stats['orders']}</b> | در انتظار: <b>{stats['pending']}</b>\n"
-        f"🧩 پنل‌های فعال: <b>{stats['admins']}</b> | پلن‌های فعال: <b>{stats['plans']}</b>\n\n"
-        "یک بخش را انتخاب کنید."
+        "🏠 <b>داشبورد مدیریت Wingmarz</b>\n\n"
+        f"👥 پنل فعال: <b>{active_admins}</b>   •   📦 پلن فعال: <b>{active_plans}</b>\n\n"
+        "<b>نیازمند توجه</b>\n"
+        f"{alert_text}\n\n"
+        "⚡ ردیف اول برای کارهای روزمره است؛ بقیه امکانات بر اساس موضوع دسته‌بندی شده‌اند."
+    )
+
+
+async def _render_hub(message: Message, key: str) -> None:
+    spec = HUB_MENUS.get(str(key))
+    if not spec:
+        await message.edit_text(
+            "❌ این بخش پیدا نشد.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                await _button("خانه", "back_to_main", icon_key="home", fallback="🏠")
+            ]]),
+        )
+        return
+
+    items = []
+    for callback_data, title, icon_key, fallback in spec["items"]:
+        items.append(
+            await _button(title, callback_data, icon_key=icon_key, fallback=fallback)
+        )
+
+    rows = []
+    for idx in range(0, len(items), 2):
+        rows.append(items[idx:idx + 2])
+    rows.append([await _button("🏠 بازگشت به داشبورد", "back_to_main", icon_key="home", fallback="🏠")])
+
+    await message.edit_text(
+        f"<b>{spec['title']}</b>\n\n{spec['body']}\n\nگزینه موردنظر را انتخاب کنید:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
     )
 
 
@@ -164,6 +302,16 @@ async def operational_back(callback: CallbackQuery, state: FSMContext):
         return
     await state.clear()
     await _edit_dashboard(callback.message)
+    await callback.answer()
+
+
+@operations_router.callback_query(F.data.startswith("ops:hub:"))
+async def operational_hub(callback: CallbackQuery, state: FSMContext):
+    if await _deny(callback):
+        return
+    await state.clear()
+    key = (callback.data or "").rsplit(":", 1)[-1]
+    await _render_hub(callback.message, key)
     await callback.answer()
 
 
