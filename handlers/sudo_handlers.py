@@ -1303,6 +1303,18 @@ def get_panel_list_keyboard(admins: List[AdminModel], action: str) -> InlineKeyb
 @sudo_router.message(Command("start"), F.from_user.id.in_(config.SUDO_ADMINS))
 async def sudo_start(message: Message):
     """Start command reserved for sudo users only."""
+    try:
+        from kyc_service import kyc_service
+        from trust_service import trust_service
+        await group_ops_service.notify_start(
+            message.bot,
+            message.from_user,
+            account_kind="سودو ادمین",
+            kyc_status=await kyc_service.status(message.from_user.id),
+            trusted=await trust_service.is_manually_trusted(message.from_user.id),
+        )
+    except Exception:
+        pass
     await message.answer(
         config.MESSAGES["welcome_sudo"],
         reply_markup=get_sudo_keyboard()
