@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from html import escape
 import re
+from typing import Any
 from urllib.parse import urlparse
 
 from aiogram import F, Router
@@ -12,9 +13,14 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     CallbackQuery,
+    ChatMemberUpdated,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    KeyboardButton,
+    KeyboardButtonRequestChat,
     Message,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
 )
 
 import config
@@ -27,6 +33,164 @@ from trust_service import trust_service
 
 
 group_ops_router = Router(name="group_ops")
+
+
+OPS_CHAT_REQUEST_ID = 26018
+ADMIN_PAGE_SIZE = 8
+
+
+def _ops_home_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="👥 لیست ادمین‌ها", callback_data="gops:admins:0"),
+            InlineKeyboardButton(text="🔎 جستجوی ادمین", callback_data="gops:search"),
+        ],
+        [
+            InlineKeyboardButton(text="🔗 اتصال/تعویض گروه", callback_data="gops:connect"),
+            InlineKeyboardButton(text="🧱 تکمیل تاپیک‌ها", callback_data="gops:repair"),
+        ],
+        [
+            InlineKeyboardButton(text="📊 وضعیت Group Ops", callback_data="gops:status"),
+            InlineKeyboardButton(text="🔄 بروزرسانی", callback_data="gops:home"),
+        ],
+        [InlineKeyboardButton(text="🔙 منوی اصلی", callback_data="back_to_main")],
+    ])
+
+
+def _ops_home_text() -> str:
+    return (
+        "🧭 <b>مرکز عملیات Wingmarz</b>\n\n"
+        "مدیریت روزمره از همین دکمه‌ها انجام می‌شود؛ "
+        "برای مدیریت Admin دیگر نیازی به نوشتن دستور ندارید."
+    )
+
+
+def _ops_group_picker_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[
+            KeyboardButton(
+                text="📌 انتخاب گروه مدیریت",
+                request_chat=KeyboardButtonRequestChat(
+                    request_id=OPS_CHAT_REQUEST_ID,
+                    chat_is_channel=False,
+                    chat_is_forum=True,
+                    bot_is_member=True,
+                ),
+            )
+        ]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+        input_field_placeholder="گروه Forum مدیریت را انتخاب کنید",
+    )
+
+
+def _member_status_value(member) -> str:
+    status = getattr(member, "status", "")
+    return str(getattr(status, "value", status)).lower()
+
+
+async def _send_ops_home(bot, chat_id: int, *, pin: bool = True):
+    msg = await bot.send_message(
+        int(chat_id),
+        _ops_home_text(),
+        reply_markup=_ops_home_keyboard(),
+    )
+    if pin:
+        try:
+            await bot.pin_chat_message(int(chat_id), msg.message_id, disable_notification=True)
+        except Exception:
+            pass
+    return msg
+
+
+async def _bootstrap_ops_group(bot, chat_id: int, actor_id: int) -> dict[str, int]:
+    chat = await bot.get_chat(int(chat_id))
+    if str(getattr(getattr(chat, "type", None), "value", getattr(chat, "type", ""))) != "supergroup":
+        raise ValueError("گروه انتخابی باید Supergroup باشد")
+    if not bool(getattr(chat, "is_forum", False)):
+        raise ValueError("Topics/Forum برای این گروه فعال نیست")
+
+    me = await bot.get_me()
+    member = await bot.get_chat_member(int(chat_id), int(me.id))
+    if _member_status_value(member) != "administrator":
+        raise ValueError("بات باید Admin گروه باشد")
+    if getattr(member, "can_manage_topics", None) is False:
+        raise ValueError("مجوز Manage Topics برای بات فعال نیست")
+
+    await group_ops_service.configure_group(int(chat_id), int(actor_id))
+    topics = await group_ops_service.setup_topics(bot, int(chat_id))
+    await group_ops_service.audit(
+        actor_id=int(actor_id),
+        action="group_ops.configure",
+        subject_type="chat",
+        subject_id=int(chat_id),
+        new_value={"topics": topics},
+    )
+    await _send_ops_home(bot, int(chat_id))
+    return topics
+
+
+async def _render_ops_status(message: Message) -> None:
+    cfg = await group_ops_service.get_config()
+    topics = await group_ops_service.topics()
+    if not cfg:
+        text = (
+            "⚪ <b>Group Ops هنوز متصل نیست.</b>\n\n"
+            "روی «اتصال/تعویض گروه» بزنید و گروه Forum را انتخاب کنید."
+        )
+    else:
+        text = (
+            "📊 <b>وضعیت Group Ops</b>\n\n"
+            f"Chat ID: <code>{int(cfg['chat_id'])}</code>\n"
+            f"وضعیت: <b>{'فعال' if int(cfg.get('enabled') or 0) else 'خاموش'}</b>\n"
+            f"Topics: <b>{len(topics)}/{len(TOPICS)}</b>"
+        )
+    await message.edit_text(text, reply_markup=_ops_home_keyboard())
+
+
+async def _render_admin_list(message: Message, page: int = 0) -> None:
+    admins = await db.get_all_admins()
+    admins = sorted(
+        admins,
+        key=lambda a: (
+            0 if bool(getattr(a, "is_active", False)) else 1,
+            -(int(getattr(a, "id", 0) or 0)),
+        ),
+    )
+    total = len(admins)
+    pages = max(1, (total + ADMIN_PAGE_SIZE - 1) // ADMIN_PAGE_SIZE)
+    page = max(0, min(int(page), pages - 1))
+    start = page * ADMIN_PAGE_SIZE
+    rows = []
+    for admin in admins[start:start + ADMIN_PAGE_SIZE]:
+        active = "🟢" if bool(getattr(admin, "is_active", False)) else "⚪"
+        label = str(
+            getattr(admin, "admin_name", None)
+            or getattr(admin, "marzban_username", None)
+            or f"Admin {admin.id}"
+        )
+        rows.append([InlineKeyboardButton(
+            text=f"{active} {label[:28]} · {int(admin.user_id)}",
+            callback_data=f"gops:admin:{int(admin.id)}",
+        )])
+
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="⬅️ قبلی", callback_data=f"gops:admins:{page-1}"))
+    nav.append(InlineKeyboardButton(text=f"{page+1}/{pages}", callback_data="gops:noop"))
+    if page + 1 < pages:
+        nav.append(InlineKeyboardButton(text="بعدی ➡️", callback_data=f"gops:admins:{page+1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton(text="🔎 جستجوی دقیق", callback_data="gops:search")])
+    rows.append([InlineKeyboardButton(text="🧭 مرکز عملیات", callback_data="gops:home")])
+
+    text = (
+        "👥 <b>لیست Adminها</b>\n\n"
+        f"تعداد کل: <b>{total}</b>\n"
+        "برای باز کردن مدیریت کامل، روی Admin بزنید."
+    )
+    await message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 
 class AdminOpsStates(StatesGroup):
@@ -196,7 +360,11 @@ async def _render_admin_card(message: Message, admin_id: int) -> bool:
             InlineKeyboardButton(text="♻️ ریست مصرف", callback_data=f"gops:resetusage:{admin.id}"),
             InlineKeyboardButton(text="🔄 بروزرسانی", callback_data=f"gops:admin:{admin.id}"),
         ],
-        [InlineKeyboardButton(text="🔎 جستجوی Admin", callback_data="gops:search")],
+        [
+            InlineKeyboardButton(text="👥 لیست Adminها", callback_data="gops:admins:0"),
+            InlineKeyboardButton(text="🔎 جستجو", callback_data="gops:search"),
+        ],
+        [InlineKeyboardButton(text="🧭 مرکز عملیات", callback_data="gops:home")],
     ]
     await message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
     return True
@@ -306,6 +474,7 @@ async def _render_search_results(message: Message, query: str) -> None:
             text=f"{label[:35]} · {admin.user_id}",
             callback_data=f"gops:admin:{admin.id}",
         )])
+    rows.append([InlineKeyboardButton(text="🧭 مرکز عملیات", callback_data="gops:home")])
     await message.answer(
         f"🔎 {len(admins)} نتیجه پیدا شد:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
@@ -314,31 +483,136 @@ async def _render_search_results(message: Message, query: str) -> None:
 
 @group_ops_router.message(Command("setup_group"))
 async def setup_group(message: Message):
+    """Backward-compatible bootstrap; button flow is the primary UX."""
     if await _deny_event(message):
         return
-    if message.chat.type != ChatType.SUPERGROUP or not bool(getattr(message.chat, "is_forum", False)):
-        await message.answer("این دستور باید داخل Supergroup با Topics فعال اجرا شود.")
-        return
     try:
-        await group_ops_service.configure_group(message.chat.id, message.from_user.id)
-        topics = await group_ops_service.setup_topics(message.bot, message.chat.id)
+        topics = await _bootstrap_ops_group(message.bot, message.chat.id, message.from_user.id)
     except Exception as exc:
         await message.answer(
-            "❌ ساخت تاپیک‌ها ناموفق بود. بات باید Admin گروه باشد و مجوز Manage Topics داشته باشد.\n"
+            "❌ راه‌اندازی گروه ناموفق بود.\n"
             f"<code>{escape(str(exc))}</code>"
         )
         return
-    await group_ops_service.audit(
-        actor_id=message.from_user.id,
-        action="group_ops.configure",
-        subject_type="chat",
-        subject_id=message.chat.id,
-        new_value={"topics": topics},
+    await message.answer(
+        f"✅ Group Ops آماده شد؛ <b>{len(topics)}</b> تاپیک ثبت شد.",
+        reply_markup=_ops_home_keyboard(),
     )
-    lines = ["✅ <b>گروه مدیریت Wingmarz متصل شد.</b>", ""]
-    for key, title in TOPICS.items():
-        lines.append(f"• {title}: <code>{topics.get(key)}</code>")
-    await message.answer("\n".join(lines))
+
+
+@group_ops_router.callback_query(F.data == "gops:home")
+async def ops_home(callback: CallbackQuery, state: FSMContext):
+    if await _deny_event(callback):
+        return
+    await state.clear()
+    await callback.message.edit_text(_ops_home_text(), reply_markup=_ops_home_keyboard())
+    await callback.answer()
+
+
+@group_ops_router.callback_query(F.data == "gops:connect")
+async def ops_connect(callback: CallbackQuery, state: FSMContext):
+    if await _deny_event(callback):
+        return
+    await state.clear()
+    await callback.message.answer(
+        "🔗 <b>اتصال گروه مدیریت</b>\n\n"
+        "دکمه زیر را بزنید و Supergroupای که Topics آن روشن است انتخاب کنید. "
+        "بات باید از قبل داخل همان گروه Admin و دارای Manage Topics باشد.",
+        reply_markup=_ops_group_picker_keyboard(),
+    )
+    await callback.answer()
+
+
+@group_ops_router.message(F.chat_shared)
+async def ops_chat_shared(message: Message):
+    if await _deny_event(message):
+        return
+    shared = getattr(message, "chat_shared", None)
+    if not shared or int(getattr(shared, "request_id", -1)) != OPS_CHAT_REQUEST_ID:
+        return
+    try:
+        topics = await _bootstrap_ops_group(
+            message.bot,
+            int(shared.chat_id),
+            message.from_user.id,
+        )
+    except Exception as exc:
+        await message.answer(
+            "❌ اتصال گروه انجام نشد.\n"
+            f"<code>{escape(str(exc))}</code>",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        return
+    await message.answer(
+        f"✅ گروه مدیریت متصل شد و <b>{len(topics)}</b> تاپیک آماده است.",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    await message.answer(_ops_home_text(), reply_markup=_ops_home_keyboard())
+
+
+@group_ops_router.my_chat_member()
+async def ops_auto_bootstrap(event: ChatMemberUpdated):
+    """Auto-bootstrap when a sudo user promotes the bot in a forum group."""
+    actor = getattr(event, "from_user", None)
+    chat = getattr(event, "chat", None)
+    if not actor or not _staff(actor.id) or not chat:
+        return
+    chat_type = str(getattr(getattr(chat, "type", None), "value", getattr(chat, "type", "")))
+    if chat_type != "supergroup" or not bool(getattr(chat, "is_forum", False)):
+        return
+    new_member = getattr(event, "new_chat_member", None)
+    if _member_status_value(new_member) != "administrator":
+        return
+    try:
+        await _bootstrap_ops_group(event.bot, chat.id, actor.id)
+    except Exception:
+        return
+
+
+@group_ops_router.callback_query(F.data == "gops:status")
+async def ops_status_callback(callback: CallbackQuery):
+    if await _deny_event(callback):
+        return
+    await _render_ops_status(callback.message)
+    await callback.answer()
+
+
+@group_ops_router.callback_query(F.data == "gops:repair")
+async def ops_repair(callback: CallbackQuery):
+    if await _deny_event(callback):
+        return
+    cfg = await group_ops_service.get_config()
+    if not cfg:
+        await callback.answer("اول گروه را با دکمه اتصال انتخاب کنید.", show_alert=True)
+        return
+    try:
+        topics = await group_ops_service.setup_topics(callback.bot, int(cfg["chat_id"]))
+        await _send_ops_home(callback.bot, int(cfg["chat_id"]), pin=False)
+    except Exception as exc:
+        await callback.answer(f"خطا: {str(exc)[:160]}", show_alert=True)
+        return
+    await callback.answer(f"تاپیک‌ها آماده‌اند: {len(topics)}/{len(TOPICS)}", show_alert=True)
+    await _render_ops_status(callback.message)
+
+
+@group_ops_router.callback_query(F.data.startswith("gops:admins:"))
+async def ops_admin_list(callback: CallbackQuery, state: FSMContext):
+    if await _deny_event(callback):
+        return
+    await state.clear()
+    try:
+        page = int((callback.data or "").rsplit(":", 1)[-1])
+    except ValueError:
+        page = 0
+    await _render_admin_list(callback.message, page)
+    await callback.answer()
+
+
+@group_ops_router.callback_query(F.data == "gops:noop")
+async def ops_noop(callback: CallbackQuery):
+    if await _deny_event(callback):
+        return
+    await callback.answer()
 
 
 @group_ops_router.message(Command("group_status"))
@@ -348,7 +622,7 @@ async def group_status(message: Message):
     cfg = await group_ops_service.get_config()
     topics = await group_ops_service.topics()
     if not cfg:
-        await message.answer("گروه مدیریت هنوز تنظیم نشده. /setup_group را داخل Forum Group اجرا کنید.")
+        await message.answer("گروه مدیریت هنوز تنظیم نشده. از دکمه «🧭 مرکز عملیات» → «اتصال/تعویض گروه» استفاده کنید.")
         return
     await message.answer(
         "🧭 <b>وضعیت Group Ops</b>\n\n"

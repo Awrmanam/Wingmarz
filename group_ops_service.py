@@ -146,6 +146,13 @@ class GroupOpsService:
             result[key] = thread_id
         return result
 
+    async def clear_topics(self) -> None:
+        """Forget stored thread IDs so the configured forum can be rebuilt."""
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            await conn.execute("DELETE FROM group_ops_topics")
+            await conn.commit()
+
     async def topics(self) -> dict[str, dict[str, Any]]:
         await self.ensure_schema()
         async with aiosqlite.connect(self.db_path) as conn:

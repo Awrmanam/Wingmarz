@@ -5,7 +5,14 @@ import pytest
 
 import trust_service as trust_module
 from group_ops_service import GroupOpsService
-from handlers.group_ops import _domain_value, _merge_subscription_settings, _support_value
+from handlers.group_ops import (
+    OPS_CHAT_REQUEST_ID,
+    _domain_value,
+    _merge_subscription_settings,
+    _ops_group_picker_keyboard,
+    _ops_home_keyboard,
+    _support_value,
+)
 from rebecca_admin_ops import _percent_rank, _time_rank
 from rebecca_api import RebeccaAPI
 import rebecca_renewal as renewal
@@ -270,3 +277,57 @@ def test_full_rebecca_renewal_resets_usage(monkeypatch):
     assert result.admin_id == 8
     reset.assert_awaited_once_with("seller2")
     renewal.db.update_order.assert_awaited_once_with(92, status="approved", approved_by=999)
+
+
+
+def test_group_ops_button_first_keyboards_are_valid():
+    home = _ops_home_keyboard()
+    callbacks = [
+        button.callback_data
+        for row in home.inline_keyboard
+        for button in row
+        if button.callback_data
+    ]
+    assert "gops:admins:0" in callbacks
+    assert "gops:search" in callbacks
+    assert "gops:connect" in callbacks
+    assert "gops:status" in callbacks
+
+    picker = _ops_group_picker_keyboard()
+    button = picker.keyboard[0][0]
+    assert button.request_chat is not None
+    assert button.request_chat.request_id == OPS_CHAT_REQUEST_ID
+    assert button.request_chat.chat_is_channel is False
+    assert button.request_chat.chat_is_forum is True
+    assert button.request_chat.bot_is_member is True
+
+
+def test_group_ops_can_forget_stale_topic_ids(tmp_path):
+    service = GroupOpsService(str(tmp_path / "ops.db"))
+
+    async def scenario():
+        await service.ensure_schema()
+        async with __import__("aiosqlite").connect(service.db_path) as conn:
+            await conn.execute(
+                "INSERT INTO group_ops_topics(topic_key,title,thread_id) VALUES(?,?,?)",
+                ("admins", "Admins", 123),
+            )
+            await conn.commit()
+        assert "admins" in await service.topics()
+        await service.clear_topics()
+        assert await service.topics() == {}
+
+    run(scenario())
+
+
+def test_sudo_dashboard_exposes_operations_center():
+    from handlers.sudo_handlers import get_sudo_keyboard
+
+    kb = get_sudo_keyboard()
+    callbacks = [
+        button.callback_data
+        for row in kb.inline_keyboard
+        for button in row
+        if button.callback_data
+    ]
+    assert "gops:home" in callbacks

@@ -305,8 +305,9 @@ def get_sudo_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text=config.BUTTONS["backup_menu"], callback_data="sudo_menu_backup"),
             InlineKeyboardButton(text="📊 گزارشات", callback_data="sudo_menu_reports")
         ],
-        # Row 3: Broadcast
+        # Row 3: Operations + broadcast
         [
+            InlineKeyboardButton(text="🧭 مرکز عملیات", callback_data="gops:home"),
             InlineKeyboardButton(text=config.BUTTONS["broadcast_menu"], callback_data="sudo_menu_broadcast")
         ]
     ])
