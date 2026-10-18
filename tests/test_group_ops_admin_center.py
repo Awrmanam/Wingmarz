@@ -334,11 +334,27 @@ def test_sudo_dashboard_exposes_operations_center():
 
 
 
-def test_canonical_operational_dashboard_contains_group_ops(monkeypatch):
+def test_canonical_operational_dashboard_is_clean_and_group_ops_reachable(monkeypatch):
     from aiogram.types import InlineKeyboardButton
     from handlers import operations
 
-    assert any(spec[0] == "gops:home" for spec in operations.MENU_SPECS)
+    # Home is task-based instead of exposing every low-level feature at once.
+    assert len(operations.MENU_SPECS) == 8
+    assert {spec[0] for spec in operations.MENU_SPECS} == {
+        "ops:hub:panels",
+        "ops:hub:sales",
+        "ops:hub:finance",
+        "ops:hub:access",
+        "ops:hub:users",
+        "ops:hub:monitor",
+        "ops:hub:settings",
+        "ops:hub:content",
+    }
+    assert any(
+        item[0] == "gops:home"
+        for hub in operations.HUB_MENUS.values()
+        for item in hub["items"]
+    )
 
     async def visible(_callback):
         return True
@@ -360,7 +376,8 @@ def test_canonical_operational_dashboard_contains_group_ops(monkeypatch):
         for item in row
         if item.callback_data
     ]
-    assert "gops:home" in callbacks
-    # Dynamic layout must render every visible menu spec, even after new items
-    # are appended to MENU_SPECS.
-    assert len(callbacks) == len(operations.MENU_SPECS)
+    assert "gops:admins:0" in callbacks
+    assert "cc:orders:0" in callbacks
+    assert "ops:hub:panels" in callbacks
+    assert "ops:hub:content" in callbacks
+    assert len(callbacks) == len(operations.MENU_SPECS) + len(operations.QUICK_ACTIONS)
