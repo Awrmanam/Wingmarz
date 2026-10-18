@@ -628,6 +628,8 @@ async def set_expire_value(message: Message, state: FSMContext):
         await rebecca_api.update_admin_fields(str(admin.marzban_username), {"expire": expire})
         if days > 0:
             await db.update_admin(admin_id, validity_days=max(1, days), max_total_time=days * 86400)
+        else:
+            await db.update_admin(admin_id, validity_days=36500, max_total_time=0)
         await group_ops_service.audit(
             actor_id=message.from_user.id, action="rebecca.expire",
             subject_type="admin", subject_id=admin_id, old_value=before, new_value=expire,
