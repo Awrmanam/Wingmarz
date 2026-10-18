@@ -13,6 +13,8 @@ from models.schemas import AdminModel, UsageReportModel
 from utils.notify import format_traffic_size, format_time_duration
 from marzban_api import marzban_api
 from rebecca_api import rebecca_api, RebeccaAPIError
+from group_ops_service import group_ops_service
+from trust_service import trust_service
 from datetime import datetime
 from aiogram.exceptions import TelegramBadRequest
 
@@ -899,6 +901,7 @@ async def admin_renew_users_amount(callback: CallbackQuery, state: FSMContext):
     price = users * rates['per_user_toman']
     order_id = await db.add_order(callback.from_user.id, plan_id=0, price_snapshot=price, plan_name_snapshot=f"افزایش کاربر +{users}")
     await db.update_order(order_id, order_type="renew", target_admin_id=admin_id, delta_users=users)
+    await _mirror_admin_order_created(callback.bot, order_id)
     cards = await db.get_cards(only_active=True)
     lines = [
         f"✅ سفارش تمدید ثبت شد.\n\nشناسه سفارش: {order_id}\nافزایش کاربر: +{users}\nقیمت: {price:,} تومان\n",
