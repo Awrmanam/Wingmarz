@@ -88,6 +88,12 @@ class GroupOpsService:
     async def configure_group(self, chat_id: int, actor_id: int) -> None:
         await self.ensure_schema()
         async with aiosqlite.connect(self.db_path) as conn:
+            async with conn.execute("SELECT chat_id FROM group_ops_config WHERE id=1") as cur:
+                previous = await cur.fetchone()
+            # Telegram thread IDs are only meaningful inside their original chat.
+            # Rebinding to a different forum must never reuse the old topic IDs.
+            if previous and int(previous[0]) != int(chat_id):
+                await conn.execute("DELETE FROM group_ops_topics")
             await conn.execute(
                 """
                 INSERT INTO group_ops_config(id,chat_id,enabled,created_by,updated_at)
