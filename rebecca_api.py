@@ -147,6 +147,90 @@ class RebeccaAPI:
             raise RebeccaAPIError("Rebecca discovery username is required")
         return await self._request("GET", f"/api/user/{quote(requested, safe='')}")
 
+    async def update_admin_fields(self, username: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Update supported Rebecca admin fields and return the verified response."""
+        username = str(username or "").strip()
+        if not username:
+            raise RebeccaAPIError("Rebecca admin username is required")
+        if not isinstance(payload, dict) or not payload:
+            raise RebeccaAPIError("Rebecca admin update payload is required")
+        data = await self._request(
+            "PUT",
+            f"/api/admin/{quote(username, safe='')}",
+            json=payload,
+        )
+        admin = data.get("admin", data) if isinstance(data, dict) else {}
+        if not isinstance(admin, dict) or admin.get("username") != username:
+            raise RebeccaAPIError("Rebecca admin update verification failed")
+        return admin
+
+    async def get_admin_users_summary(self, username: str, *, limit: int = 1) -> Dict[str, Any]:
+        """Return Rebecca's admin-scoped user summary/counts."""
+        username = str(username or "").strip()
+        if not username:
+            raise RebeccaAPIError("Rebecca admin username is required")
+        data = await self._request(
+            "GET",
+            "/api/users",
+            params={"admin": username, "limit": max(1, min(int(limit), 100)), "sort": "username"},
+        )
+        if not isinstance(data, dict):
+            raise RebeccaAPIError("Rebecca returned invalid admin user summary")
+        return data
+
+    async def get_subscription_settings_bundle(self) -> Dict[str, Any]:
+        data = await self._request("GET", "/api/settings/subscriptions")
+        if not isinstance(data, dict):
+            raise RebeccaAPIError("Rebecca returned invalid subscription settings")
+        return data
+
+    async def get_admin_subscription_settings(self, username: str) -> Dict[str, Any]:
+        username = str(username or "").strip()
+        bundle = await self.get_subscription_settings_bundle()
+        admins = bundle.get("admins", [])
+        for item in admins if isinstance(admins, list) else []:
+            if isinstance(item, dict) and item.get("username") == username:
+                return item
+        # Fall back to the admin record because recent Rebecca versions expose
+        # these fields on /api/admins as well.
+        admin = await self.find_admin(username)
+        if not admin:
+            raise RebeccaAPIError("Rebecca admin subscription settings not found", status_code=404)
+        return {
+            "id": admin.get("id"),
+            "username": username,
+            "subscription_domain": admin.get("subscription_domain"),
+            "subscription_settings": admin.get("subscription_settings") or {},
+        }
+
+    async def update_admin_subscription_settings(
+        self,
+        admin_id: int,
+        payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if int(admin_id) <= 0:
+            raise RebeccaAPIError("Rebecca admin id is required")
+        if not isinstance(payload, dict) or not payload:
+            raise RebeccaAPIError("Rebecca subscription update payload is required")
+        data = await self._request(
+            "PUT",
+            f"/api/settings/subscriptions/admins/{int(admin_id)}",
+            json=payload,
+        )
+        if not isinstance(data, dict):
+            raise RebeccaAPIError("Rebecca returned invalid admin subscription settings")
+        return data
+
+    async def reset_admin_usage(self, username: str) -> Dict[str, Any]:
+        username = str(username or "").strip()
+        if not username:
+            raise RebeccaAPIError("Rebecca admin username is required")
+        data = await self._request(
+            "POST",
+            f"/api/admin/usage/reset/{quote(username, safe='')}",
+        )
+        return data if isinstance(data, dict) else {}
+
     async def get_admin_usage(self, username: str) -> int:
         """Return Rebecca's effective usage, whose official response is a JSON integer."""
         data = await self._request("GET", f"/api/admin/usage/{quote(username, safe='')}")
