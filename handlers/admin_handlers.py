@@ -22,6 +22,28 @@ logger = logging.getLogger(__name__)
 admin_router = Router()
 
 
+async def _mirror_admin_order_created(bot, order_id: int) -> None:
+    """Mirror reseller purchase/renew orders to the shared operations topic."""
+    try:
+        order = await db.get_order_by_id(int(order_id))
+        if not order:
+            return
+        if not await group_ops_service.claim_event(f"order:{int(order_id)}:created"):
+            return
+        await group_ops_service.send_text(
+            bot,
+            "orders",
+            "🛒 <b>سفارش نماینده ثبت شد</b>\n\n"
+            f"🧾 سفارش: <code>#{int(order_id)}</code>\n"
+            f"👤 User ID: <code>{int(order.get('user_id') or 0)}</code>\n"
+            f"📦 {escape(str(order.get('plan_name_snapshot') or 'سفارش پنل'))}\n"
+            f"💵 <b>{int(order.get('price_snapshot') or 0):,}</b> تومان\n"
+            f"نوع: <b>{escape(str(order.get('order_type') or 'purchase'))}</b>",
+        )
+    except Exception:
+        pass
+
+
 def get_admin_keyboard() -> InlineKeyboardMarkup:
     """Get admin main keyboard."""
     buttons = [
@@ -472,6 +494,7 @@ async def admin_order(callback: CallbackQuery):
     if not order_id:
         await callback.answer("خطا در ثبت سفارش.", show_alert=True)
         return
+    await _mirror_admin_order_created(callback.bot, order_id)
     price_txt = f"{plan.price:,}"
     # Show manual payment cards
     cards = await db.get_cards(only_active=True)
@@ -706,6 +729,7 @@ async def admin_full_renew_plan_selected(callback: CallbackQuery):
         await callback.answer("خطا در ثبت سفارش تمدید.", show_alert=True)
         return
     await db.update_order(order_id, order_type="renew", target_admin_id=admin_id, apply_as_reset=1)
+    await _mirror_admin_order_created(callback.bot, order_id)
     # Show payment instructions
     cards = await db.get_cards(only_active=True)
     lines = [
@@ -765,6 +789,7 @@ async def admin_renew_traffic_amount(callback: CallbackQuery, state: FSMContext)
     delta_bytes = gb * 1024 * 1024 * 1024
     order_id = await db.add_order(callback.from_user.id, plan_id=0, price_snapshot=price, plan_name_snapshot=f"تمدید حجم +{gb}GB")
     await db.update_order(order_id, order_type="renew", target_admin_id=admin_id, delta_traffic_bytes=delta_bytes)
+    await _mirror_admin_order_created(callback.bot, order_id)
     # نمایش کارت‌ها و دریافت رسید
     cards = await db.get_cards(only_active=True)
     lines = [
@@ -820,6 +845,7 @@ async def admin_renew_time_amount(callback: CallbackQuery, state: FSMContext):
     delta_seconds = days * 24 * 60 * 60
     order_id = await db.add_order(callback.from_user.id, plan_id=0, price_snapshot=price, plan_name_snapshot=f"تمدید زمان +{days} روز")
     await db.update_order(order_id, order_type="renew", target_admin_id=admin_id, delta_time_seconds=delta_seconds)
+    await _mirror_admin_order_created(callback.bot, order_id)
     cards = await db.get_cards(only_active=True)
     lines = [
         f"✅ سفارش تمدید ثبت شد.\n\nشناسه سفارش: {order_id}\nافزایش زمان: +{days} روز\nقیمت: {price:,} تومان\n",
