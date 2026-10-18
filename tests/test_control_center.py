@@ -11,7 +11,7 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def test_control_center_has_requested_sections(tmp_path, monkeypatch):
+def test_control_center_has_clean_task_sections(tmp_path, monkeypatch):
     db_path = str(tmp_path / "center.db")
     monkeypatch.setattr(config, "DATABASE_PATH", db_path)
     engine = StyleEngine(db_path)
@@ -23,36 +23,30 @@ def test_control_center_has_requested_sections(tmp_path, monkeypatch):
     callbacks = [button.callback_data for row in keyboard.inline_keyboard for button in row]
 
     expected_labels = [
-        "فروش و تعرفه‌ها",
-        "مرکز پنل‌ها",
-        "سفارش‌ها",
-        "دسته‌بندی پلن‌ها",
-        "کاربران",
-        "مالی و پرداخت",
-        "تخفیف‌ها",
-        "کانفیگ تست",
-        "ادمین‌های ربات",
-        "آمار و گزارشات",
-        "اطلاع‌رسانی",
-        "پشتیبانی و تیکت",
-        "ایموجی و استایل",
-        "مدیریت متن‌ها",
-        "دکمه‌ها و منوها",
-        "ابزارها و بکاپ",
-        "تنظیمات",
+        "مدیریت ادمین‌ها",
+        "سفارش‌های در انتظار",
+        "پنل‌ها و ادمین‌ها",
+        "فروش و سفارش‌ها",
+        "مالی و پرداخت‌ها",
+        "KYC و دسترسی‌ها",
+        "کاربران و پشتیبانی",
+        "گزارش و مانیتورینگ",
+        "تنظیمات و ابزارها",
+        "ظاهر و محتوا",
     ]
     for label in expected_labels:
         assert any(label in value for value in labels)
 
-    assert "sudo_menu_sales" in callbacks
-    assert "sudo_menu_panels" in callbacks
+    assert "gops:admins:0" in callbacks
     assert "cc:orders:0" in callbacks
-    assert "cc:users:0" in callbacks
-    assert "cc:stats" in callbacks
-    assert "cc:tickets:0" in callbacks
-    assert "style:menu" in callbacks
-    assert "sudo_menu_backup" in callbacks
-    assert "sudo_menu_settings" in callbacks
+    assert "ops:hub:panels" in callbacks
+    assert "ops:hub:sales" in callbacks
+    assert "ops:hub:finance" in callbacks
+    assert "ops:hub:access" in callbacks
+    assert "ops:hub:users" in callbacks
+    assert "ops:hub:monitor" in callbacks
+    assert "ops:hub:settings" in callbacks
+    assert "ops:hub:content" in callbacks
 
 
 def test_ticket_schema_is_migration_safe(tmp_path, monkeypatch):
