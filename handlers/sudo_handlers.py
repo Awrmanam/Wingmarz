@@ -14,6 +14,7 @@ import secrets
 import time
 import config
 from order_tracking import track_approval
+from group_ops_service import group_ops_service
 from database import db
 from models.schemas import AdminModel, LogModel
 from utils.notify import (
@@ -3936,6 +3937,7 @@ async def manage_panel_selected(callback: CallbackQuery):
     )
     toggle_text = "🔓 معاف کردن از KYC" if kyc_required else "🔒 اجباری کردن KYC"
     kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🧭 مرکز عملیات", callback_data=f"gops:admin:{admin.id}")],
         [InlineKeyboardButton(text="ℹ️ اطلاعات", callback_data=f"manage_action_info_{admin.id}")],
         [InlineKeyboardButton(text=toggle_text, callback_data=f"kycadmin:toggle:{admin.id}")],
         [InlineKeyboardButton(text="🔄 فعالسازی", callback_data=f"manage_action_activate_{admin.id}"), InlineKeyboardButton(text="⛔ غیرفعالسازی", callback_data=f"manage_action_deactivate_{admin.id}")],
@@ -4516,7 +4518,27 @@ async def order_approve(callback: CallbackQuery):
     order_type = (o.get("order_type") or "").lower()
     if order_type == "renew":
         if config.PANEL_PROVIDER == "rebecca":
-            await callback.answer("تمدید Rebecca در این نسخه پشتیبانی نمی‌شود.", show_alert=True)
+            from rebecca_renewal import RebeccaRenewalError, apply_rebecca_renewal
+            try:
+                result = await apply_rebecca_renewal(o, callback.from_user.id)
+            except (RebeccaRenewalError, RebeccaAPIError) as exc:
+                await callback.answer(f"تمدید Rebecca انجام نشد: {str(exc)[:140]}", show_alert=True)
+                return
+            try:
+                await callback.bot.send_message(int(result.user_id), result.message)
+            except Exception:
+                pass
+            await group_ops_service.send_text(
+                callback.bot,
+                "orders",
+                f"✅ <b>تمدید Rebecca تأیید و اعمال شد</b>\n\n"
+                f"🧾 سفارش: <code>#{oid}</code>\n"
+                f"👤 User ID: <code>{result.user_id}</code>\n"
+                f"🧩 Admin ID: <code>{result.admin_id}</code>\n"
+                f"{result.message}",
+            )
+            await callback.message.edit_text("✅ سفارش تأیید و تمدید Rebecca اعمال شد.")
+            await callback.answer("تمدید انجام شد ✅")
             return
         # Apply renewal on target admin
         target_admin_id = o.get("target_admin_id")
@@ -4805,6 +4827,20 @@ async def order_approve(callback: CallbackQuery):
         await bot.send_message(chat_id=o['user_id'], text=msg, parse_mode="HTML")
     except Exception as e:
         logger.error(f"Failed to notify user {o['user_id']} for order {oid}: {e}")
+    await group_ops_service.audit(
+        actor_id=callback.from_user.id,
+        action="order.approve",
+        subject_type="order",
+        subject_id=oid,
+        new_value={"status": "approved", "issued_admin_id": (issued_admin.id if issued_admin else None)},
+    )
+    await group_ops_service.send_text(
+        callback.bot,
+        "orders",
+        f"✅ <b>سفارش #{oid} تأیید و پنل صادر شد.</b>\n"
+        f"👤 <code>{int(o['user_id'])}</code>\n"
+        f"🔐 <code>{escape(str(new_username))}</code>",
+    )
     await callback.message.edit_text("✅ سفارش تأیید و پنل صادر شد.")
     await callback.answer()
 
@@ -4831,6 +4867,18 @@ async def order_reject(callback: CallbackQuery):
         await callback.bot.send_message(chat_id=o['user_id'], text=config.MESSAGES["order_rejected_user"])
     except Exception as e:
         logger.error(f"Failed to notify user {o['user_id']} about order rejection {oid}: {e}")
+    await group_ops_service.audit(
+        actor_id=callback.from_user.id,
+        action="order.reject",
+        subject_type="order",
+        subject_id=oid,
+        new_value={"status": "rejected", "user_id": int(o["user_id"])},
+    )
+    await group_ops_service.send_text(
+        callback.bot,
+        "orders",
+        f"❌ <b>سفارش #{oid} رد شد.</b>\n👤 <code>{int(o['user_id'])}</code>",
+    )
     await callback.message.edit_text("⛔ سفارش رد شد.")
     await callback.answer()
 
