@@ -331,3 +331,36 @@ def test_sudo_dashboard_exposes_operations_center():
         if button.callback_data
     ]
     assert "gops:home" in callbacks
+
+
+
+def test_canonical_operational_dashboard_contains_group_ops(monkeypatch):
+    from aiogram.types import InlineKeyboardButton
+    from handlers import operations
+
+    assert any(spec[0] == "gops:home" for spec in operations.MENU_SPECS)
+
+    async def visible(_callback):
+        return True
+
+    async def label(_callback, default):
+        return default
+
+    async def button(text, callback_data, **kwargs):
+        return InlineKeyboardButton(text=text, callback_data=callback_data)
+
+    monkeypatch.setattr(operations.operations_service, "menu_is_visible", visible)
+    monkeypatch.setattr(operations, "_menu_label", label)
+    monkeypatch.setattr(operations, "_button", button)
+
+    keyboard = run(operations.build_operational_dashboard_keyboard())
+    callbacks = [
+        item.callback_data
+        for row in keyboard.inline_keyboard
+        for item in row
+        if item.callback_data
+    ]
+    assert "gops:home" in callbacks
+    # Dynamic layout must render every visible menu spec, even after new items
+    # are appended to MENU_SPECS.
+    assert len(callbacks) == len(operations.MENU_SPECS)

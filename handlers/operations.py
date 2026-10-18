@@ -27,6 +27,7 @@ operations_router = Router(name="operations")
 MENU_SPECS = [
     ("sudo_menu_sales", "فروش و تعرفه‌ها", "sales", "🛒"),
     ("sudo_menu_panels", "مرکز پنل‌ها", "panel", "🧩"),
+    ("gops:home", "مرکز عملیات", "tools", "🧭"),
     ("cc:orders:0", "سفارش‌ها", "orders", "🧾"),
     ("sales_manage", "دسته‌بندی پلن‌ها", "plan", "📦"),
     ("cc:users:0", "کاربران", "users", "👥"),
@@ -112,12 +113,9 @@ async def build_operational_dashboard_keyboard() -> InlineKeyboardMarkup:
         rendered.append(await _button(label, callback_data, icon_key=icon_key, fallback=fallback))
 
     rows = []
-    for idx in range(0, 16, 2):
-        row = [item for item in rendered[idx:idx + 2] if item is not None]
-        if row:
-            rows.append(row)
-    if rendered[16] is not None:
-        rows.append([rendered[16]])
+    visible_items = [item for item in rendered if item is not None]
+    for idx in range(0, len(visible_items), 2):
+        rows.append(visible_items[idx:idx + 2])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
