@@ -99,7 +99,6 @@ async def _root(message: Message) -> None:
             "pc:duration:toggle",
             fallback="🗂",
         )],
-        [await _button("🔌 مدیریت سرویس‌های Rebecca", "rebecca_services", fallback="🔌")],
         [await _button("بازگشت", "ops:hub:sales", icon_key="back", fallback="⬅️")],
     ])
     await message.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
