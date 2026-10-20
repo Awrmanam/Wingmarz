@@ -6,6 +6,7 @@ from html import escape
 import json
 import logging
 import re
+import traceback
 from typing import Any
 
 import aiosqlite
@@ -342,12 +343,18 @@ class GroupOpsService:
 
     async def report_error(self, bot, exc: BaseException, *, context: str | None = None) -> bool:
         context_line = f"\n📍 {escape(context)}" if context else ""
+        frames = traceback.extract_tb(exc.__traceback__) if exc.__traceback__ else []
+        location_line = ""
+        if frames:
+            frame = frames[-1]
+            location = f"{frame.filename.rsplit('/', 1)[-1]}:{frame.lineno} · {frame.name}"
+            location_line = f"\n🧭 <code>{escape(location)}</code>"
         return await self.send_text(
             bot,
             "errors",
             (
                 "🐞 <b>خطای Wingmarz</b>"
-                f"{context_line}\n\n"
+                f"{context_line}{location_line}\n\n"
                 f"<code>{escape(self.redact_error(repr(exc)))}</code>"
             ),
         )
