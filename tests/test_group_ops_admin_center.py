@@ -320,7 +320,7 @@ def test_group_ops_can_forget_stale_topic_ids(tmp_path):
     run(scenario())
 
 
-def test_sudo_dashboard_exposes_operations_center():
+def test_legacy_sudo_keyboard_only_bridges_to_canonical_dashboard():
     from handlers.sudo_handlers import get_sudo_keyboard
 
     kb = get_sudo_keyboard()
@@ -330,31 +330,42 @@ def test_sudo_dashboard_exposes_operations_center():
         for button in row
         if button.callback_data
     ]
-    assert "gops:home" in callbacks
+    assert callbacks == ["back_to_main"]
 
 
 
-def test_canonical_operational_dashboard_is_clean_and_group_ops_reachable(monkeypatch):
+def test_canonical_operational_dashboard_is_clean_and_nonduplicated(monkeypatch):
     from aiogram.types import InlineKeyboardButton
     from handlers import operations
 
-    # Home is task-based instead of exposing every low-level feature at once.
-    assert len(operations.MENU_SPECS) == 8
+    assert len(operations.MENU_SPECS) == 6
     assert {spec[0] for spec in operations.MENU_SPECS} == {
         "ops:hub:panels",
         "ops:hub:sales",
         "ops:hub:finance",
-        "ops:hub:access",
-        "ops:hub:users",
+        "ops:hub:customers",
         "ops:hub:monitor",
         "ops:hub:settings",
-        "ops:hub:content",
     }
-    assert any(
-        item[0] == "gops:home"
+
+    visible_callbacks = [
+        item[0]
         for hub in operations.HUB_MENUS.values()
         for item in hub["items"]
-    )
+    ]
+    assert len(visible_callbacks) == len(set(visible_callbacks))
+    for legacy in {
+        "sudo_menu_sales",
+        "sudo_menu_panels",
+        "sudo_menu_reports",
+        "sudo_menu_settings",
+    }:
+        assert legacy not in visible_callbacks
+        assert legacy not in {spec[0] for spec in operations.MENU_SPECS}
+
+    assert "gops:home" in visible_callbacks
+    assert "paygsvcadmin:home" in visible_callbacks
+    assert "rebecca_services" in visible_callbacks
 
     async def visible(_callback):
         return True
@@ -376,8 +387,13 @@ def test_canonical_operational_dashboard_is_clean_and_group_ops_reachable(monkey
         for item in row
         if item.callback_data
     ]
-    assert "gops:admins:0" in callbacks
-    assert "cc:orders:0" in callbacks
-    assert "ops:hub:panels" in callbacks
-    assert "ops:hub:content" in callbacks
-    assert len(callbacks) == len(operations.MENU_SPECS) + len(operations.QUICK_ACTIONS)
+    assert callbacks == [
+        "gops:admins:0",
+        "cc:orders:0",
+        "ops:hub:panels",
+        "ops:hub:sales",
+        "ops:hub:finance",
+        "ops:hub:customers",
+        "ops:hub:monitor",
+        "ops:hub:settings",
+    ]
