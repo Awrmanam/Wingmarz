@@ -1116,7 +1116,7 @@ async def _render_buttons_menu(message: Message) -> None:
     rows = []
     seen_callbacks = set()
     for idx, (callback_data, default, _icon, _fallback) in enumerate(MENU_SPECS):
-        # Two entries intentionally point to sudo_menu_sales; expose one editor row per callback identity.
+        # Keep one editor row per callback identity.
         if callback_data in seen_callbacks:
             continue
         seen_callbacks.add(callback_data)
