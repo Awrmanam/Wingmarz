@@ -1156,6 +1156,40 @@ class Database:
             print(f"Error adding forced channel: {e}")
             return False
 
+    async def update_forced_channel(
+        self,
+        channel_id: int,
+        *,
+        chat_id: Optional[str] = None,
+        title: Optional[str] = None,
+        invite_link: Optional[str] = None,
+    ) -> bool:
+        try:
+            fields = []
+            values = []
+            if chat_id is not None:
+                fields.append("chat_id = ?")
+                values.append(str(chat_id))
+            if title is not None:
+                fields.append("title = ?")
+                values.append(title)
+            if invite_link is not None:
+                fields.append("invite_link = ?")
+                values.append(invite_link or None)
+            if not fields:
+                return True
+            values.append(int(channel_id))
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute(
+                    f"UPDATE forced_channels SET {', '.join(fields)}, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                    tuple(values),
+                )
+                await db.commit()
+                return True
+        except Exception as e:
+            print(f"Error updating forced channel: {e}")
+            return False
+
     async def get_forced_channels(self, only_active: bool = True) -> List[Dict[str, Any]]:
         try:
             async with aiosqlite.connect(self.db_path) as db:
