@@ -4926,6 +4926,10 @@ async def order_approve(callback: CallbackQuery):
                     )
             except Exception:
                 pass
+            await _edit_receipt_review_message(
+                callback,
+                "✅ <b>پرداخت تأیید شد</b>\n🟡 منتظر KYC کاربر",
+            )
             await callback.answer("پرداخت تأیید شد؛ منتظر KYC", show_alert=True)
             return
 
