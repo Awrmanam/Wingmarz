@@ -87,7 +87,7 @@ async def _menu_keyboard() -> InlineKeyboardMarkup:
             await style_engine.styled_button("Text Overrides", icon_key="text", fallback="📝", callback_data="style:aliases"),
         ],
         [await style_engine.styled_button("پیش‌نمایش", icon_key="preview", fallback="👁", callback_data="style:preview")],
-        [await style_engine.styled_button("بازگشت", icon_key="back", fallback="⬅️", callback_data="back_to_main")],
+        [await style_engine.styled_button("بازگشت", icon_key="back", fallback="⬅️", callback_data="ops:hub:settings")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
