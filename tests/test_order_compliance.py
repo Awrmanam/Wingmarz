@@ -6,6 +6,7 @@ import pytest
 from order_compliance import (
     KYC_APPROVED,
     KYC_PENDING,
+    KYC_SUBMITTED,
     KYC_REJECTED,
     PAYMENT_APPROVED,
     PAYMENT_RECEIPT,
@@ -115,5 +116,31 @@ def test_paid_pending_kyc_expires_to_refund_queue(tmp_path):
 
         # Idempotent: it must not enqueue the same refund twice.
         assert await service.expire_overdue_kyc(48) == []
+
+    run(scenario())
+
+
+
+def test_submitted_kyc_does_not_timeout_while_waiting_for_review(tmp_path):
+    path = str(tmp_path / "orders.db")
+    service = OrderComplianceService(path)
+
+    async def scenario():
+        await service.ensure_order(16, 60, kyc_required=True)
+        await service.mark_receipt_submitted(16, 60)
+        await service.approve_payment(16, 999, identity_approved=False)
+        await service.mark_user_kyc_submitted(60)
+
+        async with aiosqlite.connect(path) as conn:
+            await conn.execute(
+                "UPDATE order_compliance SET payment_reviewed_at=datetime('now','-72 hours') WHERE order_id=16"
+            )
+            await conn.commit()
+
+        gate = await service.get(16)
+        assert gate.kyc_state == KYC_SUBMITTED
+        assert await service.expire_overdue_kyc(48) == []
+        gate = await service.get(16)
+        assert gate.refund_state == "none"
 
     run(scenario())
