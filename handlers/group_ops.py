@@ -42,26 +42,19 @@ ADMIN_PAGE_SIZE = 8
 def _ops_home_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="👥 لیست ادمین‌ها", callback_data="gops:admins:0"),
-            InlineKeyboardButton(text="🔎 جستجوی ادمین", callback_data="gops:search"),
-        ],
-        [
             InlineKeyboardButton(text="🔗 اتصال/تعویض گروه", callback_data="gops:connect"),
             InlineKeyboardButton(text="🧱 تکمیل تاپیک‌ها", callback_data="gops:repair"),
         ],
-        [
-            InlineKeyboardButton(text="📊 وضعیت Group Ops", callback_data="gops:status"),
-            InlineKeyboardButton(text="🔄 بروزرسانی", callback_data="gops:home"),
-        ],
-        [InlineKeyboardButton(text="🔙 منوی اصلی", callback_data="back_to_main")],
+        [InlineKeyboardButton(text="📊 وضعیت Group Ops", callback_data="gops:status")],
+        [InlineKeyboardButton(text="🏠 بازگشت به داشبورد", callback_data="back_to_main")],
     ])
 
 
 def _ops_home_text() -> str:
     return (
-        "🧭 <b>مرکز عملیات Wingmarz</b>\n\n"
-        "مدیریت روزمره از همین دکمه‌ها انجام می‌شود؛ "
-        "برای مدیریت Admin دیگر نیازی به نوشتن دستور ندارید."
+        "🧭 <b>Group Ops</b>\n\n"
+        "این بخش فقط برای اتصال گروه مدیریت، ساخت تاپیک‌ها و بررسی سلامت گزارش‌دهی است. "
+        "مدیریت ادمین‌ها از بخش «پنل‌ها و ادمین‌ها» انجام می‌شود."
     )
 
 
@@ -183,7 +176,7 @@ async def _render_admin_list(message: Message, page: int = 0) -> None:
     if nav:
         rows.append(nav)
     rows.append([InlineKeyboardButton(text="🔎 جستجوی دقیق", callback_data="gops:search")])
-    rows.append([InlineKeyboardButton(text="🧭 مرکز عملیات", callback_data="gops:home")])
+    rows.append([InlineKeyboardButton(text="⬅️ پنل‌ها و ادمین‌ها", callback_data="ops:hub:panels")])
 
     text = (
         "👥 <b>لیست Adminها</b>\n\n"
@@ -364,7 +357,7 @@ async def _render_admin_card(message: Message, admin_id: int) -> bool:
             InlineKeyboardButton(text="👥 لیست Adminها", callback_data="gops:admins:0"),
             InlineKeyboardButton(text="🔎 جستجو", callback_data="gops:search"),
         ],
-        [InlineKeyboardButton(text="🧭 مرکز عملیات", callback_data="gops:home")],
+        [InlineKeyboardButton(text="⬅️ پنل‌ها و ادمین‌ها", callback_data="ops:hub:panels")],
     ]
     await message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
     return True
@@ -474,7 +467,7 @@ async def _render_search_results(message: Message, query: str) -> None:
             text=f"{label[:35]} · {admin.user_id}",
             callback_data=f"gops:admin:{admin.id}",
         )])
-    rows.append([InlineKeyboardButton(text="🧭 مرکز عملیات", callback_data="gops:home")])
+    rows.append([InlineKeyboardButton(text="⬅️ پنل‌ها و ادمین‌ها", callback_data="ops:hub:panels")])
     await message.answer(
         f"🔎 {len(admins)} نتیجه پیدا شد:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),

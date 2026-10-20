@@ -147,6 +147,7 @@ BUTTONS: tuple[ButtonDef, ...] = (
     ButtonDef("admin.dashboard.hub_panels", "admin.dashboard", "پنل‌ها و ادمین‌ها", "ops:hub:panels", rank=1),
     ButtonDef("admin.dashboard.hub_sales", "admin.dashboard", "فروش و سفارش‌ها", "ops:hub:sales", rank=2),
     ButtonDef("admin.dashboard.hub_finance", "admin.dashboard", "مالی و پرداخت‌ها", "ops:hub:finance", rank=3),
+    ButtonDef("admin.dashboard.hub_customers", "admin.dashboard", "کاربران و دسترسی‌ها", "ops:hub:customers", rank=4),
     ButtonDef("admin.dashboard.hub_access", "admin.dashboard", "KYC و دسترسی‌ها", "ops:hub:access", rank=4),
     ButtonDef("admin.dashboard.hub_users", "admin.dashboard", "کاربران و پشتیبانی", "ops:hub:users", rank=5),
     ButtonDef("admin.dashboard.hub_monitor", "admin.dashboard", "گزارش و مانیتورینگ", "ops:hub:monitor", rank=6),

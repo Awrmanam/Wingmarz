@@ -91,7 +91,7 @@ def _service_menu_keyboard(services) -> InlineKeyboardMarkup:
             )
         ])
     rows.append([InlineKeyboardButton(text="➕ افزودن سرویس", callback_data="rsvc:add")])
-    rows.append([InlineKeyboardButton(text="⬅️ فروش و مالی", callback_data="sudo_menu_sales")])
+    rows.append([InlineKeyboardButton(text="⬅️ پنل‌ها و ادمین‌ها", callback_data="ops:hub:panels")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -153,20 +153,12 @@ async def rebecca_services_command(message: Message, state: FSMContext):
 
 @rebecca_services_router.callback_query(F.data == "sudo_menu_sales", RebeccaOnly())
 async def rebecca_sales_menu(callback: CallbackQuery, state: FSMContext):
+    """Legacy stale buttons now land on the canonical sales hub."""
     if await _deny(callback):
         return
     await state.clear()
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🛒 مدیریت فروش", callback_data="sales_manage")],
-        [InlineKeyboardButton(text="🔌 سرویس‌های Rebecca", callback_data="rebecca_services")],
-        [
-            InlineKeyboardButton(text=config.BUTTONS["sales_cards"], callback_data="sales_cards"),
-            InlineKeyboardButton(text=config.BUTTONS["set_billing"], callback_data="set_billing"),
-        ],
-        [InlineKeyboardButton(text=config.BUTTONS["set_login_url"], callback_data="set_login_url")],
-        [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="back_to_main")],
-    ])
-    await callback.message.edit_text("💳 فروش و مالی:", reply_markup=kb)
+    from handlers.operations import _render_hub
+    await _render_hub(callback.message, "sales")
     await callback.answer()
 
 

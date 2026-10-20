@@ -87,7 +87,7 @@ async def _menu_keyboard() -> InlineKeyboardMarkup:
             await style_engine.styled_button("Text Overrides", icon_key="text", fallback="📝", callback_data="style:aliases"),
         ],
         [await style_engine.styled_button("پیش‌نمایش", icon_key="preview", fallback="👁", callback_data="style:preview")],
-        [await style_engine.styled_button("بازگشت", icon_key="back", fallback="⬅️", callback_data="back_to_main")],
+        [await style_engine.styled_button("بازگشت", icon_key="back", fallback="⬅️", callback_data="ops:hub:settings")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -199,31 +199,12 @@ async def style_command(message: Message, state: FSMContext):
 
 @style_admin_router.callback_query(F.data == "sudo_menu_settings")
 async def styled_sudo_settings(callback: CallbackQuery, state: FSMContext):
-    """Extend the existing SUDO settings screen without changing its callback identity."""
+    """Legacy stale settings buttons redirect to the canonical settings hub."""
     if await _deny(callback):
         return
     await state.clear()
-    settings_icon = await style_engine.render_emoji("settings", fallback="⚙️")
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [await style_engine.styled_button(
-            "کانال‌های اجباری",
-            fallback="📢",
-            callback_data="forced_join_manage",
-        )],
-        [await style_engine.styled_button(
-            "ایموجی و استایل",
-            icon_key="style",
-            fallback="🎨",
-            callback_data="style:menu",
-        )],
-        [await style_engine.styled_button(
-            "بازگشت",
-            icon_key="back",
-            fallback="⬅️",
-            callback_data="back_to_main",
-        )],
-    ])
-    await callback.message.edit_text(f"{settings_icon} <b>تنظیمات</b>:", reply_markup=kb)
+    from handlers.operations import _render_hub
+    await _render_hub(callback.message, "settings")
     await callback.answer()
 
 

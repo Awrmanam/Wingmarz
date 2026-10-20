@@ -28,25 +28,23 @@ def test_control_center_has_clean_task_sections(tmp_path, monkeypatch):
         "پنل‌ها و ادمین‌ها",
         "فروش و سفارش‌ها",
         "مالی و پرداخت‌ها",
-        "KYC و دسترسی‌ها",
-        "کاربران و پشتیبانی",
-        "گزارش و مانیتورینگ",
-        "تنظیمات و ابزارها",
-        "ظاهر و محتوا",
+        "کاربران و دسترسی‌ها",
+        "گزارش و عملیات",
+        "تنظیمات و ظاهر",
     ]
     for label in expected_labels:
         assert any(label in value for value in labels)
 
-    assert "gops:admins:0" in callbacks
-    assert "cc:orders:0" in callbacks
-    assert "ops:hub:panels" in callbacks
-    assert "ops:hub:sales" in callbacks
-    assert "ops:hub:finance" in callbacks
-    assert "ops:hub:access" in callbacks
-    assert "ops:hub:users" in callbacks
-    assert "ops:hub:monitor" in callbacks
-    assert "ops:hub:settings" in callbacks
-    assert "ops:hub:content" in callbacks
+    assert callbacks == [
+        "gops:admins:0",
+        "cc:orders:0",
+        "ops:hub:panels",
+        "ops:hub:sales",
+        "ops:hub:finance",
+        "ops:hub:customers",
+        "ops:hub:monitor",
+        "ops:hub:settings",
+    ]
 
 
 def test_ticket_schema_is_migration_safe(tmp_path, monkeypatch):
