@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 import trust_service as trust_module
-from group_ops_service import GroupOpsService
+from group_ops_service import GroupOpsService, TOPICS
 from handlers.group_ops import (
     OPS_CHAT_REQUEST_ID,
     _domain_value,
@@ -401,3 +401,43 @@ def test_canonical_operational_dashboard_is_clean_and_nonduplicated(monkeypatch)
         "ops:hub:monitor",
         "ops:hub:settings",
     ]
+
+
+
+def test_group_ops_has_dedicated_receipts_topic():
+    assert TOPICS["receipts"] == "🧾 رسیدها"
+    assert TOPICS["kyc"] == "🪪 احراز هویت"
+
+
+def test_group_ops_lazily_creates_new_receipts_topic(tmp_path):
+    service = GroupOpsService(str(tmp_path / "ops.db"))
+
+    class Bot:
+        def __init__(self):
+            self.created = []
+            self.photos = []
+
+        async def create_forum_topic(self, chat_id, name):
+            thread_id = len(self.created) + 100
+            self.created.append((chat_id, name, thread_id))
+            return SimpleNamespace(message_thread_id=thread_id)
+
+        async def send_photo(self, **kwargs):
+            self.photos.append(kwargs)
+
+    async def scenario():
+        bot = Bot()
+        await service.configure_group(-100123, 999)
+        # No setup_topics call: send_photo itself must bootstrap missing topics.
+        ok = await service.send_photo(
+            bot,
+            "receipts",
+            "file-id",
+            caption="receipt",
+        )
+        assert ok is True
+        topics = await service.topics()
+        assert "receipts" in topics
+        assert bot.photos[0]["message_thread_id"] == topics["receipts"]["thread_id"]
+
+    run(scenario())
