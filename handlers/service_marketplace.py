@@ -400,7 +400,7 @@ async def _render_sales_hub(message: Message) -> None:
             )
         ],
         [await _button("تنظیم تست رایگان", "cc:test", icon_key="test", fallback="🧪")],
-        [await _button("بازگشت", "sudo_menu_sales", icon_key="back", fallback="⬅️")],
+        [await _button("بازگشت", "ops:hub:sales", icon_key="back", fallback="⬅️")],
     ]
     await message.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
