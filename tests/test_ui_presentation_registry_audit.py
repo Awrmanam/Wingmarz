@@ -89,6 +89,7 @@ def test_normal_registry_never_uses_developer_language():
 
 def test_dynamic_records_are_excluded_from_normal_editor():
     samples = [
+        ("buyflow:payg:p", "PAYG"),
         ("planmarket:c:p:5", "WireGuard"),
         ("planmarket:d:p:5:30", "یک ماهه"),
         ("planmarket:p:p:5:14", "اقتصادی"),
