@@ -177,8 +177,6 @@ BUTTONS: tuple[ButtonDef, ...] = (
     ButtonDef("admin.panels.edit", "admin.panels", "ویرایش پنل", "edit_panel", rank=4),
     ButtonDef("admin.panels.edit_confirm", "admin.panels", "تأیید ویرایش پنل", "confirm_edit_panel", rank=5),
     ButtonDef("admin.panels.activate", "admin.panels", "فعالسازی پنل", "activate_admin", rank=6),
-    ButtonDef("admin.panels.manage", "admin.panels", "مدیریت ادمین‌ها", "sudo_manage_admins", rank=7),
-    ButtonDef("admin.panels.manage_all", "admin.panels", "لیست همه ادمین‌ها", "manage_list_all", rank=8),
     ButtonDef("admin.panels.auto_import", "admin.panels", "کشف خودکار ادمین", "auto_import_admins", rank=9),
     ButtonDef("admin.panels.import", "admin.panels", "افزودن ادمین قبلی", "import_admin", rank=10),
     ButtonDef("admin.panels.remove", "admin.panels", "حذف کامل پنل", "remove_admin", rank=11),
@@ -266,6 +264,10 @@ for _button in BUTTONS:
     _BY_CALLBACK.setdefault(_button.callback_data, []).append(_button)
 
 _HIDDEN_PREFIX_REASONS: tuple[tuple[str, str], ...] = (
+    ("sudo_manage_admins", "مسیر سازگاری قدیمی مدیریت ادمین"),
+    ("manage_list_all", "مسیر سازگاری قدیمی مدیریت ادمین"),
+    ("manage_user_", "مسیر سازگاری قدیمی مدیریت ادمین"),
+    ("manage_panel_", "مسیر سازگاری قدیمی مدیریت ادمین"),
     ("gops:", "کنترل داخلی مرکز عملیات"),
     ("pui:", "کنترل داخلی ویرایشگر"),
     ("puc:", "کنترل داخلی ویرایشگر"),
