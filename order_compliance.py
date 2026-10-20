@@ -374,6 +374,52 @@ class OrderComplianceService:
                 rows = await cur.fetchall()
         return [int(row[0]) for row in rows]
 
+    async def expire_overdue_kyc(self, hours: int = 48) -> list[dict[str, int]]:
+        """Move paid orders with unfinished KYC into the manual refund queue."""
+        hours = max(1, int(hours))
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("BEGIN IMMEDIATE")
+            async with conn.execute(
+                """
+                SELECT order_id,user_id
+                FROM order_compliance
+                WHERE payment_state=?
+                  AND kyc_required=1
+                  AND kyc_state=?
+                  AND refund_state=?
+                  AND payment_reviewed_at IS NOT NULL
+                  AND payment_reviewed_at <= datetime('now', ?)
+                ORDER BY order_id
+                """,
+                (
+                    PAYMENT_APPROVED,
+                    KYC_PENDING,
+                    REFUND_NONE,
+                    f"-{hours} hours",
+                ),
+            ) as cur:
+                rows = await cur.fetchall()
+
+            if rows:
+                ids = [int(row["order_id"]) for row in rows]
+                placeholders = ",".join("?" for _ in ids)
+                await conn.execute(
+                    f"""
+                    UPDATE order_compliance
+                    SET refund_state=?, updated_at=CURRENT_TIMESTAMP
+                    WHERE order_id IN ({placeholders})
+                      AND refund_state=?
+                    """,
+                    (REFUND_PENDING, *ids, REFUND_NONE),
+                )
+            await conn.commit()
+        return [
+            {"order_id": int(row["order_id"]), "user_id": int(row["user_id"])}
+            for row in rows
+        ]
+
     async def mark_refunded(self, order_id: int) -> OrderGate | None:
         await self.ensure_schema()
         async with aiosqlite.connect(self.db_path) as conn:
