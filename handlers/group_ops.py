@@ -523,7 +523,7 @@ async def ops_connect(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@group_ops_router.message(F.chat_shared)
+@group_ops_router.message(F.chat_shared.request_id == OPS_CHAT_REQUEST_ID)
 async def ops_chat_shared(message: Message):
     if await _deny_event(message):
         return
