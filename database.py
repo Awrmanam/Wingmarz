@@ -872,6 +872,21 @@ class Database:
             await conn.commit()
             return cur.rowcount == 1
 
+    async def reopen_order_receipt(self, order_id: int) -> bool:
+        """Return a submitted receipt to the user without cancelling the order."""
+        async with aiosqlite.connect(self.db_path) as conn:
+            cur = await conn.execute(
+                """
+                UPDATE orders
+                SET receipt_file_id=NULL,status='pending',updated_at=CURRENT_TIMESTAMP
+                WHERE id=? AND status='submitted'
+                  AND COALESCE(rebecca_provision_state,'') NOT IN ('creating','completed')
+                """,
+                (int(order_id),),
+            )
+            await conn.commit()
+            return cur.rowcount == 1
+
     async def get_orders(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
         try:
             async with aiosqlite.connect(self.db_path) as db:
