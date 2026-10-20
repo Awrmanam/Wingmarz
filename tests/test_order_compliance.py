@@ -1,4 +1,5 @@
 import asyncio
+import aiosqlite
 
 import pytest
 
@@ -86,5 +87,33 @@ def test_rejected_receipt_can_be_resubmitted(tmp_path):
         assert gate.payment_state == "rejected"
         assert await service.reset_for_new_receipt(14) is True
         assert await service.mark_receipt_submitted(14, 58) is True
+
+    run(scenario())
+
+
+
+def test_paid_pending_kyc_expires_to_refund_queue(tmp_path):
+    path = str(tmp_path / "orders.db")
+    service = OrderComplianceService(path)
+
+    async def scenario():
+        await service.ensure_order(15, 59, kyc_required=True)
+        await service.mark_receipt_submitted(15, 59)
+        await service.approve_payment(15, 999, identity_approved=False)
+
+        async with aiosqlite.connect(path) as conn:
+            await conn.execute(
+                "UPDATE order_compliance SET payment_reviewed_at=datetime('now','-49 hours') WHERE order_id=15"
+            )
+            await conn.commit()
+
+        expired = await service.expire_overdue_kyc(48)
+        assert expired == [{"order_id": 15, "user_id": 59}]
+        gate = await service.get(15)
+        assert gate.refund_state == REFUND_PENDING
+        assert gate.ready_to_issue is False
+
+        # Idempotent: it must not enqueue the same refund twice.
+        assert await service.expire_overdue_kyc(48) == []
 
     run(scenario())
