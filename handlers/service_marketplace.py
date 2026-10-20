@@ -146,7 +146,8 @@ async def panel_provider_select(callback: CallbackQuery, state: FSMContext):
             )
             await callback.answer()
             return
-        await _render_purchase_services(callback.message, source)
+        from handlers.payg_offers import render_purchase_method
+        await render_purchase_method(callback.message, source)
         await callback.answer()
         return
 
