@@ -45,7 +45,7 @@ def _mock_icons(monkeypatch):
     monkeypatch.setattr(store.product_catalog, "resolve_panel_icon_key", AsyncMock(return_value=None))
 
 
-def test_paid_storefront_shows_public_category_not_rebecca_inbound(monkeypatch):
+def test_fixed_storefront_shows_clean_public_service_identity(monkeypatch):
     monkeypatch.setattr(store, "_button", fake_button)
     _mock_icons(monkeypatch)
     monkeypatch.setattr(
@@ -64,10 +64,11 @@ def test_paid_storefront_shows_public_category_not_rebecca_inbound(monkeypatch):
 
     text = message.edit_text.call_args.args[0]
     assert "Wire" not in text
-    assert "پنل موردنظر" in text
+    assert "سرویس موردنظر" in text
+    assert "مرحله ۳ از ۴" in text
     rows = message.edit_text.call_args.kwargs["reply_markup"].inline_keyboard
     assert rows[0][0].callback_data == "planmarket:c:a:3"
-    assert "WireGuard" in rows[0][0].text
+    assert rows[0][0].text == "WireGuard"
 
 
 def test_duration_groups_are_optional_inside_public_category(monkeypatch):
