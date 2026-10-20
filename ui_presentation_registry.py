@@ -252,6 +252,7 @@ BUTTONS: tuple[ButtonDef, ...] = (
     ButtonDef("admin.broadcast.confirm", "admin.broadcast", "تأیید ارسال", "broadcast_confirm", rank=20),
     ButtonDef("admin.settings.forced_join", "admin.settings", "کانال‌های اجباری", "forced_join_manage", rank=0),
     ButtonDef("admin.settings.forced_join_add", "admin.settings", "افزودن کانال اجباری", "forced_join_add", rank=1),
+    ButtonDef("admin.settings.forced_join_recheck", "admin.settings", "تست مجدد کانال‌های اجباری", "forced_join_recheck", rank=2),
     ButtonDef("admin.settings.forced_join_delete", "admin.settings", "حذف کانال اجباری", "forced_join_del", rank=2),
     ButtonDef("admin.settings.forced_join_toggle", "admin.settings", "فعال یا غیرفعال کردن کانال", "forced_join_toggle", rank=3),
     ButtonDef("admin.tools.backup_now", "admin.tools", "بکاپ الان", "backup_now", rank=0),
