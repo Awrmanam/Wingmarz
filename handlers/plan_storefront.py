@@ -60,10 +60,15 @@ async def _categories() -> list[Any]:
     return await product_catalog.categories(active_only=True, sellable_only=True)
 
 
-async def _panel_heading(category: Any, fallback: str = "📁") -> str:
+async def _panel_heading(category: Any) -> str:
+    """Panel title without generic folder clutter.
+
+    A configured Premium Emoji is shown; otherwise the clean service name is enough.
+    """
     icon_key = await product_catalog.resolve_panel_icon_key(category)
-    icon = await style_engine.render_emoji(icon_key, fallback=fallback) if icon_key else fallback
-    return f"{icon} <b>{escape(category.name)}</b>"
+    icon = await style_engine.render_emoji(icon_key, fallback="") if icon_key else ""
+    prefix = f"{icon} " if icon else ""
+    return f"{prefix}<b>{escape(category.name)}</b>"
 
 
 async def _render_storefront(message: Message, source: str) -> None:
@@ -92,7 +97,8 @@ async def _render_storefront(message: Message, source: str) -> None:
         await _button("🔙 روش خرید", f"buyflow:method:{source}", icon_key="back", fallback="⬅️")
     ])
     await message.edit_text(
-        "📦 <b>پلن کامل Rebecca</b>\n\n"
+        "📦 <b>پلن کامل Rebecca</b>\n"
+        "مرحله ۳ از ۴\n\n"
         "سرویس موردنظر را انتخاب کنید. در مرحله بعد جزئیات پلن‌ها را می‌بینید:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
     )
@@ -151,12 +157,12 @@ async def _render_plan_list(
                 f"{plan.name} · {int(plan.price or 0):,} ت",
                 f"planmarket:p:{source}:{category_id}:{int(plan.id)}:{duration_key or '-'}",
                 icon_key="plan",
-                fallback="📦",
+                fallback=None,
             )
         ])
     back = f"planmarket:c:{source}:{category_id}" if duration_key else f"planmarket:root:{source}"
     rows.append([await _button("بازگشت", back, icon_key="back", fallback="⬅️")])
-    body = f"{await _panel_heading(category)}\n\n<b>پلن‌های قابل خرید</b>"
+    body = f"{await _panel_heading(category)}\nمرحله ۴ از ۴\n\n<b>پلن‌های قابل خرید</b>"
     if duration_label:
         body += f"\n🗓 {escape(duration_label)}"
     body += "\n\nپلن موردنظر را انتخاب کنید:"
