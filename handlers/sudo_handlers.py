@@ -295,45 +295,24 @@ def get_progress_indicator(current_step: int, total_steps: int = 7) -> str:
 
 
 def get_sudo_keyboard() -> InlineKeyboardMarkup:
-    """Get sudo admin main keyboard."""
-    return InlineKeyboardMarkup(inline_keyboard=[
-        # Row 1: Core management submenus
-        [
-            InlineKeyboardButton(text="🧩 پنل‌ها", callback_data="sudo_menu_panels"),
-            InlineKeyboardButton(text="🧹 پاکسازی", callback_data="sudo_menu_cleanup"),
-            InlineKeyboardButton(text="💳 فروش/مالی", callback_data="sudo_menu_sales")
-        ],
-        # Row 2: Settings and reports
-        [
-            InlineKeyboardButton(text="⚙️ تنظیمات", callback_data="sudo_menu_settings"),
-            InlineKeyboardButton(text=config.BUTTONS["backup_menu"], callback_data="sudo_menu_backup"),
-            InlineKeyboardButton(text="📊 گزارشات", callback_data="sudo_menu_reports")
-        ],
-        # Row 3: Operations + broadcast
-        [
-            InlineKeyboardButton(text="🧭 مرکز عملیات", callback_data="gops:home"),
-            InlineKeyboardButton(text=config.BUTTONS["broadcast_menu"], callback_data="sudo_menu_broadcast")
-        ]
-    ])
+    """Legacy compatibility bridge.
+
+    Old flows still call this helper after a state finishes. Never expose the
+    retired flat Wingmarz menu again; send users back to the canonical dashboard.
+    """
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🏠 داشبورد مدیریت", callback_data="back_to_main")
+    ]])
 
 @sudo_router.callback_query(F.data == "sudo_menu_panels")
 async def sudo_menu_panels(callback: CallbackQuery):
+    """Legacy callback: redirect to the canonical panels hub."""
     if callback.from_user.id not in config.SUDO_ADMINS:
         await callback.answer("غیرمجاز", show_alert=True)
         return
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=config.BUTTONS["add_admin"], callback_data="add_admin"), InlineKeyboardButton(text=config.BUTTONS["edit_panel"], callback_data="edit_panel")],
-        [InlineKeyboardButton(text=config.BUTTONS["activate_admin"], callback_data="activate_admin"), InlineKeyboardButton(text=config.BUTTONS["manage_admins"], callback_data="sudo_manage_admins")],
-        [
-            InlineKeyboardButton(text=config.BUTTONS["auto_import_admin"], callback_data="auto_import_admins"),
-            InlineKeyboardButton(text=config.BUTTONS["import_admin"], callback_data="import_admin")
-        ],
-        [InlineKeyboardButton(text=config.BUTTONS["remove_admin"], callback_data="remove_admin")],
-        [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="back_to_main")]
-    ])
-    await callback.message.edit_text("🧩 مدیریت پنل‌ها:", reply_markup=kb)
+    from handlers.operations import _render_hub
+    await _render_hub(callback.message, "panels")
     await callback.answer()
-
 
 @sudo_router.callback_query(F.data == "auto_import_admins")
 async def auto_import_admins(callback: CallbackQuery, state: FSMContext):
@@ -789,30 +768,23 @@ async def sudo_menu_cleanup(callback: CallbackQuery):
 
 @sudo_router.callback_query(F.data == "sudo_menu_sales")
 async def sudo_menu_sales(callback: CallbackQuery):
+    """Legacy callback: redirect to the canonical sales hub."""
     if callback.from_user.id not in config.SUDO_ADMINS:
         await callback.answer("غیرمجاز", show_alert=True)
         return
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🛒 مدیریت فروش", callback_data="sales_manage")],
-        [InlineKeyboardButton(text=config.BUTTONS["sales_cards"], callback_data="sales_cards"), InlineKeyboardButton(text=config.BUTTONS["set_billing"], callback_data="set_billing")],
-        [InlineKeyboardButton(text=config.BUTTONS["set_login_url"], callback_data="set_login_url")],
-        [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="back_to_main")]
-    ])
-    await callback.message.edit_text("💳 فروش و مالی:", reply_markup=kb)
+    from handlers.operations import _render_hub
+    await _render_hub(callback.message, "sales")
     await callback.answer()
 
 @sudo_router.callback_query(F.data == "sudo_menu_settings")
 async def sudo_menu_settings(callback: CallbackQuery):
+    """Legacy callback: redirect to the canonical settings hub."""
     if callback.from_user.id not in config.SUDO_ADMINS:
         await callback.answer("غیرمجاز", show_alert=True)
         return
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📢 کانال‌های اجباری", callback_data="forced_join_manage")],
-        [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="back_to_main")]
-    ])
-    await callback.message.edit_text("⚙️ تنظیمات:", reply_markup=kb)
+    from handlers.operations import _render_hub
+    await _render_hub(callback.message, "settings")
     await callback.answer()
-
 
 @sudo_router.callback_query(F.data == "sudo_menu_broadcast")
 async def sudo_menu_broadcast(callback: CallbackQuery, state: FSMContext):
@@ -1105,15 +1077,14 @@ async def backup_schedule_set(message: Message, state: FSMContext):
 
 @sudo_router.callback_query(F.data == "sudo_menu_reports")
 async def sudo_menu_reports(callback: CallbackQuery):
+    """Legacy callback: redirect to the canonical monitoring hub."""
     if callback.from_user.id not in config.SUDO_ADMINS:
         await callback.answer("غیرمجاز", show_alert=True)
         return
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=config.BUTTONS["list_admins"], callback_data="list_admins"), InlineKeyboardButton(text=config.BUTTONS["admin_status"], callback_data="admin_status")],
-        [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="back_to_main")]
-    ])
-    await callback.message.edit_text("📊 گزارشات:", reply_markup=kb)
+    from handlers.operations import _render_hub
+    await _render_hub(callback.message, "monitor")
     await callback.answer()
+
 FORCED_JOIN_ADD_REQUEST_ID = 37101
 FORCED_JOIN_REPAIR_BASE = 38000
 
@@ -1478,10 +1449,8 @@ async def sudo_start(message: Message):
         )
     except Exception:
         pass
-    await message.answer(
-        config.MESSAGES["welcome_sudo"],
-        reply_markup=get_sudo_keyboard()
-    )
+    from handlers.operations import _send_dashboard
+    await _send_dashboard(message)
 
 
 @sudo_router.callback_query(F.data == "sudo_cleanup_old_expired")
@@ -3504,17 +3473,13 @@ async def activate_panel_selected(callback: CallbackQuery):
 
 @sudo_router.callback_query(F.data == "back_to_main")
 async def back_to_main(callback: CallbackQuery, state: FSMContext):
-    """Return to main menu."""
+    """Return to the one canonical admin dashboard."""
     await state.clear()
-    
-    if callback.from_user.id in config.SUDO_ADMINS:
-        await callback.message.edit_text(
-            config.MESSAGES["welcome_sudo"],
-            reply_markup=get_sudo_keyboard()
-        )
-    else:
+    if callback.from_user.id not in config.SUDO_ADMINS:
         await callback.answer("غیرمجاز", show_alert=True)
-    
+        return
+    from handlers.operations import _edit_dashboard
+    await _edit_dashboard(callback.message)
     await callback.answer()
 
 
