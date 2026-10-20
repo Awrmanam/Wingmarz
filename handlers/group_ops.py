@@ -289,7 +289,14 @@ async def _render_admin_card(message: Message, admin_id: int) -> bool:
         await message.edit_text("❌ ادمین پیدا نشد.")
         return False
 
-    remote = await _remote_admin(admin)
+    remote = None
+    remote_error = False
+    if config.PANEL_PROVIDER == "rebecca" and admin.marzban_username:
+        try:
+            remote = await rebecca_api.find_admin(str(admin.marzban_username))
+        except RebeccaAPIError:
+            remote_error = True
+
     trust_text, manual_trust, auto_approve = await _trust_text(int(admin.user_id))
     kyc_required = await kyc_service.is_required(int(admin.id))
     usage = None
@@ -299,7 +306,22 @@ async def _render_admin_card(message: Message, admin_id: int) -> bool:
         except RebeccaAPIError:
             usage = None
 
-    status = str((remote or {}).get("status") or ("active" if admin.is_active else "disabled"))
+    raw_status = str((remote or {}).get("status") or ("active" if admin.is_active else "disabled")).lower()
+    if remote_error:
+        status = "unknown"
+        status_line = "⚠️ وضعیت: نامشخص (خطای ارتباط با Rebecca)"
+    elif config.PANEL_PROVIDER == "rebecca" and remote is None:
+        status = "missing"
+        status_line = "⚪ وضعیت Rebecca: حذف‌شده"
+    else:
+        status = raw_status
+        status_label = {
+            "active": "فعال",
+            "disabled": "غیرفعال",
+        }.get(raw_status, raw_status or "نامشخص")
+        prefix = "وضعیت Rebecca" if config.PANEL_PROVIDER == "rebecca" else "وضعیت"
+        status_line = f"{prefix}: {status_label}"
+
     data_limit = (remote or {}).get("data_limit")
     expire = (remote or {}).get("expire")
     users_limit = (remote or {}).get("users_limit")
@@ -319,7 +341,7 @@ async def _render_admin_card(message: Message, admin_id: int) -> bool:
         f"🔐 Rebecca: <code>{escape(str(admin.marzban_username or '-'))}</code>\n"
         f"🆔 Telegram: <code>{int(admin.user_id)}</code>\n"
         f"📱 Username: {('@' + escape(admin.username)) if admin.username else '—'}\n"
-        f"🟢 وضعیت: <b>{escape(status)}</b>\n\n"
+        f"{escape(status_line)}\n\n"
         f"📊 مصرف: <b>{_format_bytes(usage)}</b> / {_format_bytes(data_limit)}\n"
         f"⏳ اعتبار: <b>{escape(remaining)}</b>\n"
         f"👤 User Limit: <b>{users_limit if isinstance(users_limit, int) and users_limit > 0 else 'نامحدود'}</b>\n\n"
