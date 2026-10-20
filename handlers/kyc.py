@@ -118,6 +118,9 @@ async def kyc_document(message: Message, state: FSMContext):
         photo.file_id,
         getattr(photo, "file_unique_id", None),
     )
+    waiting_orders = await order_compliance_service.mark_user_kyc_submitted(
+        message.from_user.id
+    )
     await state.clear()
 
     await message.answer(
@@ -135,6 +138,11 @@ async def kyc_document(message: Message, state: FSMContext):
         f"Telegram ID: <code>{message.from_user.id}</code>\n"
         f"Username: {('@' + escape(message.from_user.username)) if message.from_user.username else '—'}\n"
         f"نام: <b>{escape(full_name)}</b>"
+        + (
+            f"\n🧾 سفارش‌های پرداخت‌شده مرتبط: "
+            + ", ".join(f"<code>#{order_id}</code>" for order_id in waiting_orders)
+            if waiting_orders else ""
+        )
     )
     sent_to_group = False
     try:
