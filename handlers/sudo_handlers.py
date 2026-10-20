@@ -7,6 +7,7 @@ from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from typing import List, Dict, Any
+from types import SimpleNamespace
 from html import escape
 import logging
 import asyncio
@@ -4587,6 +4588,250 @@ async def set_login_url_save(message: Message, state: FSMContext):
 # Order open UI removed per request
 
 
+class _AutoIssueMessage:
+    """Minimal message adapter used when KYC/payment completion auto-issues an order."""
+
+    def __init__(self, bot, order_id: int):
+        self.bot = bot
+        self.order_id = int(order_id)
+
+    async def edit_text(self, text, **_kwargs):
+        await group_ops_service.send_text(
+            self.bot,
+            "orders",
+            f"🧾 <b>سفارش #{self.order_id}</b>\n\n{escape(str(text))}",
+        )
+
+
+class _AutoIssueCallback:
+    def __init__(self, bot, order_id: int, actor_id: int):
+        self.bot = bot
+        self.data = f"order_approve_{int(order_id)}"
+        self.from_user = SimpleNamespace(id=int(actor_id))
+        self.message = _AutoIssueMessage(bot, int(order_id))
+
+    async def answer(self, text=None, **_kwargs):
+        if text:
+            await group_ops_service.send_text(
+                self.bot,
+                "orders",
+                f"ℹ️ سفارش <code>#{self.data.rsplit('_', 1)[-1]}</code>: {escape(str(text))}",
+            )
+
+
+async def auto_issue_order(bot, order_id: int, actor_id: int) -> None:
+    """Run the existing, idempotent issuance path after payment+KYC become ready."""
+    await order_approve(_AutoIssueCallback(bot, int(order_id), int(actor_id)))
+
+
+async def _edit_receipt_review_message(callback: CallbackQuery, suffix: str) -> None:
+    try:
+        caption = getattr(callback.message, "caption", None)
+        if caption is not None:
+            await callback.message.edit_caption(
+                caption=f"{caption}\n\n{suffix}",
+                reply_markup=None,
+            )
+        else:
+            text = getattr(callback.message, "text", None) or ""
+            await callback.message.edit_text(
+                f"{text}\n\n{suffix}".strip(),
+                reply_markup=None,
+            )
+    except Exception:
+        pass
+
+
+@sudo_router.callback_query(F.data.startswith("order_payment_approve_"))
+async def order_payment_approve(callback: CallbackQuery):
+    if callback.from_user.id not in config.SUDO_ADMINS:
+        await callback.answer("غیرمجاز", show_alert=True)
+        return
+    try:
+        oid = int((callback.data or "").rsplit("_", 1)[-1])
+    except (TypeError, ValueError):
+        await callback.answer("شناسه سفارش نامعتبر است.", show_alert=True)
+        return
+
+    order = await db.get_order_by_id(oid)
+    if not order or (order.get("status") or "").lower() not in {"submitted", "pending", "failed"}:
+        await callback.answer("سفارش قابل بررسی نیست.", show_alert=True)
+        return
+
+    gate = await order_compliance_service.get(oid)
+    if gate is None:
+        # Renewal/legacy order: payment approval immediately enters the existing
+        # issuance path. New purchases normally have a compliance row already.
+        await group_ops_service.audit(
+            actor_id=callback.from_user.id,
+            action="order.payment.approve.legacy",
+            subject_type="order",
+            subject_id=oid,
+            new_value="approved",
+        )
+        await _edit_receipt_review_message(callback, "✅ <b>پرداخت تأیید شد</b>")
+        await callback.answer("پرداخت تأیید شد")
+        await auto_issue_order(callback.bot, oid, callback.from_user.id)
+        return
+
+    identity_approved = await trust_service.is_identity_approved(int(order["user_id"]))
+    gate = await order_compliance_service.approve_payment(
+        oid,
+        callback.from_user.id,
+        identity_approved=identity_approved,
+    )
+    if gate is None:
+        await callback.answer("وضعیت پرداخت پیدا نشد.", show_alert=True)
+        return
+
+    await group_ops_service.audit(
+        actor_id=callback.from_user.id,
+        action="order.payment.approve",
+        subject_type="order",
+        subject_id=oid,
+        new_value={
+            "payment_state": gate.payment_state,
+            "kyc_state": gate.kyc_state,
+        },
+    )
+    await group_ops_service.send_text(
+        callback.bot,
+        "payments",
+        f"✅ <b>پرداخت سفارش #{oid} تأیید شد.</b>\n"
+        f"👤 <code>{int(order['user_id'])}</code>\n"
+        f"🪪 KYC: <b>{escape(gate.kyc_state)}</b>",
+    )
+
+    if gate.ready_to_issue:
+        await _edit_receipt_review_message(
+            callback,
+            "✅ <b>پرداخت تأیید شد</b>\n🚀 شرایط صدور کامل است.",
+        )
+        await callback.answer("پرداخت تأیید شد؛ در حال صدور ✅")
+        await auto_issue_order(callback.bot, oid, callback.from_user.id)
+        return
+
+    profile = await kyc_service.get_profile(int(order["user_id"]))
+    if profile and str(profile.get("status")) == "pending":
+        user_text = (
+            f"✅ پرداخت سفارش <b>#{oid}</b> تأیید شد.\n\n"
+            "🪪 مدرک احراز هویت شما در انتظار بررسی است. "
+            "بعد از تأیید KYC، پنل همین سفارش خودکار صادر می‌شود."
+        )
+        user_kb = None
+    else:
+        user_text = (
+            f"✅ پرداخت سفارش <b>#{oid}</b> تأیید شد.\n\n"
+            "🪪 برای فعال‌سازی پنل، حالا احراز هویت را تکمیل کنید. "
+            "تا قبل از تأیید KYC هیچ پنلی صادر نمی‌شود."
+        )
+        user_kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="🪪 شروع احراز هویت", callback_data="kyc:start")
+        ]])
+    try:
+        await callback.bot.send_message(
+            int(order["user_id"]),
+            user_text,
+            reply_markup=user_kb,
+        )
+    except Exception:
+        pass
+
+    await _edit_receipt_review_message(
+        callback,
+        "✅ <b>پرداخت تأیید شد</b>\n🟡 منتظر KYC کاربر",
+    )
+    await callback.answer("پرداخت تأیید شد؛ منتظر KYC")
+
+
+@sudo_router.callback_query(F.data.startswith("order_payment_reject_"))
+async def order_payment_reject(callback: CallbackQuery):
+    if callback.from_user.id not in config.SUDO_ADMINS:
+        await callback.answer("غیرمجاز", show_alert=True)
+        return
+    try:
+        oid = int((callback.data or "").rsplit("_", 1)[-1])
+    except (TypeError, ValueError):
+        await callback.answer("شناسه سفارش نامعتبر است.", show_alert=True)
+        return
+    order = await db.get_order_by_id(oid)
+    if not order:
+        await callback.answer("سفارش پیدا نشد.", show_alert=True)
+        return
+
+    gate = await order_compliance_service.get(oid)
+    if gate:
+        await order_compliance_service.reject_receipt(oid, callback.from_user.id)
+    reopened = await db.reopen_order_receipt(oid)
+    if gate:
+        await order_compliance_service.reset_for_new_receipt(oid)
+    if not reopened:
+        await callback.answer("رسید قابل بازگشت نیست.", show_alert=True)
+        return
+
+    try:
+        await callback.bot.send_message(
+            int(order["user_id"]),
+            f"❌ رسید سفارش <b>#{oid}</b> تأیید نشد.\n"
+            "لطفاً از سفارش دوباره «پرداخت کردم» را بزنید و رسید صحیح را ارسال کنید.",
+        )
+    except Exception:
+        pass
+    await group_ops_service.audit(
+        actor_id=callback.from_user.id,
+        action="order.payment.reject_receipt",
+        subject_type="order",
+        subject_id=oid,
+        new_value="awaiting_new_receipt",
+    )
+    await group_ops_service.send_text(
+        callback.bot,
+        "payments",
+        f"❌ رسید سفارش <code>#{oid}</code> رد شد و برای ارسال مجدد باز شد.",
+    )
+    await _edit_receipt_review_message(callback, "❌ <b>رسید رد شد</b>")
+    await callback.answer("رسید رد شد")
+
+
+@sudo_router.callback_query(F.data.startswith("order_refund_done_"))
+async def order_refund_done(callback: CallbackQuery):
+    if callback.from_user.id not in config.SUDO_ADMINS:
+        await callback.answer("غیرمجاز", show_alert=True)
+        return
+    try:
+        oid = int((callback.data or "").rsplit("_", 1)[-1])
+    except (TypeError, ValueError):
+        await callback.answer("شناسه سفارش نامعتبر است.", show_alert=True)
+        return
+    order = await db.get_order_by_id(oid)
+    gate = await order_compliance_service.get(oid)
+    if not order or not gate or gate.refund_state != REFUND_PENDING:
+        await callback.answer("این سفارش در صف استرداد نیست.", show_alert=True)
+        return
+
+    gate = await order_compliance_service.mark_refunded(oid)
+    await db.update_order(oid, status="cancelled", approved_by=callback.from_user.id)
+    try:
+        await callback.bot.send_message(
+            int(order["user_id"]),
+            f"💸 استرداد سفارش <b>#{oid}</b> توسط مدیریت ثبت شد.",
+        )
+    except Exception:
+        pass
+    await group_ops_service.audit(
+        actor_id=callback.from_user.id,
+        action="order.refund.done",
+        subject_type="order",
+        subject_id=oid,
+        new_value="refunded",
+    )
+    await callback.message.edit_text(
+        f"✅ استرداد سفارش <code>#{oid}</code> ثبت شد.",
+        reply_markup=None,
+    )
+    await callback.answer("استرداد ثبت شد ✅")
+
+
 @sudo_router.callback_query(F.data.startswith("order_approve_"))
 @track_approval
 async def order_approve(callback: CallbackQuery):
@@ -4608,6 +4853,13 @@ async def order_approve(callback: CallbackQuery):
         return
 
     order_type = (o.get("order_type") or "").lower()
+    compliance = await order_compliance_service.get(oid)
+    if compliance is not None and order_type != "renew" and not compliance.ready_to_issue:
+        await callback.answer(
+            "صدور قفل است: پرداخت و KYC باید هر دو تأیید شوند.",
+            show_alert=True,
+        )
+        return
     if order_type == "renew":
         if config.PANEL_PROVIDER == "rebecca":
             from rebecca_renewal import RebeccaRenewalError, apply_rebecca_renewal
