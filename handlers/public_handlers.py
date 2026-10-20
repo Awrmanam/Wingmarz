@@ -9,6 +9,7 @@ from database import db
 from utils.notify import format_traffic_size, seconds_to_days
 from group_ops_service import group_ops_service
 from trust_service import trust_service
+from forced_join_service import ForcedJoinState, check_membership
 
 
 public_router = Router()
@@ -130,36 +131,35 @@ async def public_back_main(callback: CallbackQuery, state: FSMContext):
 
 @public_router.callback_query(F.data == "forced_join_refresh")
 async def forced_join_refresh(callback: CallbackQuery):
-    # Re-run /start-like gate
-    from database import db as _db
-    chans = await _db.get_forced_channels()
-    user_id = callback.from_user.id
+    channels = await db.get_forced_channels()
     not_joined = []
-    if chans:
-        for ch in chans:
-            try:
-                raw_chat_id = ch.get('chat_id')
-                chat_id = raw_chat_id
-                if isinstance(raw_chat_id, str) and raw_chat_id.isdigit() and not raw_chat_id.startswith('-100'):
-                    chat_id = f"-100{raw_chat_id}"
-                chat_id_to_use = int(chat_id) if isinstance(chat_id, str) and chat_id.lstrip('-').isdigit() else chat_id
-                member = await callback.bot.get_chat_member(chat_id=chat_id_to_use, user_id=user_id)
-                status = getattr(member, 'status', None)
-                if hasattr(status, 'value'):
-                    s = status.value.lower()
-                elif hasattr(status, 'name'):
-                    s = status.name.lower()
-                else:
-                    s = str(status).lower()
-                if s not in ['member', 'administrator', 'creator']:
-                    not_joined.append(ch)
-            except Exception:
-                not_joined.append(ch)
-    if not not_joined:
-        await callback.message.edit_text("✅ عضویت تایید شد. حالا می‌توانید از ربات استفاده کنید.", reply_markup=get_public_main_keyboard())
-    else:
-        await callback.answer("هنوز عضو نشده‌اید.", show_alert=True)
-    await callback.answer()
+    errors = []
+    for channel in channels:
+        check = await check_membership(callback.bot, channel, callback.from_user.id)
+        if check.state == ForcedJoinState.NOT_JOINED:
+            not_joined.append(channel)
+        elif check.state == ForcedJoinState.ERROR:
+            errors.append((channel, check.error))
+
+    if not not_joined and not errors:
+        await callback.message.edit_text(
+            "✅ عضویت تأیید شد. حالا می‌توانید از ربات استفاده کنید.",
+            reply_markup=get_public_main_keyboard(),
+        )
+        await callback.answer("عضویت تأیید شد ✅")
+        return
+
+    if errors:
+        names = "، ".join(
+            str(channel.get("title") or channel.get("chat_id")) for channel, _ in errors
+        )
+        await callback.answer(
+            f"خطا در بررسی: {names[:120]}. مدیریت باید اتصال کانال را تست کند.",
+            show_alert=True,
+        )
+        return
+
+    await callback.answer("هنوز عضو همه کانال‌های الزامی نیستید.", show_alert=True)
 
 
 @public_router.callback_query(F.data.startswith("public_mark_paid_"))
