@@ -4699,6 +4699,15 @@ async def order_payment_approve(callback: CallbackQuery):
         await callback.answer("وضعیت پرداخت پیدا نشد.", show_alert=True)
         return
 
+    profile = await kyc_service.get_profile(int(order["user_id"]))
+    if (
+        not identity_approved
+        and profile
+        and str(profile.get("status") or "") == "pending"
+    ):
+        await order_compliance_service.mark_user_kyc_submitted(int(order["user_id"]))
+        gate = await order_compliance_service.get(oid) or gate
+
     await group_ops_service.audit(
         actor_id=callback.from_user.id,
         action="order.payment.approve",
@@ -4726,7 +4735,6 @@ async def order_payment_approve(callback: CallbackQuery):
         await auto_issue_order(callback.bot, oid, callback.from_user.id)
         return
 
-    profile = await kyc_service.get_profile(int(order["user_id"]))
     if profile and str(profile.get("status")) == "pending":
         user_text = (
             f"✅ پرداخت سفارش <b>#{oid}</b> تأیید شد.\n\n"
@@ -4890,16 +4898,32 @@ async def order_approve(callback: CallbackQuery):
             callback.from_user.id,
             identity_approved=identity_approved,
         )
+        legacy_profile = await kyc_service.get_profile(int(o["user_id"]))
+        if (
+            compliance
+            and not identity_approved
+            and legacy_profile
+            and str(legacy_profile.get("status") or "") == "pending"
+        ):
+            await order_compliance_service.mark_user_kyc_submitted(int(o["user_id"]))
+            compliance = await order_compliance_service.get(oid) or compliance
         if compliance and not compliance.ready_to_issue:
             try:
-                await callback.bot.send_message(
-                    int(o["user_id"]),
-                    f"✅ پرداخت سفارش <b>#{oid}</b> تأیید شد.\n\n"
-                    "🪪 برای صدور پنل، احراز هویت را تکمیل کنید.",
-                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                        InlineKeyboardButton(text="🪪 شروع احراز هویت", callback_data="kyc:start")
-                    ]]),
-                )
+                if legacy_profile and str(legacy_profile.get("status") or "") == "pending":
+                    await callback.bot.send_message(
+                        int(o["user_id"]),
+                        f"✅ پرداخت سفارش <b>#{oid}</b> تأیید شد.\n\n"
+                        "🪪 مدرک KYC شما در انتظار بررسی است."
+                    )
+                else:
+                    await callback.bot.send_message(
+                        int(o["user_id"]),
+                        f"✅ پرداخت سفارش <b>#{oid}</b> تأیید شد.\n\n"
+                        "🪪 برای صدور پنل، احراز هویت را تکمیل کنید.",
+                        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                            InlineKeyboardButton(text="🪪 شروع احراز هویت", callback_data="kyc:start")
+                        ]]),
+                    )
             except Exception:
                 pass
             await callback.answer("پرداخت تأیید شد؛ منتظر KYC", show_alert=True)
