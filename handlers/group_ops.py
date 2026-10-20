@@ -183,7 +183,7 @@ async def _render_admin_list(message: Message, page: int = 0) -> None:
     if nav:
         rows.append(nav)
     rows.append([InlineKeyboardButton(text="🔎 جستجوی دقیق", callback_data="gops:search")])
-    rows.append([InlineKeyboardButton(text="🧭 مرکز عملیات", callback_data="gops:home")])
+    rows.append([InlineKeyboardButton(text="⬅️ پنل‌ها و ادمین‌ها", callback_data="ops:hub:panels")])
 
     text = (
         "👥 <b>لیست Adminها</b>\n\n"
@@ -364,7 +364,7 @@ async def _render_admin_card(message: Message, admin_id: int) -> bool:
             InlineKeyboardButton(text="👥 لیست Adminها", callback_data="gops:admins:0"),
             InlineKeyboardButton(text="🔎 جستجو", callback_data="gops:search"),
         ],
-        [InlineKeyboardButton(text="🧭 مرکز عملیات", callback_data="gops:home")],
+        [InlineKeyboardButton(text="⬅️ پنل‌ها و ادمین‌ها", callback_data="ops:hub:panels")],
     ]
     await message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
     return True
