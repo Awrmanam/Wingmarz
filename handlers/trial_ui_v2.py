@@ -133,7 +133,10 @@ async def _trial_service_rows(trial_type: str) -> list[list[Any]]:
                 category.name,
                 callback_data,
                 icon_key=icon_key,
-                fallback=None if icon_key else "📁",
+                # Do not inject a generic folder icon for services without a
+                # configured Premium Emoji. The visible panel name should stay
+                # clean; a real service icon appears automatically when mapped.
+                fallback=None,
             )
         ])
     return rows
