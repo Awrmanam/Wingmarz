@@ -70,28 +70,30 @@ async def _render_storefront(message: Message, source: str) -> None:
     categories = await _categories()
     if not categories:
         await message.edit_text(
-            str(config.MESSAGES.get("sales_empty", "فعلاً پلنی برای خرید آماده نیست.")),
+            str(config.MESSAGES.get("sales_empty", "فعلاً پلن کاملی برای خرید آماده نیست.")),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                await _button("بازگشت", _home_callback(source), icon_key="back", fallback="⬅️")
+                await _button("بازگشت", f"buyflow:method:{source}", icon_key="back", fallback="⬅️")
             ]]),
         )
         return
 
     rows = []
     for category in categories:
-        plans = await product_catalog.plans_for_category(category.id, only_active=True)
         icon_key = await product_catalog.resolve_panel_icon_key(category)
         rows.append([
             await _button(
-                f"{category.name} · {len(plans)} پلن",
+                category.name,
                 f"planmarket:c:{source}:{category.id}",
                 icon_key=icon_key,
-                fallback="📁" if not icon_key else None,
+                fallback=None,
             )
         ])
-    rows.append([await _button("بازگشت", _home_callback(source), icon_key="back", fallback="⬅️")])
+    rows.append([
+        await _button("🔙 روش خرید", f"buyflow:method:{source}", icon_key="back", fallback="⬅️")
+    ])
     await message.edit_text(
-        "🛒 <b>خرید پنل نمایندگی</b>\n\nپنل موردنظر را انتخاب کنید:",
+        "📦 <b>پلن کامل Rebecca</b>\n\n"
+        "سرویس موردنظر را انتخاب کنید. در مرحله بعد جزئیات پلن‌ها را می‌بینید:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
     )
 
@@ -225,13 +227,24 @@ async def plan_storefront_public(callback: CallbackQuery, state: FSMContext):
 
 
 @plan_storefront_router.callback_query(F.data.startswith("planmarket:root:"))
-@plan_storefront_router.callback_query(F.data.startswith("svcmarket:root:"))
 async def plan_storefront_root(callback: CallbackQuery, state: FSMContext):
     source = (callback.data or "").rsplit(":", 1)[-1]
     if source not in {"a", "p"} or config.PANEL_PROVIDER != "rebecca":
         return
     await state.clear()
     await _render_storefront(callback.message, source)
+    await callback.answer()
+
+
+@plan_storefront_router.callback_query(F.data.startswith("svcmarket:root:"))
+async def old_service_root_compat(callback: CallbackQuery, state: FSMContext):
+    """Old fixed-service root buttons now enter the billing-first wizard."""
+    source = (callback.data or "").rsplit(":", 1)[-1]
+    if source not in {"a", "p"} or config.PANEL_PROVIDER != "rebecca":
+        return
+    await state.clear()
+    from handlers.payg_offers import render_purchase_method
+    await render_purchase_method(callback.message, source)
     await callback.answer()
 
 
