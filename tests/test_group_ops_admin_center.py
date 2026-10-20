@@ -190,6 +190,7 @@ def test_rebecca_scheduler_has_group_ops_jobs_but_no_duplicate_payg(monkeypatch)
         try:
             assert scheduler.scheduler.get_job("group_ops_admin_alerts") is not None
             assert scheduler.scheduler.get_job("group_ops_daily_summary") is not None
+            assert scheduler.scheduler.get_job("order_kyc_timeout") is not None
             assert scheduler.scheduler.get_job("payg_billing_job") is None
         finally:
             await scheduler.stop()
