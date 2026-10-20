@@ -566,13 +566,19 @@ async def admin_receive_payment_receipt(message: Message, state: FSMContext):
         await message.answer("این سفارش قبلاً بررسی شده یا متعلق به شما نیست.")
         return
 
+    order = await db.get_order_by_id(order_id)
     gate = await order_compliance_service.get(order_id)
+    if gate is None and order and str(order.get("order_type") or "").lower() != "renew":
+        gate = await order_compliance_service.ensure_order(
+            order_id,
+            message.from_user.id,
+            kyc_required=not await trust_service.is_identity_approved(message.from_user.id),
+        )
     if gate:
         await order_compliance_service.mark_receipt_submitted(
             order_id, message.from_user.id
         )
 
-    order = await db.get_order_by_id(order_id)
     plan = await db.get_plan_by_id(order.get("plan_id")) if order and order.get("plan_id") else None
     trusted = await trust_service.is_identity_approved(message.from_user.id)
     auto_enabled = await trust_service.auto_approve_enabled(message.from_user.id)
