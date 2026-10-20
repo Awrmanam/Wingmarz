@@ -24,6 +24,7 @@ from style_engine import style_engine
 from utils.bold_fix_bot import BoldFixBot
 from kyc_middleware import KycGateMiddleware, KycMessageGateMiddleware
 from group_ops_middleware import GroupOpsErrorMiddleware
+from forced_join_service import ForcedJoinState, check_membership
 
 
 # Configure logging
@@ -298,66 +299,68 @@ class ForcedJoinMiddleware(BaseMiddleware):
 
     async def __call__(self, handler, event, data):
         try:
-            user = getattr(event, 'from_user', None)
+            user = getattr(event, "from_user", None)
             if not user:
                 return await handler(event, data)
-            user_id = user.id
+            user_id = int(user.id)
             if user_id in config.SUDO_ADMINS:
                 return await handler(event, data)
-            # Allow refresh callback to pass through
-            if hasattr(event, 'data') and getattr(event, 'data', '') == 'forced_join_refresh':
+            if getattr(event, "data", "") == "forced_join_refresh":
                 return await handler(event, data)
-            chans = await db.get_forced_channels()
-            if not chans:
+
+            channels = await db.get_forced_channels()
+            if not channels:
                 return await handler(event, data)
+
             not_joined = []
-            for ch in chans:
-                try:
-                    raw_chat_id = ch.get('chat_id')
-                    chat_id = raw_chat_id
-                    if isinstance(raw_chat_id, str) and raw_chat_id.isdigit() and not raw_chat_id.startswith('-100'):
-                        chat_id = f"-100{raw_chat_id}"
-                    # Convert numeric to int
-                    chat_id_to_use = int(chat_id) if isinstance(chat_id, str) and chat_id.lstrip('-').isdigit() else chat_id
-                    member = await self.bot.get_chat_member(chat_id=chat_id_to_use, user_id=user_id)
-                    status = getattr(member, 'status', None)
-                    if hasattr(status, 'value'):
-                        s = status.value.lower()
-                    elif hasattr(status, 'name'):
-                        s = status.name.lower()
-                    else:
-                        s = str(status).lower()
-                    if s not in ['member', 'administrator', 'creator']:
-                        not_joined.append(ch)
-                except Exception:
-                    not_joined.append(ch)
-            if not not_joined:
+            errors = []
+            for channel in channels:
+                check = await check_membership(self.bot, channel, user_id)
+                if check.state == ForcedJoinState.NOT_JOINED:
+                    not_joined.append(channel)
+                elif check.state == ForcedJoinState.ERROR:
+                    errors.append((channel, check.error))
+
+            if not not_joined and not errors:
                 return await handler(event, data)
-            lines = ["برای استفاده از ربات، ابتدا در کانال‌های زیر عضو شوید:", ""]
-            kb_rows = []
-            for ch in not_joined:
-                title = ch.get('title') or ch.get('chat_id')
-                link = ch.get('invite_link') or (f"https://t.me/{title.lstrip('@')}" if str(ch.get('chat_id')).startswith('@') else None)
-                if link:
+
+            lines = []
+            keyboard_rows = []
+            if not_joined:
+                lines.extend(["برای استفاده از ربات، ابتدا در کانال‌های زیر عضو شوید:", ""])
+                for channel in not_joined:
+                    title = str(channel.get("title") or channel.get("chat_id"))
+                    link = channel.get("invite_link")
+                    if not link and str(channel.get("chat_id") or "").startswith("@"):
+                        link = f"https://t.me/{str(channel['chat_id']).lstrip('@')}"
                     lines.append(f"• {title}")
-                    kb_rows.append([InlineKeyboardButton(text=title, url=link)])
-                else:
-                    lines.append(f"• {title}")
-            kb_rows.append([InlineKeyboardButton(text="✅ بررسی مجدد", callback_data="forced_join_refresh")])
-            # Send as reply if message, or answer callback
-            if hasattr(event, 'message') and event.message:
-                await event.message.answer("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
-            elif hasattr(event, 'message'):
-                await event.message.answer("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
+                    if link:
+                        keyboard_rows.append([InlineKeyboardButton(text=title, url=link)])
+
+            if errors:
+                if lines:
+                    lines.append("")
+                lines.append("⚠️ بررسی عضویت یک کانال موقتاً ممکن نیست.")
+                lines.append("مدیریت باید اتصال کانال را از بخش «عضویت اجباری» تست/اصلاح کند.")
+                for channel, error in errors:
+                    logger.warning(
+                        "Forced join check failed channel=%r user=%s: %s",
+                        channel.get("chat_id"), user_id, error,
+                    )
+
+            keyboard_rows.append([
+                InlineKeyboardButton(text="✅ بررسی مجدد", callback_data="forced_join_refresh")
+            ])
+            markup = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
+            if isinstance(event, CallbackQuery) and event.message:
+                await event.message.answer("\n".join(lines), reply_markup=markup)
+            elif isinstance(event, Message):
+                await event.answer("\n".join(lines), reply_markup=markup)
             else:
-                # Fallback for callbacks
-                try:
-                    await self.bot.send_message(chat_id=user_id, text="\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
-                except Exception:
-                    pass
-            return  # Block further handling
-        except Exception as e:
-            logger.error(f"ForcedJoinMiddleware error: {e}")
+                await self.bot.send_message(user_id, "\n".join(lines), reply_markup=markup)
+            return None
+        except Exception as exc:
+            logger.error("ForcedJoinMiddleware error: %s", exc)
             return await handler(event, data)
 
     async def help_handler(self, message: Message, state: FSMContext = None):
