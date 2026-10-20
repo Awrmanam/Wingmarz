@@ -4621,7 +4621,22 @@ class _AutoIssueCallback:
 
 async def auto_issue_order(bot, order_id: int, actor_id: int) -> None:
     """Run the existing, idempotent issuance path after payment+KYC become ready."""
-    await order_approve(_AutoIssueCallback(bot, int(order_id), int(actor_id)))
+    oid = int(order_id)
+    await order_approve(_AutoIssueCallback(bot, oid, int(actor_id)))
+    order = await db.get_order_by_id(oid)
+    if order and str(order.get("status") or "").lower() != "approved":
+        await group_ops_service.send_text(
+            bot,
+            "orders",
+            f"⚠️ <b>صدور خودکار سفارش #{oid} کامل نشد.</b>\n"
+            "وضعیت پرداخت/KYC تأیید است؛ برای تلاش مجدد دکمه زیر را بزنید.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(
+                    text="🔁 تلاش دوباره صدور",
+                    callback_data=f"order_retry_{oid}",
+                )
+            ]]),
+        )
 
 
 async def _edit_receipt_review_message(callback: CallbackQuery, suffix: str) -> None:
