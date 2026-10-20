@@ -46,8 +46,8 @@ async def _render_provider_storefront(message: Message, source: str, provider_ke
                 ]]),
             )
             return
-        from handlers.payg_offers import render_service_storefront
-        await render_service_storefront(message, source)
+        from handlers.payg_offers import render_purchase_method
+        await render_purchase_method(message, source)
         return
     await message.edit_text(
         "این Provider هنوز برای فروش آماده نشده است.",
@@ -57,8 +57,8 @@ async def _render_provider_storefront(message: Message, source: str, provider_ke
     )
 
 
-# Provider selection now opens a service-first storefront. Each Rebecca service
-# can independently expose PAYG and/or fixed/monthly products.
+# Provider selection now opens a billing-first purchase wizard. Buyers choose
+# PAYG vs fixed pricing before seeing services, so the two models never mix.
 @payg_entry_router.callback_query(F.data.startswith("panelprov:select:"))
 async def provider_service_storefront(callback: CallbackQuery, state: FSMContext):
     parts = (callback.data or "").split(":")
