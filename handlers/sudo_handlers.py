@@ -1,5 +1,8 @@
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import (
+    Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
+    KeyboardButton, KeyboardButtonRequestChat, ReplyKeyboardMarkup, ReplyKeyboardRemove,
+)
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -15,6 +18,7 @@ import time
 import config
 from order_tracking import track_approval
 from group_ops_service import group_ops_service
+from forced_join_service import inspect_channel_access
 from database import db
 from models.schemas import AdminModel, LogModel
 from utils.notify import (
@@ -1110,33 +1114,90 @@ async def sudo_menu_reports(callback: CallbackQuery):
     ])
     await callback.message.edit_text("📊 گزارشات:", reply_markup=kb)
     await callback.answer()
-@sudo_router.callback_query(F.data == "forced_join_manage")
-async def forced_join_manage(callback: CallbackQuery):
-    if callback.from_user.id not in config.SUDO_ADMINS:
-        await callback.answer("غیرمجاز", show_alert=True)
-        return
-    channels = await db.get_forced_channels(only_active=False)
-    lines = ["📢 کانال‌های جوین اجباری:", ""]
-    if not channels:
-        lines.append("— لیستی وجود ندارد.")
-    else:
-        for ch in channels:
-            status = "✅" if ch.get("is_active") else "❌"
-            lines.append(f"{status} #{ch['id']} • {ch.get('title') or ch.get('chat_id')}\n{ch.get('invite_link') or ''}")
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ افزودن", callback_data="forced_join_add")],
-        [InlineKeyboardButton(text="🗑️ حذف", callback_data="forced_join_del")],
-        [InlineKeyboardButton(text="🔁 فعال/غیرفعال", callback_data="forced_join_toggle")],
-        [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="back_to_main")]
-    ])
-    await callback.message.edit_text("\n".join(lines), reply_markup=kb)
-    await callback.answer()
+FORCED_JOIN_ADD_REQUEST_ID = 37101
+FORCED_JOIN_REPAIR_BASE = 38000
 
 
 class ForcedJoinStates(StatesGroup):
-    waiting_chat_id = State()
-    waiting_title = State()
-    waiting_link = State()
+    waiting_invite_link = State()
+
+
+def _forced_join_picker(request_id: int, label: str = "📌 انتخاب کانال") -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[
+            KeyboardButton(
+                text=label,
+                request_chat=KeyboardButtonRequestChat(
+                    request_id=int(request_id),
+                    chat_is_channel=True,
+                    bot_is_member=True,
+                    request_title=True,
+                    request_username=True,
+                ),
+            )
+        ]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+        input_field_placeholder="کانال را انتخاب کنید",
+    )
+
+
+async def _forced_channel_health(bot, channel: dict) -> tuple[str, str]:
+    try:
+        meta = await inspect_channel_access(bot, channel.get("chat_id"))
+        return "🟢", f"دسترسی OK · {meta['bot_status']}"
+    except Exception as exc:
+        return "🔴", str(exc)
+
+
+async def _render_forced_join_manage(message: Message, bot) -> None:
+    channels = await db.get_forced_channels(only_active=False)
+    lines = [
+        "📢 <b>عضویت اجباری</b>",
+        "",
+        "کانال‌ها از همینجا تست و اصلاح می‌شوند. برای تشخیص عضویت، بات باید داخل کانال Admin باشد.",
+        "",
+    ]
+    rows = []
+    if not channels:
+        lines.append("هنوز کانالی ثبت نشده است.")
+    for channel in channels:
+        icon, health = await _forced_channel_health(bot, channel)
+        enabled = "فعال" if channel.get("is_active") else "خاموش"
+        title = str(channel.get("title") or channel.get("chat_id"))
+        lines.append(
+            f"{icon} <b>{escape(title)}</b> · {enabled}\n"
+            f"<code>{escape(str(channel.get('chat_id')))}</code>\n"
+            f"{escape(health[:160])}"
+        )
+        rows.append([InlineKeyboardButton(
+            text=f"{icon} {title[:30]}",
+            callback_data=f"forced_join_item_{int(channel['id'])}",
+        )])
+
+    rows.append([InlineKeyboardButton(text="➕ افزودن کانال", callback_data="forced_join_add")])
+    rows.append([InlineKeyboardButton(text="🩺 تست مجدد همه", callback_data="forced_join_recheck")])
+    rows.append([InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="back_to_main")])
+    await message.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@sudo_router.callback_query(F.data == "forced_join_manage")
+async def forced_join_manage(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in config.SUDO_ADMINS:
+        await callback.answer("غیرمجاز", show_alert=True)
+        return
+    await state.clear()
+    await _render_forced_join_manage(callback.message, callback.bot)
+    await callback.answer()
+
+
+@sudo_router.callback_query(F.data == "forced_join_recheck")
+async def forced_join_recheck(callback: CallbackQuery):
+    if callback.from_user.id not in config.SUDO_ADMINS:
+        await callback.answer("غیرمجاز", show_alert=True)
+        return
+    await _render_forced_join_manage(callback.message, callback.bot)
+    await callback.answer("وضعیت دسترسی بروزرسانی شد")
 
 
 @sudo_router.callback_query(F.data == "forced_join_add")
@@ -1144,76 +1205,167 @@ async def forced_join_add(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id not in config.SUDO_ADMINS:
         await callback.answer("غیرمجاز", show_alert=True)
         return
-    await state.set_state(ForcedJoinStates.waiting_chat_id)
-    await callback.message.edit_text("Chat ID یا @username کانال را ارسال کنید:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="forced_join_manage")]]))
-    await callback.answer()
-
-
-@sudo_router.message(ForcedJoinStates.waiting_chat_id, F.text)
-async def forced_join_add_chat_id(message: Message, state: FSMContext):
-    await state.update_data(chat_id=message.text.strip())
-    await state.set_state(ForcedJoinStates.waiting_title)
-    await message.answer("عنوان نمایشی (اختیاری) را ارسال کنید یا - را بفرستید:")
-
-
-@sudo_router.message(ForcedJoinStates.waiting_title, F.text)
-async def forced_join_add_title(message: Message, state: FSMContext):
-    title = message.text.strip()
-    await state.update_data(title=None if title == '-' else title)
-    await state.set_state(ForcedJoinStates.waiting_link)
-    await message.answer("لینک دعوت (اختیاری) را ارسال کنید یا - را بفرستید:")
-
-
-@sudo_router.message(ForcedJoinStates.waiting_link, F.text)
-async def forced_join_add_link(message: Message, state: FSMContext):
-    link = message.text.strip()
-    data = await state.get_data()
     await state.clear()
-    ok = await db.add_forced_channel(chat_id=data.get('chat_id'), title=data.get('title'), invite_link=(None if link == '-' else link), is_active=True)
-    if ok:
-        await message.answer("✅ کانال اضافه شد.")
+    await callback.message.answer(
+        "📌 <b>کانال عضویت اجباری را انتخاب کنید.</b>\n\n"
+        "بات باید از قبل داخل آن کانال <b>Admin</b> باشد. "
+        "Chat ID واقعی بعد از انتخاب به‌صورت خودکار ذخیره می‌شود.",
+        reply_markup=_forced_join_picker(FORCED_JOIN_ADD_REQUEST_ID),
+    )
+    await callback.answer()
+
+
+@sudo_router.callback_query(F.data.startswith("forced_join_item_"))
+async def forced_join_item(callback: CallbackQuery):
+    if callback.from_user.id not in config.SUDO_ADMINS:
+        await callback.answer("غیرمجاز", show_alert=True)
+        return
+    channel_id = int((callback.data or "").rsplit("_", 1)[-1])
+    channels = await db.get_forced_channels(only_active=False)
+    channel = next((item for item in channels if int(item["id"]) == channel_id), None)
+    if not channel:
+        await callback.answer("کانال پیدا نشد.", show_alert=True)
+        return
+
+    icon, health = await _forced_channel_health(callback.bot, channel)
+    text = (
+        f"📢 <b>{escape(str(channel.get('title') or channel.get('chat_id')))}</b>\n\n"
+        f"وضعیت بررسی: {icon} <b>{escape(health[:300])}</b>\n"
+        f"Chat ID ذخیره‌شده: <code>{escape(str(channel.get('chat_id')))}</code>\n"
+        f"لینک: {escape(str(channel.get('invite_link') or '—'))}\n"
+        f"اجبار: <b>{'فعال' if channel.get('is_active') else 'خاموش'}</b>"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🩺 تست دوباره", callback_data=f"forced_join_item_{channel_id}")],
+        [InlineKeyboardButton(text="♻️ انتخاب مجدد کانال", callback_data=f"forced_join_repair_{channel_id}")],
+        [InlineKeyboardButton(
+            text="⛔ خاموش کردن" if channel.get("is_active") else "✅ فعال کردن",
+            callback_data=f"forced_join_toggle_{channel_id}",
+        )],
+        [InlineKeyboardButton(text="🗑 حذف", callback_data=f"forced_join_del_{channel_id}")],
+        [InlineKeyboardButton(text="🔙 لیست کانال‌ها", callback_data="forced_join_manage")],
+    ])
+    await callback.message.edit_text(text, reply_markup=kb)
+    await callback.answer()
+
+
+@sudo_router.callback_query(F.data.startswith("forced_join_repair_"))
+async def forced_join_repair(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in config.SUDO_ADMINS:
+        await callback.answer("غیرمجاز", show_alert=True)
+        return
+    channel_id = int((callback.data or "").rsplit("_", 1)[-1])
+    await state.clear()
+    await callback.message.answer(
+        "♻️ کانال صحیح را از دکمه زیر انتخاب کنید. Chat ID قبلی با مقدار واقعی جایگزین می‌شود.",
+        reply_markup=_forced_join_picker(FORCED_JOIN_REPAIR_BASE + channel_id, "♻️ انتخاب کانال صحیح"),
+    )
+    await callback.answer()
+
+
+@sudo_router.message(F.chat_shared)
+async def forced_join_chat_shared(message: Message, state: FSMContext):
+    if message.from_user.id not in config.SUDO_ADMINS:
+        return
+    shared = getattr(message, "chat_shared", None)
+    if not shared:
+        return
+    request_id = int(getattr(shared, "request_id", -1))
+    if request_id != FORCED_JOIN_ADD_REQUEST_ID and request_id < FORCED_JOIN_REPAIR_BASE:
+        return
+
+    repair_id = None if request_id == FORCED_JOIN_ADD_REQUEST_ID else request_id - FORCED_JOIN_REPAIR_BASE
+    try:
+        meta = await inspect_channel_access(message.bot, int(shared.chat_id))
+    except Exception as exc:
+        await message.answer(
+            "❌ کانال قابل ثبت نیست.\n\n"
+            f"<b>علت:</b> {escape(str(exc))}\n\n"
+            "بات را داخل همان کانال Admin کنید و دوباره انتخاب کنید.",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        return
+
+    if not meta.get("invite_link"):
+        await state.clear()
+        await state.update_data(
+            forced_join_pending=meta,
+            forced_join_repair_id=repair_id,
+        )
+        await state.set_state(ForcedJoinStates.waiting_invite_link)
+        await message.answer(
+            "✅ دسترسی بات تأیید شد، ولی کانال خصوصی است و لینک ورود قابل دریافت نبود.\n"
+            "لینک دعوت کانال را ارسال کنید (مثلاً <code>https://t.me/+...</code>).",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        return
+
+    if repair_id is None:
+        existing = await db.get_forced_channels(only_active=False)
+        same = next((item for item in existing if str(item.get("chat_id")) == str(meta["chat_id"])), None)
+        if same:
+            await db.update_forced_channel(
+                int(same["id"]),
+                title=meta["title"],
+                invite_link=meta["invite_link"],
+            )
+            result = "✅ کانال قبلاً ثبت شده بود؛ اطلاعاتش بروزرسانی شد."
+        else:
+            ok = await db.add_forced_channel(
+                chat_id=meta["chat_id"],
+                title=meta["title"],
+                invite_link=meta["invite_link"],
+                is_active=True,
+            )
+            result = "✅ کانال اضافه شد." if ok else "❌ ذخیره کانال ناموفق بود."
     else:
-        await message.answer("❌ خطا در افزودن کانال.")
+        ok = await db.update_forced_channel(
+            repair_id,
+            chat_id=meta["chat_id"],
+            title=meta["title"],
+            invite_link=meta["invite_link"],
+        )
+        result = "✅ کانال با Chat ID واقعی اصلاح شد." if ok else "❌ اصلاح کانال ناموفق بود."
+
+    await state.clear()
+    await message.answer(result, reply_markup=ReplyKeyboardRemove())
+    await message.answer("برای مشاهده وضعیت جدید، وارد «عضویت اجباری» شوید.")
 
 
-@sudo_router.callback_query(F.data == "forced_join_del")
-async def forced_join_del(callback: CallbackQuery):
-    if callback.from_user.id not in config.SUDO_ADMINS:
-        await callback.answer("غیرمجاز", show_alert=True)
+@sudo_router.message(ForcedJoinStates.waiting_invite_link, F.text)
+async def forced_join_private_link(message: Message, state: FSMContext):
+    if message.from_user.id not in config.SUDO_ADMINS:
         return
-    channels = await db.get_forced_channels(only_active=False)
-    if not channels:
-        await callback.answer("کانالی نیست.", show_alert=True)
+    link = str(message.text or "").strip()
+    if not (link.startswith("https://t.me/") or link.startswith("http://t.me/")):
+        await message.answer("❌ لینک دعوت معتبر نیست. لینک t.me را ارسال کنید.")
         return
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"#{c['id']} {c.get('title') or c.get('chat_id')}", callback_data=f"forced_join_del_{c['id']}") ] for c in channels] + [[InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="forced_join_manage")]])
-    await callback.message.edit_text("یک کانال را برای حذف انتخاب کنید:", reply_markup=kb)
-    await callback.answer()
-
-
-@sudo_router.callback_query(F.data.startswith("forced_join_del_"))
-async def forced_join_del_confirm(callback: CallbackQuery):
-    if callback.from_user.id not in config.SUDO_ADMINS:
-        await callback.answer("غیرمجاز", show_alert=True)
+    data = await state.get_data()
+    meta = data.get("forced_join_pending") or {}
+    repair_id = data.get("forced_join_repair_id")
+    if not meta.get("chat_id"):
+        await state.clear()
+        await message.answer("❌ اطلاعات کانال از بین رفته؛ دوباره کانال را انتخاب کنید.")
         return
-    cid = int(callback.data.split("_")[-1])
-    ok = await db.delete_forced_channel(cid)
-    text = "✅ حذف شد." if ok else "❌ خطا در حذف." 
-    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="forced_join_manage")]]))
-    await callback.answer()
 
-
-@sudo_router.callback_query(F.data == "forced_join_toggle")
-async def forced_join_toggle(callback: CallbackQuery):
-    if callback.from_user.id not in config.SUDO_ADMINS:
-        await callback.answer("غیرمجاز", show_alert=True)
-        return
-    channels = await db.get_forced_channels(only_active=False)
-    if not channels:
-        await callback.answer("کانالی نیست.", show_alert=True)
-        return
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"#{c['id']} {'فعال' if c.get('is_active') else 'غیرفعال'} - {c.get('title') or c.get('chat_id')}", callback_data=f"forced_join_toggle_{c['id']}") ] for c in channels] + [[InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="forced_join_manage")]])
-    await callback.message.edit_text("فعال/غیرفعال کردن:", reply_markup=kb)
-    await callback.answer()
+    if repair_id is None:
+        ok = await db.add_forced_channel(
+            chat_id=meta["chat_id"],
+            title=meta["title"],
+            invite_link=link,
+            is_active=True,
+        )
+    else:
+        ok = await db.update_forced_channel(
+            int(repair_id),
+            chat_id=meta["chat_id"],
+            title=meta["title"],
+            invite_link=link,
+        )
+    await state.clear()
+    await message.answer(
+        "✅ کانال ذخیره و دسترسی بات تأیید شد." if ok else "❌ ذخیره ناموفق بود."
+    )
 
 
 @sudo_router.callback_query(F.data.startswith("forced_join_toggle_"))
@@ -1221,16 +1373,26 @@ async def forced_join_toggle_confirm(callback: CallbackQuery):
     if callback.from_user.id not in config.SUDO_ADMINS:
         await callback.answer("غیرمجاز", show_alert=True)
         return
-    cid = int(callback.data.split("_")[-1])
+    channel_id = int((callback.data or "").rsplit("_", 1)[-1])
     channels = await db.get_forced_channels(only_active=False)
-    ch = next((c for c in channels if c['id'] == cid), None)
-    if not ch:
-        await callback.answer("یافت نشد.", show_alert=True)
+    channel = next((item for item in channels if int(item["id"]) == channel_id), None)
+    if not channel:
+        await callback.answer("کانال پیدا نشد.", show_alert=True)
         return
-    ok = await db.set_forced_channel_active(cid, not bool(ch.get('is_active')))
-    text = "✅ بروزرسانی شد." if ok else "❌ خطا در بروزرسانی." 
-    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="forced_join_manage")]]))
-    await callback.answer()
+    await db.set_forced_channel_active(channel_id, not bool(channel.get("is_active")))
+    await callback.answer("بروزرسانی شد")
+    await _render_forced_join_manage(callback.message, callback.bot)
+
+
+@sudo_router.callback_query(F.data.startswith("forced_join_del_"))
+async def forced_join_del_confirm(callback: CallbackQuery):
+    if callback.from_user.id not in config.SUDO_ADMINS:
+        await callback.answer("غیرمجاز", show_alert=True)
+        return
+    channel_id = int((callback.data or "").rsplit("_", 1)[-1])
+    ok = await db.delete_forced_channel(channel_id)
+    await callback.answer("حذف شد ✅" if ok else "حذف ناموفق بود", show_alert=not ok)
+    await _render_forced_join_manage(callback.message, callback.bot)
 
 
 def get_admin_list_keyboard(admins: List[AdminModel], action: str) -> InlineKeyboardMarkup:
