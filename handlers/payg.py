@@ -275,15 +275,20 @@ async def payg_receipt_received(message: Message, state: FSMContext):
     topup_id = int(data.get("payg_topup_id") or 0)
     if not topup_id:
         await state.clear()
+        await message.answer("❌ درخواست شارژ پیدا نشد؛ دوباره از PAYG وارد پرداخت شوید.")
         return
-    if not message.photo:
+
+    photos = list(message.photo or [])
+    if not photos:
         await message.answer("لطفاً رسید را به‌صورت عکس ارسال کنید.")
         return
-    file_id = message.photo[-1].file_id
+    file_id = photos[-1].file_id
+
     if not await payg_service.submit_topup_receipt(topup_id, message.from_user.id, file_id):
         await state.clear()
         await message.answer("این درخواست قبلاً بررسی شده یا معتبر نیست.")
         return
+
     topup = await payg_service.get_topup(topup_id)
     kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="✅ تأیید شارژ", callback_data=f"paygadmin:approve:{topup_id}"),
@@ -292,29 +297,41 @@ async def payg_receipt_received(message: Message, state: FSMContext):
     trusted = await trust_service.is_identity_approved(message.from_user.id)
     auto_enabled = await trust_service.auto_approve_enabled(message.from_user.id)
     caption = (
-        f"🧾 شارژ PAYG #{topup_id}\n"
-        f"کاربر: <code>{message.from_user.id}</code>\n"
+        f"🧾 <b>رسید شارژ PAYG #{topup_id}</b>\n"
+        f"👤 <code>{message.from_user.id}</code>\n"
         f"Username: {('@' + escape(message.from_user.username)) if message.from_user.username else '—'}\n"
-        f"مبلغ: <b>{_money(int(topup['amount_toman']))}</b>\n"
+        f"💵 مبلغ: <b>{_money(int(topup['amount_toman']))}</b>\n"
         f"نوع: {escape(str(topup['purpose']))}\n"
         f"🪪 Identity: <b>{'تأیید' if trusted else 'تأییدنشده'}</b>\n"
         f"🤖 Auto Approve: <b>{'مجاز (نیازمند Bank Match)' if auto_enabled else 'خاموش'}</b>"
     )
+
+    sent_to_group = False
     try:
-        await group_ops_service.send_photo(
+        sent_to_group = await group_ops_service.send_photo(
             message.bot,
-            "payments" if trusted else "unverified",
+            "receipts",
             file_id,
             caption=caption,
             reply_markup=kb,
         )
-    except Exception:
-        pass
-    for sudo_id in config.SUDO_ADMINS:
-        try:
-            await message.bot.send_photo(sudo_id, photo=file_id, caption=caption, reply_markup=kb)
-        except Exception:
-            pass
+    except Exception as exc:
+        await group_ops_service.report_error(
+            message.bot, exc, context=f"PAYG receipt topup={topup_id}"
+        )
+
+    if not sent_to_group:
+        for sudo_id in config.SUDO_ADMINS:
+            try:
+                await message.bot.send_photo(
+                    sudo_id,
+                    photo=file_id,
+                    caption=caption,
+                    reply_markup=kb,
+                )
+            except Exception:
+                pass
+
     await state.clear()
     await message.answer("✅ رسید ارسال شد. پس از تأیید، اعتبار به کیف پول اضافه می‌شود.")
 
