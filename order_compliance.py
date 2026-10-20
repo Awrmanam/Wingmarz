@@ -14,6 +14,7 @@ PAYMENT_APPROVED = "approved"
 PAYMENT_REJECTED = "rejected"
 
 KYC_PENDING = "pending"
+KYC_SUBMITTED = "submitted"
 KYC_APPROVED = "approved"
 KYC_REJECTED = "rejected"
 KYC_NOT_REQUIRED = "not_required"
@@ -252,6 +253,42 @@ class OrderComplianceService:
             await conn.commit()
             return cur.rowcount == 1
 
+    async def mark_user_kyc_submitted(self, user_id: int) -> list[int]:
+        """Record that the buyer fulfilled the KYC submission obligation.
+
+        This stops the 48h no-submission timer while human review is pending.
+        """
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            await conn.execute(
+                """
+                UPDATE order_compliance
+                SET kyc_state=?, updated_at=CURRENT_TIMESTAMP
+                WHERE user_id=? AND kyc_required=1
+                  AND kyc_state IN (?,?,?)
+                  AND refund_state=?
+                """,
+                (
+                    KYC_SUBMITTED,
+                    int(user_id),
+                    KYC_PENDING,
+                    KYC_REJECTED,
+                    REFUND_NONE,
+                ),
+            )
+            await conn.commit()
+            async with conn.execute(
+                """
+                SELECT order_id FROM order_compliance
+                WHERE user_id=? AND kyc_required=1
+                  AND kyc_state=? AND refund_state=?
+                ORDER BY order_id
+                """,
+                (int(user_id), KYC_SUBMITTED, REFUND_NONE),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [int(row[0]) for row in rows]
+
     async def set_order_kyc(self, order_id: int, approved: bool) -> OrderGate | None:
         await self.ensure_schema()
         async with aiosqlite.connect(self.db_path) as conn:
@@ -300,6 +337,7 @@ class OrderComplianceService:
                     KYC_APPROVED,
                     int(user_id),
                     KYC_PENDING,
+                    KYC_SUBMITTED,
                     KYC_REJECTED,
                     REFUND_NONE,
                 ),
@@ -330,7 +368,7 @@ class OrderComplianceService:
                     END,
                     updated_at=CURRENT_TIMESTAMP
                 WHERE user_id=? AND kyc_required=1
-                  AND kyc_state=?
+                  AND kyc_state IN (?,?)
                 """,
                 (
                     KYC_REJECTED,
@@ -338,6 +376,7 @@ class OrderComplianceService:
                     REFUND_PENDING,
                     int(user_id),
                     KYC_PENDING,
+                    KYC_SUBMITTED,
                 ),
             )
             await conn.commit()
@@ -360,13 +399,14 @@ class OrderComplianceService:
                 """
                 SELECT order_id FROM order_compliance
                 WHERE user_id=? AND payment_state=? AND kyc_required=1
-                  AND kyc_state IN (?,?) AND refund_state=?
+                  AND kyc_state IN (?,?,?) AND refund_state=?
                 ORDER BY order_id
                 """,
                 (
                     int(user_id),
                     PAYMENT_APPROVED,
                     KYC_PENDING,
+                    KYC_SUBMITTED,
                     KYC_REJECTED,
                     REFUND_NONE,
                 ),
