@@ -761,7 +761,7 @@ async def sudo_menu_cleanup(callback: CallbackQuery):
         [InlineKeyboardButton(text=config.BUTTONS["cleanup_small_quota"], callback_data="sudo_cleanup_small_quota")],
         [InlineKeyboardButton(text=config.BUTTONS["reset_usage"], callback_data="sudo_reset_usage")],
         [InlineKeyboardButton(text=config.BUTTONS["non_payer"], callback_data="sudo_non_payer")],
-        [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="back_to_main")]
+        [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="ops:hub:settings")]
     ])
     await callback.message.edit_text("🧹 عملیات پاکسازی:", reply_markup=kb)
     await callback.answer()
@@ -794,7 +794,7 @@ async def sudo_menu_broadcast(callback: CallbackQuery, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=config.BUTTONS["broadcast_all"], callback_data="broadcast_all")],
         [InlineKeyboardButton(text=config.BUTTONS["broadcast_active"], callback_data="broadcast_active")],
-        [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="back_to_main")]
+        [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="ops:hub:customers")]
     ])
     await callback.message.edit_text("📣 پیام‌رسانی:", reply_markup=kb)
     await callback.answer()
@@ -900,7 +900,7 @@ async def broadcast_confirm(callback: CallbackQuery, state: FSMContext):
         f"❌ ناموفق: {failed}\n"
         f"👥 کل: {len(recipients)}"
     )
-    await callback.message.edit_text(summary, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="back_to_main")]]))
+    await callback.message.edit_text(summary, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="ops:hub:customers")]]))
     await callback.answer()
 
 @sudo_router.callback_query(F.data == "sudo_menu_backup")
@@ -911,7 +911,7 @@ async def sudo_menu_backup(callback: CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=config.BUTTONS["backup_now"], callback_data="backup_now"), InlineKeyboardButton(text=config.BUTTONS["backup_schedule"], callback_data="backup_schedule")],
         [InlineKeyboardButton(text=config.BUTTONS["backup_restore"], callback_data="backup_restore")],
-        [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="back_to_main")]
+        [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="ops:hub:settings")]
     ])
     await callback.message.edit_text("🗄️ مدیریت بکاپ:", reply_markup=kb)
     await callback.answer()
@@ -944,7 +944,7 @@ async def backup_now(callback: CallbackQuery):
         [InlineKeyboardButton(text=config.BUTTONS["backup_now"], callback_data="backup_now")],
         [InlineKeyboardButton(text=config.BUTTONS["backup_schedule"], callback_data="backup_schedule")],
         [InlineKeyboardButton(text=config.BUTTONS["backup_restore"], callback_data="backup_restore")],
-        [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="back_to_main")]
+        [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="ops:hub:settings")]
     ])
     try:
         await callback.message.answer("🗄️ مدیریت بکاپ:", reply_markup=kb)
@@ -1148,7 +1148,7 @@ async def _render_forced_join_manage(message: Message, bot) -> None:
 
     rows.append([InlineKeyboardButton(text="➕ افزودن کانال", callback_data="forced_join_add")])
     rows.append([InlineKeyboardButton(text="🩺 تست مجدد همه", callback_data="forced_join_recheck")])
-    rows.append([InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="back_to_main")])
+    rows.append([InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="ops:hub:customers")])
     await message.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 
