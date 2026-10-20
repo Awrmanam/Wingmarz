@@ -93,8 +93,9 @@ async def _render_provider_selection(message: Message, source: str) -> None:
     home = "back_to_admin_main" if source == "a" else "public_back_main"
     rows.append([await _button("بازگشت", home, icon_key="back", fallback="⬅️")])
     await message.edit_text(
-        "🧩 <b>نوع پنل را انتخاب کنید</b>\n\n"
-        "بعد از انتخاب Provider، پلن‌ها و سرویس‌های همان پنل نمایش داده می‌شوند.",
+        "🧩 <b>خرید پنل نمایندگی</b>\n"
+        "مرحله ۱ از ۴\n\n"
+        "نوع پنل را انتخاب کنید:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
     )
 
