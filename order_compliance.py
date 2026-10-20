@@ -272,6 +272,7 @@ class OrderComplianceService:
                     KYC_SUBMITTED,
                     int(user_id),
                     KYC_PENDING,
+                    KYC_SUBMITTED,
                     KYC_REJECTED,
                     REFUND_NONE,
                 ),
@@ -330,7 +331,7 @@ class OrderComplianceService:
                 UPDATE order_compliance
                 SET kyc_state=?, updated_at=CURRENT_TIMESTAMP
                 WHERE user_id=? AND kyc_required=1
-                  AND kyc_state IN (?,?)
+                  AND kyc_state IN (?,?,?)
                   AND refund_state=?
                 """,
                 (
