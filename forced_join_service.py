@@ -111,7 +111,9 @@ async def inspect_channel_access(bot, raw_chat_id: Any) -> dict[str, Any]:
 
     username = getattr(chat, "username", None)
     title = str(getattr(chat, "title", None) or username or actual_id)
-    invite_link = f"https://t.me/{username}" if username else None
+    invite_link = getattr(chat, "invite_link", None)
+    if not invite_link and username:
+        invite_link = f"https://t.me/{username}"
     return {
         "chat_id": str(actual_id),
         "title": title,
