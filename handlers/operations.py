@@ -230,7 +230,15 @@ async def _dashboard_text() -> str:
 
 
 async def _render_hub(message: Message, key: str) -> None:
-    spec = HUB_MENUS.get(str(key))
+    # Old Telegram messages may still contain the previous hub callbacks.
+    # Map them into the canonical IA instead of exposing an error/old menu.
+    aliases = {
+        "access": "customers",
+        "users": "customers",
+        "content": "settings",
+    }
+    key = aliases.get(str(key), str(key))
+    spec = HUB_MENUS.get(key)
     if not spec:
         await message.edit_text(
             "❌ این بخش پیدا نشد.",
