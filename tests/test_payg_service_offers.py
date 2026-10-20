@@ -66,12 +66,13 @@ def test_each_rebecca_service_has_independent_payg_tariff(tmp_path, monkeypatch)
     assert {item["display_name"] for item in visible} == {"OpenVPN", "V2Ray"}
 
 
-def test_storefront_is_service_first_and_admin_no_longer_needs_raw_service_ids():
+def test_storefront_is_billing_first_and_admin_no_longer_needs_raw_service_ids():
     entry = Path("handlers/payg_entry.py").read_text(encoding="utf-8")
     offers = Path("handlers/payg_offers.py").read_text(encoding="utf-8")
 
-    assert "render_service_storefront" in entry
-    assert "تعرفه‌های PAYG بر اساس سرویس" in entry
-    assert "paygsvc:view:" in offers
-    assert "پرداخت به‌ازای مصرف" in offers
+    assert "render_purchase_method" in entry
+    assert "billing-first purchase wizard" in entry
+    assert "buyflow:payg:" in offers
+    assert "پلن کامل · حجم و زمان مشخص" in offers
+    assert "PAYG · پرداخت به‌اندازه مصرف" in offers
     assert "Service ID را فقط در «سرویس‌های Rebecca» تعریف می‌کنید" in offers

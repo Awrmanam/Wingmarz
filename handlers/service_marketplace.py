@@ -93,8 +93,9 @@ async def _render_provider_selection(message: Message, source: str) -> None:
     home = "back_to_admin_main" if source == "a" else "public_back_main"
     rows.append([await _button("بازگشت", home, icon_key="back", fallback="⬅️")])
     await message.edit_text(
-        "🧩 <b>نوع پنل را انتخاب کنید</b>\n\n"
-        "بعد از انتخاب Provider، پلن‌ها و سرویس‌های همان پنل نمایش داده می‌شوند.",
+        "🧩 <b>خرید پنل نمایندگی</b>\n"
+        "مرحله ۱ از ۴\n\n"
+        "نوع پنل را انتخاب کنید:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
     )
 
@@ -146,7 +147,8 @@ async def panel_provider_select(callback: CallbackQuery, state: FSMContext):
             )
             await callback.answer()
             return
-        await _render_purchase_services(callback.message, source)
+        from handlers.payg_offers import render_purchase_method
+        await render_purchase_method(callback.message, source)
         await callback.answer()
         return
 

@@ -178,10 +178,11 @@ def test_trial_picker_uses_canonical_panel_layer():
     assert "trialv2:cfg:" in source
 
 
-def test_paid_storefront_is_panel_first_and_keeps_purchase_callbacks():
+def test_fixed_storefront_is_service_first_after_billing_choice_and_keeps_purchase_callbacks():
     source = open("handlers/plan_storefront.py", encoding="utf-8").read()
     assert "planmarket:c:" in source
-    assert "پنل موردنظر را انتخاب کنید" in source
+    assert "سرویس موردنظر را انتخاب کنید" in source
+    assert "buyflow:method:" in source
     assert "resolve_panel_icon_key" in source
     assert "admin_order_" in source
     assert "public_order_" in source

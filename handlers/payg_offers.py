@@ -46,49 +46,88 @@ def _home(source: str) -> str:
     return "back_to_admin_main" if source == "a" else "public_back_main"
 
 
-async def render_service_storefront(message: Message, source: str) -> None:
-    """Render one unified Rebecca service list for PAYG and fixed purchases."""
-    catalog = await list_services(enabled_only=True)
-    offers = {
-        int(item["service_id"]): item
-        for item in await payg_offer_service.list_offers(enabled_only=True)
-    }
-    fixed = {
-        int(service.rebecca_service_id): int(count)
-        for service, count in await service_marketplace_service.sellable_services()
-    }
+async def _purchase_availability() -> tuple[int, int]:
+    payg_count = len(await payg_offer_service.list_offers(enabled_only=True))
+    fixed_count = len(await service_marketplace_service.sellable_services())
+    return payg_count, fixed_count
 
+
+async def render_purchase_method(message: Message, source: str) -> None:
+    """Step 2 of the buyer wizard: choose billing model before service."""
+    if source not in {"a", "p"}:
+        raise ValueError("invalid purchase source")
+
+    payg_count, fixed_count = await _purchase_availability()
+    rows: list[list[InlineKeyboardButton]] = []
+    if payg_count:
+        rows.append([InlineKeyboardButton(
+            text="⚡ PAYG · پرداخت به‌اندازه مصرف",
+            callback_data=f"buyflow:payg:{source}",
+        )])
+    if fixed_count:
+        rows.append([InlineKeyboardButton(
+            text="📦 پلن کامل · حجم و زمان مشخص",
+            callback_data=f"planmarket:root:{source}",
+        )])
+
+    lines = [
+        "💳 <b>نحوه خرید Rebecca</b>",
+        "مرحله ۲ از ۴",
+        "",
+        "کدام مدل پرداخت برای شما مناسب‌تر است؟",
+        "",
+        "⚡ <b>PAYG</b> — کیف پول را شارژ می‌کنید و فقط به‌اندازه مصرف واقعی هزینه کم می‌شود.",
+        "📦 <b>پلن کامل</b> — حجم، مدت و قیمت از قبل مشخص است.",
+    ]
+    if not rows:
+        lines.extend(["", "فعلاً محصول فعالی برای خرید وجود ندارد."])
+
+    rows.append([InlineKeyboardButton(
+        text="🔙 انتخاب نوع پنل",
+        callback_data=f"panelprov:root:{source}",
+    )])
+    await message.edit_text(
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+
+
+async def render_payg_storefront(message: Message, source: str) -> None:
+    """Step 3A: show only services that actually have PAYG enabled."""
+    offers = await payg_offer_service.list_offers(enabled_only=True)
     rows: list[list[InlineKeyboardButton]] = []
     lines = [
-        "🔌 <b>سرویس موردنظر را انتخاب کنید</b>",
+        "⚡ <b>خرید PAYG</b>",
+        "مرحله ۳ از ۴",
         "",
-        "برای هر سرویس، PAYG و پلن‌های کامل/ماهانه جداگانه نمایش داده می‌شوند.",
+        "سرویس موردنظر را انتخاب کنید:",
     ]
-    for service in catalog:
-        service_id = int(service.rebecca_service_id)
-        offer = offers.get(service_id)
-        fixed_count = fixed.get(service_id, 0)
-        if not offer and fixed_count <= 0:
+
+    for offer in offers:
+        service = await get_service_by_rebecca_id(int(offer["service_id"]))
+        if not service or not service.is_enabled:
             continue
-        badges = []
-        if offer:
-            badges.append(f"⚡ {int(offer['price_per_gb_toman']):,}/GB")
-        if fixed_count:
-            badges.append(f"📦 {fixed_count} پلن")
-        suffix = " · ".join(badges)
-        rows.append([
-            InlineKeyboardButton(
-                text=f"{service.display_name} · {suffix}",
-                callback_data=f"paygsvc:view:{source}:{int(service.id)}",
-            )
-        ])
+        rows.append([InlineKeyboardButton(
+            text=f"{service.display_name} · {int(offer['price_per_gb_toman']):,} ت/GB",
+            callback_data=f"paygsvc:offer:{source}:{int(offer['service_id'])}",
+        )])
+
     if not rows:
-        lines.extend([
-            "",
-            "در حال حاضر برای هیچ سرویس Rebecca محصول فعالی تعریف نشده است.",
-        ])
-    rows.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"panelprov:root:{source}")])
-    await message.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+        lines.extend(["", "فعلاً سرویس PAYG فعالی وجود ندارد."])
+
+    rows.append([InlineKeyboardButton(
+        text="🔙 روش خرید",
+        callback_data=f"buyflow:method:{source}",
+    )])
+    await message.edit_text(
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+
+
+async def render_service_storefront(message: Message, source: str) -> None:
+    """Compatibility alias for the retired service-first mixed storefront."""
+    await render_purchase_method(message, source)
 
 
 async def _render_service_detail(message: Message, source: str, catalog_id: int) -> None:
@@ -123,18 +162,41 @@ async def _render_service_detail(message: Message, source: str, catalog_id: int)
         ])
     if len(rows) == 0:
         lines.append("\nفعلاً روش خرید فعالی برای این سرویس وجود ندارد.")
-    rows.append([InlineKeyboardButton(text="🔙 سرویس‌ها", callback_data=f"paygsvc:root:{source}")])
+    rows.append([InlineKeyboardButton(text="🔙 روش خرید", callback_data=f"buyflow:method:{source}")])
     await message.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 
-@payg_offers_router.callback_query(F.data.startswith("paygsvc:root:"))
-async def service_storefront_root(callback: CallbackQuery, state: FSMContext):
+@payg_offers_router.callback_query(F.data.startswith("buyflow:method:"))
+async def purchase_method_root(callback: CallbackQuery, state: FSMContext):
     source = (callback.data or "").rsplit(":", 1)[-1]
     if source not in {"a", "p"}:
         await callback.answer("نامعتبر", show_alert=True)
         return
     await state.clear()
-    await render_service_storefront(callback.message, source)
+    await render_purchase_method(callback.message, source)
+    await callback.answer()
+
+
+@payg_offers_router.callback_query(F.data.startswith("buyflow:payg:"))
+async def purchase_payg_services(callback: CallbackQuery, state: FSMContext):
+    source = (callback.data or "").rsplit(":", 1)[-1]
+    if source not in {"a", "p"}:
+        await callback.answer("نامعتبر", show_alert=True)
+        return
+    await state.clear()
+    await render_payg_storefront(callback.message, source)
+    await callback.answer()
+
+
+@payg_offers_router.callback_query(F.data.startswith("paygsvc:root:"))
+async def service_storefront_root(callback: CallbackQuery, state: FSMContext):
+    """Old root buttons now enter the canonical purchase wizard."""
+    source = (callback.data or "").rsplit(":", 1)[-1]
+    if source not in {"a", "p"}:
+        await callback.answer("نامعتبر", show_alert=True)
+        return
+    await state.clear()
+    await render_purchase_method(callback.message, source)
     await callback.answer()
 
 
@@ -190,7 +252,7 @@ async def _render_offer(message: Message, user_id: int, source: str, service_id:
         await message.edit_text(
             "⚡ PAYG این سرویس در حال حاضر فعال نیست.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"paygsvc:root:{source}")
+                InlineKeyboardButton(text="🔙 سرویس‌های PAYG", callback_data=f"buyflow:payg:{source}")
             ]]),
         )
         return
@@ -201,6 +263,7 @@ async def _render_offer(message: Message, user_id: int, source: str, service_id:
     minimum = int(offer["min_topup_toman"])
     lines = [
         f"⚡ <b>PAYG · {escape(service.display_name)}</b>",
+        "مرحله ۴ از ۴",
         "",
         f"💵 نرخ هر گیگ: <b>{_money(rate)}</b>",
         f"💰 موجودی کیف پول: <b>{_money(balance)}</b>",
@@ -254,8 +317,8 @@ async def _render_offer(message: Message, user_id: int, source: str, service_id:
         ])
     rows.append([
         InlineKeyboardButton(
-            text="🔙 بازگشت",
-            callback_data=f"paygsvc:view:{source}:{int(service.id)}",
+            text="🔙 سرویس‌های PAYG",
+            callback_data=f"buyflow:payg:{source}",
         )
     ])
     await message.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))

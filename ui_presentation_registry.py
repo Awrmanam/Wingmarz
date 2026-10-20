@@ -283,6 +283,7 @@ _HIDDEN_PREFIX_REASONS: tuple[tuple[str, str], ...] = (
 )
 
 _DYNAMIC_PREFIX_REASONS: tuple[tuple[str, str], ...] = (
+    ("buyflow:", "مرحله داخلی جریان خرید"),
     ("planmarket:c:", "نام پنل یا دسته پویا"),
     ("planmarket:d:", "دسته زمانی پویا"),
     ("planmarket:p:", "پلن پویا"),
