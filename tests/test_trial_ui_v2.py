@@ -44,3 +44,13 @@ def test_router_order_places_v2_before_old_flat_handlers():
     assert source.index("from .trial_ui_v2 import") < source.index("from .operations_bootstrap import")
     assert source.index("include_router(trial_ui_v2_router)") < source.index("include_router(service_marketplace_router)")
     assert source.index("include_router(ui_editor_v2_router)") < source.index("include_router(premium_ui_clean_buttons_router)")
+
+
+
+def test_trial_service_picker_never_injects_generic_folder_fallback():
+    source = Path("handlers/trial_ui_v2.py").read_text(encoding="utf-8")
+    start = source.index("async def _trial_service_rows")
+    end = source.index("async def _render_root", start)
+    block = source[start:end]
+    assert 'fallback=None' in block
+    assert '"📁"' not in block
