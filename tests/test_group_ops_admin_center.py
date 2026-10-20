@@ -288,10 +288,14 @@ def test_group_ops_button_first_keyboards_are_valid():
         for button in row
         if button.callback_data
     ]
-    assert "gops:admins:0" in callbacks
-    assert "gops:search" in callbacks
-    assert "gops:connect" in callbacks
-    assert "gops:status" in callbacks
+    assert callbacks == [
+        "gops:connect",
+        "gops:repair",
+        "gops:status",
+        "back_to_main",
+    ]
+    assert "gops:admins:0" not in callbacks
+    assert "gops:search" not in callbacks
 
     picker = _ops_group_picker_keyboard()
     button = picker.keyboard[0][0]
