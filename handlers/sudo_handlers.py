@@ -4869,6 +4869,42 @@ async def order_approve(callback: CallbackQuery):
 
     order_type = (o.get("order_type") or "").lower()
     compliance = await order_compliance_service.get(oid)
+
+    # Migrate already-sent legacy receipt buttons safely: clicking an old
+    # "approve & issue" receipt now means "approve payment", then KYC is enforced.
+    if (
+        compliance is None
+        and order_type != "renew"
+        and (o.get("status") or "").lower() == "submitted"
+        and o.get("receipt_file_id")
+    ):
+        identity_approved = await trust_service.is_identity_approved(int(o["user_id"]))
+        compliance = await order_compliance_service.ensure_order(
+            oid,
+            int(o["user_id"]),
+            kyc_required=not identity_approved,
+        )
+        await order_compliance_service.mark_receipt_submitted(oid, int(o["user_id"]))
+        compliance = await order_compliance_service.approve_payment(
+            oid,
+            callback.from_user.id,
+            identity_approved=identity_approved,
+        )
+        if compliance and not compliance.ready_to_issue:
+            try:
+                await callback.bot.send_message(
+                    int(o["user_id"]),
+                    f"✅ پرداخت سفارش <b>#{oid}</b> تأیید شد.\n\n"
+                    "🪪 برای صدور پنل، احراز هویت را تکمیل کنید.",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                        InlineKeyboardButton(text="🪪 شروع احراز هویت", callback_data="kyc:start")
+                    ]]),
+                )
+            except Exception:
+                pass
+            await callback.answer("پرداخت تأیید شد؛ منتظر KYC", show_alert=True)
+            return
+
     if compliance is not None and order_type != "renew" and not compliance.ready_to_issue:
         await callback.answer(
             "صدور قفل است: پرداخت و KYC باید هر دو تأیید شوند.",
@@ -5217,6 +5253,31 @@ async def order_reject(callback: CallbackQuery):
     if not o:
         await callback.answer("سفارش یافت نشد.", show_alert=True)
         return
+
+    compliance = await order_compliance_service.get(oid)
+    if compliance is not None:
+        if compliance.payment_state == PAYMENT_APPROVED:
+            await callback.answer(
+                "پرداخت این سفارش قبلاً تأیید شده؛ سفارش را لغو نکنید. در صورت نیاز از مسیر استرداد استفاده کنید.",
+                show_alert=True,
+            )
+            return
+        if compliance.payment_state == "receipt_submitted":
+            await order_compliance_service.reject_receipt(oid, callback.from_user.id)
+            reopened = await db.reopen_order_receipt(oid)
+            await order_compliance_service.reset_for_new_receipt(oid)
+            if reopened:
+                try:
+                    await callback.bot.send_message(
+                        int(o["user_id"]),
+                        f"❌ رسید سفارش <b>#{oid}</b> تأیید نشد. لطفاً رسید صحیح را دوباره ارسال کنید.",
+                    )
+                except Exception:
+                    pass
+                await _edit_receipt_review_message(callback, "❌ <b>رسید رد شد</b>")
+                await callback.answer("رسید رد شد؛ امکان ارسال مجدد باز شد.")
+                return
+
     if not await db.reject_pending_order(oid, callback.from_user.id):
         await callback.answer("سفارش نهایی شده یا صدور آن در جریان است؛ رد نشد.", show_alert=True)
         return
