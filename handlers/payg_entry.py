@@ -78,8 +78,8 @@ async def fixed_purchase_selected(callback: CallbackQuery, state: FSMContext):
         await callback.answer("نامعتبر", show_alert=True)
         return
     await state.clear()
-    from handlers.service_marketplace import _render_purchase_services
-    await _render_purchase_services(callback.message, parts[2])
+    from handlers.plan_storefront import _render_storefront
+    await _render_storefront(callback.message, parts[2])
     await callback.answer()
 
 
