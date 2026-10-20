@@ -1032,15 +1032,31 @@ async def toggle_manual_trust(callback: CallbackQuery):
         return
     before = await trust_service.is_manually_trusted(admin.user_id)
     await trust_service.set_manual_trusted(admin.user_id, not before, callback.from_user.id)
+    ready_orders = []
+    if not before:
+        # Manual Trust is an explicit identity bypass. Paid orders waiting only
+        # for KYC should become eligible immediately, exactly like approved KYC.
+        from order_compliance import order_compliance_service
+        ready_orders = await order_compliance_service.approve_user_kyc(admin.user_id)
     await group_ops_service.audit(
         actor_id=callback.from_user.id, action="trust.manual",
-        subject_type="user", subject_id=admin.user_id, old_value=before, new_value=not before,
+        subject_type="user", subject_id=admin.user_id, old_value=before,
+        new_value={"trusted": not before, "ready_orders": ready_orders},
     )
     await group_ops_service.send_text(
         callback.bot,
         "admins",
         f"🤝 Trust دستی کاربر <code>{admin.user_id}</code> {'فعال' if not before else 'لغو'} شد."
     )
+    if ready_orders:
+        from handlers.sudo_handlers import auto_issue_order
+        for order_id in ready_orders:
+            try:
+                await auto_issue_order(callback.bot, order_id, callback.from_user.id)
+            except Exception as exc:
+                await group_ops_service.report_error(
+                    callback.bot, exc, context=f"auto issue after manual trust order={order_id}"
+                )
     await _render_admin_card(callback.message, admin_id)
     await callback.answer("ذخیره شد")
 
