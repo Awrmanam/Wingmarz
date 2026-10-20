@@ -598,7 +598,6 @@ async def render_admin_home(message: Message) -> None:
             "هنوز هیچ سرویس Rebecca ثبت نشده است. ابتدا سرویس را اضافه کنید.",
         ])
     rows.extend([
-        [InlineKeyboardButton(text="🔌 سرویس‌های Rebecca", callback_data="rebecca_services")],
                 [InlineKeyboardButton(text="🔙 مالی و پرداخت‌ها", callback_data="ops:hub:finance")],
     ])
     await message.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
