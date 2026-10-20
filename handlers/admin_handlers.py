@@ -15,6 +15,7 @@ from marzban_api import marzban_api
 from rebecca_api import rebecca_api, RebeccaAPIError
 from group_ops_service import group_ops_service
 from trust_service import trust_service
+from order_compliance import order_compliance_service
 from datetime import datetime
 from aiogram.exceptions import TelegramBadRequest
 
@@ -542,63 +543,96 @@ async def admin_receive_payment_receipt(message: Message, state: FSMContext):
     order_id = data.get("order_id")
     if not order_id:
         await state.clear()
+        await message.answer("❌ سفارش پرداخت پیدا نشد؛ دوباره از سفارش وارد ارسال رسید شوید.")
         return
-    if not message.photo:
+
+    photos = list(message.photo or [])
+    if not photos:
         await message.answer(config.MESSAGES["public_send_receipt"])
         return
-    file_id = message.photo[-1].file_id
-    if not await db.submit_order_receipt(order_id, message.from_user.id, file_id):
+    file_id = photos[-1].file_id
+
+    try:
+        submitted = await db.submit_order_receipt(order_id, message.from_user.id, file_id)
+    except Exception as exc:
+        await group_ops_service.report_error(
+            message.bot, exc, context=f"admin receipt submit order={order_id}"
+        )
+        await message.answer("❌ ثبت رسید ناموفق بود. دوباره تلاش کنید.")
+        return
+
+    if not submitted:
         await state.clear()
         await message.answer("این سفارش قبلاً بررسی شده یا متعلق به شما نیست.")
         return
-    # Notify sudo admins
-    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-    order = await db.get_order_by_id(order_id)
-    plan = await db.get_plan_by_id(order.get("plan_id")) if order else None
-    text = (
-        f"🧾 سفارش جدید #{order_id}\n\n"
-        f"کاربر: {message.from_user.id}\n"
-        f"پلن: {plan.name if plan else order.get('plan_name_snapshot','')}\n"
-        f"قیمت: {order.get('price_snapshot',0):,} تومان\n\n"
-        f"عکس رسید در پیام بعدی ارسال می‌شود."
-    )
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ تایید و صدور", callback_data=f"order_approve_{order_id}")],
-        [InlineKeyboardButton(text="❌ رد", callback_data=f"order_reject_{order_id}")],
-        [InlineKeyboardButton(text="🔁 تلاش دوباره صدور", callback_data=f"order_retry_{order_id}")]
-    ])
-    try:
-        trusted = await trust_service.is_identity_approved(message.from_user.id)
-        auto_enabled = await trust_service.auto_approve_enabled(message.from_user.id)
-        verification = await trust_service.payment_verification(order_id)
-        bank_state = str((verification or {}).get("state") or "unverified")
-        caption = (
-            f"🧾 <b>رسید سفارش/تمدید #{order_id}</b>\n"
-            f"👤 <code>{message.from_user.id}</code> "
-            f"{('@' + escape(message.from_user.username)) if message.from_user.username else ''}\n"
-            f"📦 {escape(plan.name if plan else order.get('plan_name_snapshot',''))}\n"
-            f"💵 <b>{int(order.get('price_snapshot',0)):,}</b> تومان\n"
-            f"🪪 Identity: <b>{'تأیید' if trusted else 'تأییدنشده'}</b>\n"
-            f"🤖 Auto Approve: <b>{'مجاز' if auto_enabled else 'خاموش'}</b>\n"
-            f"🏦 Bank Match: <b>{escape(bank_state)}</b>"
+
+    gate = await order_compliance_service.get(order_id)
+    if gate:
+        await order_compliance_service.mark_receipt_submitted(
+            order_id, message.from_user.id
         )
-        await group_ops_service.send_photo(
+
+    order = await db.get_order_by_id(order_id)
+    plan = await db.get_plan_by_id(order.get("plan_id")) if order and order.get("plan_id") else None
+    trusted = await trust_service.is_identity_approved(message.from_user.id)
+    auto_enabled = await trust_service.auto_approve_enabled(message.from_user.id)
+    verification = await trust_service.payment_verification(order_id)
+    bank_state = str((verification or {}).get("state") or "unverified")
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="✅ تأیید پرداخت",
+            callback_data=f"order_payment_approve_{order_id}",
+        )],
+        [InlineKeyboardButton(
+            text="❌ رد رسید / ارسال مجدد",
+            callback_data=f"order_payment_reject_{order_id}",
+        )],
+    ])
+    caption = (
+        f"🧾 <b>رسید سفارش/تمدید #{order_id}</b>\n"
+        f"👤 <code>{message.from_user.id}</code> "
+        f"{('@' + escape(message.from_user.username)) if message.from_user.username else ''}\n"
+        f"📦 {escape(plan.name if plan else (order or {}).get('plan_name_snapshot',''))}\n"
+        f"💵 <b>{int((order or {}).get('price_snapshot',0)):,}</b> تومان\n"
+        f"🪪 Identity: <b>{'تأیید' if trusted else 'نیازمند KYC در خرید جدید'}</b>\n"
+        f"🤖 Auto Approve: <b>{'مجاز' if auto_enabled else 'خاموش'}</b>\n"
+        f"🏦 Bank Match: <b>{escape(bank_state)}</b>"
+    )
+
+    sent_to_group = False
+    try:
+        sent_to_group = await group_ops_service.send_photo(
             message.bot,
-            "payments" if trusted else "unverified",
+            "receipts",
             file_id,
             caption=caption,
             reply_markup=kb,
         )
-    except Exception:
-        pass
-    try:
+    except Exception as exc:
+        await group_ops_service.report_error(
+            message.bot, exc, context=f"group admin receipt order={order_id}"
+        )
+
+    if not sent_to_group:
         for sudo_id in config.SUDO_ADMINS:
-            await message.bot.send_message(chat_id=sudo_id, text=text, reply_markup=kb)
-            await message.bot.send_photo(chat_id=sudo_id, photo=file_id, caption=f"رسید سفارش #{order_id}")
-    except Exception:
-        pass
+            try:
+                await message.bot.send_photo(
+                    chat_id=sudo_id,
+                    photo=file_id,
+                    caption=caption,
+                    reply_markup=kb,
+                )
+            except Exception:
+                pass
+
     await state.clear()
-    await message.answer(config.MESSAGES["order_submitted_to_admin"], reply_markup=get_admin_keyboard())
+    await message.answer(
+        "✅ <b>رسید ثبت شد.</b>\n\n"
+        "پرداخت ابتدا بررسی می‌شود. برای خرید جدید، اگر هویت شما تأیید نشده باشد "
+        "پس از تأیید پرداخت KYC درخواست می‌شود.",
+        reply_markup=get_admin_keyboard(),
+    )
 
 
 # ===== Admin Renew/Extend Flow =====
