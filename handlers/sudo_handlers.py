@@ -177,7 +177,7 @@ def _build_auto_import_keyboard(candidates: List[Dict[str, Any]], page: int) -> 
         rows.append(nav_row)
 
     rows.append([InlineKeyboardButton(text="🔄 بروزرسانی", callback_data="auto_import_refresh")])
-    rows.append([InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="sudo_menu_panels")])
+    rows.append([InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="ops:hub:panels")])
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -199,7 +199,7 @@ async def _render_auto_import_menu(
         except Exception as exc:
             logger.error("Failed to fetch %s admin list: %s", config.PANEL_PROVIDER, exc)
             kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="sudo_menu_panels")]
+                [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="ops:hub:panels")]
             ])
             await callback.message.edit_text(f"❌ خطا در دریافت لیست ادمین‌ها از {config.PANEL_PROVIDER}.", reply_markup=kb)
             await callback.answer()
@@ -429,7 +429,7 @@ async def import_admin_entry(callback: CallbackQuery, state: FSMContext):
     await state.set_state(ImportAdminStates.waiting_for_admin_name)
     await callback.message.edit_text(
         "⬇️ افزودن ادمین قبلی\n\nیک نام نمایشی برای این پنل بفرستید (اختیاری، برای نمایش). اگر نمی‌خواهید، - بفرستید.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="sudo_menu_panels")]])
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="ops:hub:panels")]])
     )
     await callback.answer()
 @sudo_router.callback_query(F.data.startswith("add_pick_plan_"))
@@ -558,7 +558,7 @@ async def import_renew_mode(callback: CallbackQuery, state: FSMContext):
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ تایید و افزودن", callback_data="confirm_import_admin")],
-        [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="sudo_menu_panels")]
+        [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="ops:hub:panels")]
     ])
     await callback.message.edit_text(text, reply_markup=kb)
     await state.set_state(ImportAdminStates.waiting_for_confirmation)
@@ -676,7 +676,7 @@ async def import_admin_max_users(message: Message, state: FSMContext):
         if not plans:
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="⏭️ ادامه بدون پلن", callback_data="import_pick_plan_0")],
-                [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="sudo_menu_panels")]
+                [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="ops:hub:panels")]
             ])
             await message.answer("هیچ پلنی موجود نیست. ادامه بدون پلن؟", reply_markup=kb)
         else:
@@ -714,7 +714,7 @@ async def confirm_import_admin(callback: CallbackQuery, state: FSMContext):
         stats = await admin_api.get_admin_stats()
     except Exception as e:
         logger.error(f"Import admin auth failed: {e}")
-        await callback.message.edit_text("❌ اعتبارسنجی ناموفق. لطفاً اطلاعات را بررسی کنید.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="sudo_menu_panels")]]))
+        await callback.message.edit_text("❌ اعتبارسنجی ناموفق. لطفاً اطلاعات را بررسی کنید.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="ops:hub:panels")]]))
         await callback.answer()
         return
     # Save admin in DB
@@ -735,7 +735,7 @@ async def confirm_import_admin(callback: CallbackQuery, state: FSMContext):
     )
     ok = await db.add_admin(admin)
     if not ok:
-        await callback.message.edit_text("❌ خطا در ذخیره ادمین.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="sudo_menu_panels")]]))
+        await callback.message.edit_text("❌ خطا در ذخیره ادمین.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="ops:hub:panels")]]))
         await callback.answer()
         return
     # Store initial usage report from fetched stats
@@ -748,7 +748,7 @@ async def confirm_import_admin(callback: CallbackQuery, state: FSMContext):
         users_data=None
     )
     await db.add_usage_report(report)
-    await callback.message.edit_text("✅ ادمین قبلی اضافه شد و مصرف فعلی ثبت شد.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="sudo_menu_panels")]]))
+    await callback.message.edit_text("✅ ادمین قبلی اضافه شد و مصرف فعلی ثبت شد.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="ops:hub:panels")]]))
     await callback.answer()
 
 @sudo_router.callback_query(F.data == "sudo_menu_cleanup")
