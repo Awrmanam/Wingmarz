@@ -72,6 +72,7 @@ async def render_purchase_method(message: Message, source: str) -> None:
 
     lines = [
         "💳 <b>نحوه خرید Rebecca</b>",
+        "مرحله ۲ از ۴",
         "",
         "کدام مدل پرداخت برای شما مناسب‌تر است؟",
         "",
@@ -97,6 +98,7 @@ async def render_payg_storefront(message: Message, source: str) -> None:
     rows: list[list[InlineKeyboardButton]] = []
     lines = [
         "⚡ <b>خرید PAYG</b>",
+        "مرحله ۳ از ۴",
         "",
         "سرویس موردنظر را انتخاب کنید:",
     ]
@@ -261,6 +263,7 @@ async def _render_offer(message: Message, user_id: int, source: str, service_id:
     minimum = int(offer["min_topup_toman"])
     lines = [
         f"⚡ <b>PAYG · {escape(service.display_name)}</b>",
+        "مرحله ۴ از ۴",
         "",
         f"💵 نرخ هر گیگ: <b>{_money(rate)}</b>",
         f"💰 موجودی کیف پول: <b>{_money(balance)}</b>",
