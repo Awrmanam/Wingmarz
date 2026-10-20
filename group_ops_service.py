@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import asyncio
 from html import escape
 import json
 import logging
 import re
+import traceback
 from typing import Any
 
 import aiosqlite
@@ -19,6 +21,7 @@ TOPICS: dict[str, str] = {
     "admins": "👥 ادمین‌ها",
     "orders": "🛒 سفارش‌ها",
     "payments": "💳 پرداخت‌ها",
+    "receipts": "🧾 رسیدها",
     "kyc": "🪪 احراز هویت",
     "unverified": "🟡 تاییدنشده‌ها",
     "errors": "🐞 خطاها",
@@ -29,6 +32,7 @@ TOPICS: dict[str, str] = {
 class GroupOpsService:
     def __init__(self, db_path: str | None = None) -> None:
         self._db_path = db_path
+        self._topic_lock = asyncio.Lock()
 
     @property
     def db_path(self) -> str:
@@ -171,8 +175,33 @@ class GroupOpsService:
             return None
         return int(cfg["chat_id"]), int(topic["thread_id"])
 
-    async def send_text(self, bot, topic_key: str, text: str, *, reply_markup=None) -> bool:
+    async def _target_or_create(self, bot, topic_key: str) -> tuple[int, int] | None:
+        """Resolve a topic and lazily create newly-added Group Ops topics.
+
+        Existing installations should not need to rerun /setup_group when a new
+        topic (for example Receipts) is introduced by an update.
+        """
         target = await self._target(topic_key)
+        if target:
+            return target
+        if topic_key not in TOPICS:
+            return None
+        cfg = await self.get_config()
+        if not cfg or not int(cfg.get("enabled") or 0):
+            return None
+        async with self._topic_lock:
+            target = await self._target(topic_key)
+            if target:
+                return target
+            try:
+                await self.setup_topics(bot, int(cfg["chat_id"]))
+            except Exception as exc:
+                logger.warning("Group ops topic bootstrap failed (%s): %s", topic_key, exc)
+                return None
+        return await self._target(topic_key)
+
+    async def send_text(self, bot, topic_key: str, text: str, *, reply_markup=None) -> bool:
+        target = await self._target_or_create(bot, topic_key)
         if not target:
             return False
         chat_id, thread_id = target
@@ -189,7 +218,7 @@ class GroupOpsService:
             return False
 
     async def send_photo(self, bot, topic_key: str, file_id: str, *, caption: str, reply_markup=None) -> bool:
-        target = await self._target(topic_key)
+        target = await self._target_or_create(bot, topic_key)
         if not target:
             return False
         chat_id, thread_id = target
@@ -314,12 +343,18 @@ class GroupOpsService:
 
     async def report_error(self, bot, exc: BaseException, *, context: str | None = None) -> bool:
         context_line = f"\n📍 {escape(context)}" if context else ""
+        frames = traceback.extract_tb(exc.__traceback__) if exc.__traceback__ else []
+        location_line = ""
+        if frames:
+            frame = frames[-1]
+            location = f"{frame.filename.rsplit('/', 1)[-1]}:{frame.lineno} · {frame.name}"
+            location_line = f"\n🧭 <code>{escape(location)}</code>"
         return await self.send_text(
             bot,
             "errors",
             (
                 "🐞 <b>خطای Wingmarz</b>"
-                f"{context_line}\n\n"
+                f"{context_line}{location_line}\n\n"
                 f"<code>{escape(self.redact_error(repr(exc)))}</code>"
             ),
         )

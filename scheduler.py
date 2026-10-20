@@ -21,6 +21,7 @@ class MonitoringScheduler:
         self.backup_job_id = "bot_backup_job"
         self.group_ops_admin_job_id = "group_ops_admin_alerts"
         self.group_ops_daily_job_id = "group_ops_daily_summary"
+        self.order_kyc_timeout_job_id = "order_kyc_timeout"
         self._backup_lock = asyncio.Lock()
         self._group_ops_lock = asyncio.Lock()
 
@@ -264,6 +265,48 @@ class MonitoringScheduler:
                 except Exception:
                     pass
 
+    async def process_order_kyc_timeouts(self):
+        """Queue paid orders for refund when KYC is not completed in 48h."""
+        try:
+            from order_compliance import order_compliance_service
+            from group_ops_service import group_ops_service
+            from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+            expired = await order_compliance_service.expire_overdue_kyc(48)
+            for item in expired:
+                order_id = int(item["order_id"])
+                user_id = int(item["user_id"])
+                try:
+                    await self.bot.send_message(
+                        user_id,
+                        f"⌛ مهلت ۴۸ ساعته احراز هویت سفارش <b>#{order_id}</b> تمام شد.\n"
+                        "سفارش وارد صف استرداد وجه شده است.",
+                    )
+                except Exception:
+                    pass
+                await group_ops_service.send_text(
+                    self.bot,
+                    "payments",
+                    f"💸 <b>استرداد لازم است</b>\n\n"
+                    f"🧾 سفارش: <code>#{order_id}</code>\n"
+                    f"👤 کاربر: <code>{user_id}</code>\n"
+                    "علت: KYC تا ۴۸ ساعت پس از تأیید پرداخت تکمیل نشد.",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                        InlineKeyboardButton(
+                            text="💸 ثبت استرداد انجام‌شده",
+                            callback_data=f"order_refund_done_{order_id}",
+                        )
+                    ]]),
+                )
+        except Exception as exc:
+            try:
+                from group_ops_service import group_ops_service
+                await group_ops_service.report_error(
+                    self.bot, exc, context="order KYC timeout"
+                )
+            except Exception:
+                pass
+
     async def send_group_ops_daily(self):
         try:
             from group_ops_service import group_ops_service
@@ -278,6 +321,17 @@ class MonitoringScheduler:
                 pass
 
     def _register_group_ops_jobs(self):
+        self.scheduler.add_job(
+            self.process_order_kyc_timeouts,
+            trigger=IntervalTrigger(
+                hours=1,
+                start_date=datetime.now() + timedelta(minutes=2),
+            ),
+            id=self.order_kyc_timeout_job_id,
+            name="Paid Order KYC Timeout",
+            replace_existing=True,
+            max_instances=1,
+        )
         self.scheduler.add_job(
             self.send_group_ops_daily,
             trigger=CronTrigger(hour=23, minute=55),

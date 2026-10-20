@@ -19,6 +19,8 @@ from database import db
 from operations_service import DiscountQuote, OperationsError, operations_service
 from style_engine import style_engine
 from group_ops_service import group_ops_service
+from order_compliance import order_compliance_service
+from trust_service import trust_service
 
 
 operations_router = Router(name="operations")
@@ -705,6 +707,14 @@ async def _create_checkout_order(callback: CallbackQuery | _MessageCheckoutAdapt
     if not order_id:
         await callback.answer("خطا در ثبت سفارش.", show_alert=True)
         return
+
+    identity_approved = await trust_service.is_identity_approved(callback.from_user.id)
+    gate = await order_compliance_service.ensure_order(
+        order_id,
+        callback.from_user.id,
+        kyc_required=not identity_approved,
+        payment_approved=final_price <= 0,
+    )
     try:
         if await group_ops_service.claim_event(f"order:{order_id}:created"):
             await group_ops_service.send_text(
@@ -741,20 +751,60 @@ async def _create_checkout_order(callback: CallbackQuery | _MessageCheckoutAdapt
 
     if final_price <= 0:
         await db.update_order(order_id, status="submitted")
-        await callback.message.edit_text(
-            f"✅ سفارش #{order_id} ثبت شد.\n📦 {escape(plan.name)}{discount_lines}\n💵 مبلغ نهایی: <b>0 تومان</b>\n\nبرای تایید و صدور به مدیریت ارسال شد."
-        )
-        await _notify_free_order(callback.bot, order_id, callback.from_user.id, plan.name, final_price, quote.code if quote else None)
+        if gate.ready_to_issue:
+            await callback.message.edit_text(
+                f"✅ سفارش #{order_id} ثبت شد.\n📦 {escape(plan.name)}{discount_lines}\n"
+                "💵 مبلغ نهایی: <b>0 تومان</b>\n\nبرای تایید و صدور به مدیریت ارسال شد."
+            )
+            await _notify_free_order(
+                callback.bot,
+                order_id,
+                callback.from_user.id,
+                plan.name,
+                final_price,
+                quote.code if quote else None,
+            )
+        else:
+            await callback.message.edit_text(
+                f"✅ سفارش #{order_id} ثبت شد.\n📦 {escape(plan.name)}{discount_lines}\n"
+                "💵 مبلغ نهایی: <b>0 تومان</b>\n\n"
+                "🪪 برای فعال‌سازی این سفارش باید احراز هویت را تکمیل کنید.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                    await _button("🪪 شروع احراز هویت", "kyc:start", fallback="🪪")
+                ]]),
+            )
+            await group_ops_service.send_text(
+                callback.bot,
+                "orders",
+                f"🟡 <b>سفارش رایگان #{order_id} منتظر KYC است.</b>\n"
+                f"👤 <code>{callback.from_user.id}</code>\n📦 {escape(plan.name)}",
+            )
         await callback.answer()
         return
 
     cards = await db.get_cards(only_active=True)
     lines = [
-        f"✅ سفارش ثبت شد.\n\nپلن: {escape(plan.name)}{discount_lines}\nقیمت نهایی: <b>{final_price:,} تومان</b>\n",
+        f"✅ سفارش <b>#{order_id}</b> ثبت شد.\n\n"
+        f"پلن: {escape(plan.name)}{discount_lines}\n"
+        f"قیمت نهایی: <b>{final_price:,} تومان</b>\n",
+    ]
+    if gate.kyc_required:
+        lines.extend([
+            "🪪 <b>احراز هویت برای فعال‌سازی این سفارش الزامی است.</b>",
+            "ابتدا پرداخت و رسید را ثبت کنید؛ بعد از تأیید پرداخت، بات از شما KYC می‌خواهد.",
+            "اگر KYC تأیید نشود، سفارش وارد صف استرداد وجه می‌شود.",
+            "",
+        ])
+    else:
+        lines.extend([
+            "✅ هویت این حساب قبلاً تأیید شده و KYC مجدد لازم نیست.",
+            "",
+        ])
+    lines.extend([
         config.MESSAGES["public_payment_instructions"],
         "",
         "کارت‌های فعال:",
-    ]
+    ])
     if not cards:
         lines.append("— فعلاً کارتی ثبت نشده. لطفاً با پشتیبانی تماس بگیرید.")
     else:
@@ -765,8 +815,9 @@ async def _create_checkout_order(callback: CallbackQuery | _MessageCheckoutAdapt
                 f"{escape(str(card.get('holder_name','')))}"
             )
     back_cb = "back_to_admin_main" if source == "a" else "public_back_main"
+    paid_cb = f"admin_mark_paid_{order_id}" if source == "a" else f"public_mark_paid_{order_id}"
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [await _button(config.BUTTONS["mark_paid"], f"public_mark_paid_{order_id}", fallback="✅")],
+        [await _button(config.BUTTONS["mark_paid"], paid_cb, fallback="✅")],
         [await _button("بازگشت", back_cb, icon_key="back", fallback="⬅️")],
     ])
     await callback.message.edit_text("\n".join(lines), reply_markup=kb)

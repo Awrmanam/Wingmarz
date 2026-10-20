@@ -23,10 +23,17 @@ class GroupOpsErrorMiddleware(BaseMiddleware):
             if bot is not None:
                 try:
                     update_id = getattr(event, "update_id", None)
+                    callback_data = getattr(event, "data", None)
+                    context_parts = []
+                    if update_id is not None:
+                        context_parts.append(f"update_id={update_id}")
+                    if callback_data:
+                        context_parts.append(f"callback={str(callback_data)[:120]}")
+                    context_parts.append(f"event={type(event).__name__}")
                     await group_ops_service.report_error(
                         bot,
                         exc,
-                        context=f"update_id={update_id}" if update_id is not None else None,
+                        context=" · ".join(context_parts),
                     )
                 except Exception:
                     pass
