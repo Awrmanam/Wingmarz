@@ -3971,149 +3971,101 @@ async def notify_admin_reactivation(bot, admin_user_id: int, reactivated_by: int
 
 @sudo_router.callback_query(F.data == "sudo_manage_admins")
 async def sudo_manage_admins_entry(callback: CallbackQuery, state: FSMContext):
+    """Compatibility callback: old buttons open the canonical Admin list."""
     if callback.from_user.id not in config.SUDO_ADMINS:
         await callback.answer("غیرمجاز", show_alert=True)
         return
-    text = (
-        "🛠️ مدیریت ادمین‌ها\n\n"
-        "یکی از گزینه‌های زیر را انتخاب کنید یا آیدی عددی کاربر را برای جستجو ارسال کنید."
-    )
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📋 لیست همه ادمین‌ها", callback_data="manage_list_all")],
-        [InlineKeyboardButton(text="🪪 KYCهای در انتظار", callback_data="kycadmin:pending")],
-        [InlineKeyboardButton(text="🛒 مدیریت فروش", callback_data="sales_manage")],
-        [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="back_to_main")]
-    ])
-    await state.set_state(ManageAdminStates.waiting_for_user_id)
-    await callback.message.edit_text(text, reply_markup=kb)
+    await state.clear()
+    from handlers.group_ops import _render_admin_list
+    await _render_admin_list(callback.message, 0)
     await callback.answer()
 
 
 @sudo_router.callback_query(F.data == "manage_list_all")
 async def manage_list_all(callback: CallbackQuery, state: FSMContext):
+    """Compatibility callback for old 'all admins' buttons."""
     if callback.from_user.id not in config.SUDO_ADMINS:
         await callback.answer("غیرمجاز", show_alert=True)
         return
     await state.clear()
-    if config.PANEL_PROVIDER == "rebecca":
-        try:
-            from rebecca_identity_link import sync_all_rebecca_admin_identities
-            await sync_all_rebecca_admin_identities()
-        except Exception as exc:
-            logger.warning("Rebecca identity mirror refresh failed: %s", exc)
-    admins = await db.get_all_admins()
-    if not admins:
-        await callback.answer("ادمینی یافت نشد.", show_alert=True)
-        return
-    kb = get_admin_list_keyboard(admins, "manage_user")
-    await callback.message.edit_text("یک کاربر را برای مدیریت پنل‌ها انتخاب کنید:", reply_markup=kb)
+    from handlers.group_ops import _render_admin_list
+    await _render_admin_list(callback.message, 0)
     await callback.answer()
 
 
 @sudo_router.callback_query(F.data.startswith("manage_user_"))
 async def manage_user_selected(callback: CallbackQuery, state: FSMContext):
+    """Open old per-user selections in the canonical Admin UI."""
     if callback.from_user.id not in config.SUDO_ADMINS:
         await callback.answer("غیرمجاز", show_alert=True)
         return
     await state.clear()
-    user_id = int(callback.data.split("_")[-1])
+    try:
+        user_id = int((callback.data or "").rsplit("_", 1)[-1])
+    except ValueError:
+        await callback.answer("شناسه نامعتبر است.", show_alert=True)
+        return
     panels = await db.get_admins_for_user(user_id)
     if not panels:
         await callback.answer("برای این کاربر پنلی وجود ندارد.", show_alert=True)
         return
-    kb = get_panel_list_keyboard(panels, "manage_panel")
-    await callback.message.edit_text(f"مدیریت پنل‌های کاربر {user_id}:", reply_markup=kb)
+
+    from handlers.group_ops import _render_admin_card
+    if len(panels) == 1:
+        await _render_admin_card(callback.message, int(panels[0].id))
+        await callback.answer()
+        return
+
+    rows = [
+        [InlineKeyboardButton(
+            text=str(panel.admin_name or panel.marzban_username or f"Admin {panel.id}")[:45],
+            callback_data=f"gops:admin:{int(panel.id)}",
+        )]
+        for panel in panels
+    ]
+    rows.append([InlineKeyboardButton(text="⬅️ لیست Adminها", callback_data="gops:admins:0")])
+    await callback.message.edit_text(
+        f"👥 <b>پنل‌های کاربر {user_id}</b>\n\nپنل موردنظر را انتخاب کنید:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
     await callback.answer()
 
 
 @sudo_router.callback_query(F.data.startswith("manage_panel_"))
 async def manage_panel_selected(callback: CallbackQuery):
+    """Compatibility callback: old panel buttons open the canonical Admin card."""
     if callback.from_user.id not in config.SUDO_ADMINS:
         await callback.answer("غیرمجاز", show_alert=True)
         return
-    admin_id = int(callback.data.split("_")[-1])
-    admin = await db.get_admin_by_id(admin_id)
-    if not admin:
-        await callback.message.edit_text("❌ پنل یافت نشد.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="sudo_manage_admins")]]))
-        await callback.answer()
+    try:
+        admin_id = int((callback.data or "").rsplit("_", 1)[-1])
+    except ValueError:
+        await callback.answer("شناسه پنل نامعتبر است.", show_alert=True)
         return
-    panel_name = admin.admin_name or admin.marzban_username or f"Panel {admin.id}"
-    if config.PANEL_PROVIDER == "rebecca":
-        try:
-            remote = await rebecca_api.find_admin(admin.marzban_username)
-            if remote is None:
-                remote_status = "حذف‌شده"
-            else:
-                status = str(remote.get("status", "")).lower()
-                remote_status = {"active": "فعال", "disabled": "غیرفعال"}.get(status, "نامشخص")
-            status_line = f"✅ وضعیت Rebecca: {remote_status}"
-        except RebeccaAPIError:
-            status_line = "⚠️ وضعیت: نامشخص (خطای ارتباط با Rebecca)"
-        info = (
-            f"👤 کاربر: {admin.user_id}\n"
-            f"🏷️ پنل: {escape(str(panel_name))}\n"
-            f"🔐 نام کاربری: <code>{escape(str(admin.marzban_username or '-'))}</code>\n"
-            f"{status_line}\n"
-        )
-    else:
-        info = (
-            f"👤 کاربر: {admin.user_id}\n🏷️ پنل: {panel_name}\n"
-            f"🔐 مرزبان: {admin.marzban_username or '-'}\n"
-            f"✅ وضعیت: {'فعال' if admin.is_active else 'غیرفعال'}\n"
-        )
-    from kyc_service import kyc_service
-    kyc_required = await kyc_service.is_required(admin.id)
-    kyc_profile = await kyc_service.get_profile(admin.user_id)
-    kyc_status = str((kyc_profile or {}).get("status") or "not_submitted")
-    kyc_status_text = {
-        "approved": "🟢 تأیید شده",
-        "pending": "🟡 در انتظار",
-        "rejected": "🔴 رد شده",
-        "not_submitted": "⚪ ثبت نشده",
-    }.get(kyc_status, "⚪ نامشخص")
-    info += (
-        f"🪪 KYC: {'اجباری' if kyc_required else 'معاف'}\n"
-        f"📋 وضعیت کاربر: {kyc_status_text}\n"
-    )
-    toggle_text = "🔓 معاف کردن از KYC" if kyc_required else "🔒 اجباری کردن KYC"
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🧭 مرکز عملیات", callback_data=f"gops:admin:{admin.id}")],
-        [InlineKeyboardButton(text="ℹ️ اطلاعات", callback_data=f"manage_action_info_{admin.id}")],
-        [InlineKeyboardButton(text=toggle_text, callback_data=f"kycadmin:toggle:{admin.id}")],
-        [InlineKeyboardButton(text="🔄 فعالسازی", callback_data=f"manage_action_activate_{admin.id}"), InlineKeyboardButton(text="⛔ غیرفعالسازی", callback_data=f"manage_action_deactivate_{admin.id}")],
-        [InlineKeyboardButton(text=config.BUTTONS["remove_admin"], callback_data=f"manage_action_delete_{admin.id}")],
-        [InlineKeyboardButton(text="♻️ ریست زمان", callback_data=f"manage_action_reset_time_{admin.id}"), InlineKeyboardButton(text="♻️ ریست حجم", callback_data=f"manage_action_reset_traffic_{admin.id}")],
-        [InlineKeyboardButton(text="👥 تعداد کاربر", callback_data=f"manage_action_users_{admin.id}")],
-        [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="sudo_manage_admins")]
-    ])
-    await callback.message.edit_text(info, reply_markup=kb, **({"parse_mode": "HTML"} if config.PANEL_PROVIDER == "rebecca" else {}))
+    from handlers.group_ops import _render_admin_card
+    if not await _render_admin_card(callback.message, admin_id):
+        await callback.answer("پنل یافت نشد.", show_alert=True)
+        return
     await callback.answer()
 
 
 @sudo_router.message(ManageAdminStates.waiting_for_user_id, F.text)
 async def manage_search_user(message: Message, state: FSMContext):
+    """Finish any in-flight legacy search inside the canonical search flow."""
     if message.from_user.id not in config.SUDO_ADMINS:
         return
-    text = message.text.strip()
-    if not text.isdigit():
-        await message.answer("آیدی عددی نامعتبر است.")
-        return
-    user_id = int(text)
-    panels = await db.get_admins_for_user(user_id)
-    if not panels:
-        await message.answer("برای این کاربر پنلی یافت نشد.")
-        return
-    kb = get_panel_list_keyboard(panels, "manage_panel")
-    await message.answer(f"مدیریت پنل‌های کاربر {user_id}:", reply_markup=kb)
+    query = (message.text or "").strip()
     await state.clear()
+    from handlers.group_ops import _render_search_results
+    await _render_search_results(message, query)
 
 
-# ===== Helpers for Manage Admins UI =====
+# ===== Compatibility helpers for actions still referenced by old messages =====
 
 def _manage_back_keyboard(admin_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔙 بازگشت به پنل", callback_data=f"manage_panel_{admin_id}")],
-        [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="sudo_manage_admins")]
+        [InlineKeyboardButton(text="🔙 بازگشت به Admin", callback_data=f"gops:admin:{admin_id}")],
+        [InlineKeyboardButton(text="👥 لیست Adminها", callback_data="gops:admins:0")],
     ])
 
 
@@ -4316,7 +4268,7 @@ async def manage_confirm_delete(callback: CallbackQuery):
         text = "✅ پنل حذف شد." if success else ("❌ خطا در حذف پنل." + (f"\n\nجزئیات: {err}" if err else ""))
     except Exception as e:
         text = f"❌ خطا در حذف پنل: {e}"
-    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="sudo_manage_admins")]]))
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="gops:admins:0")]]))
     await callback.answer()
 
 
@@ -4427,7 +4379,7 @@ async def manage_action_quota_add(callback: CallbackQuery):
     admin = await db.get_admin_by_id(admin_id)
     try:
         if not admin:
-            await callback.message.edit_text("❌ پنل یافت نشد.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="sudo_manage_admins")]]))
+            await callback.message.edit_text("❌ پنل یافت نشد.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="gops:admins:0")]]))
             await callback.answer()
             return
         add_bytes = gb_to_bytes(gb)
@@ -4446,7 +4398,7 @@ def _sales_menu_keyboard() -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(text="✏️ سرویس Rebecca پلن", callback_data="sales_edit_services")])
     rows.extend([
         [InlineKeyboardButton(text="🗑️ حذف پلن", callback_data="sales_delete")],
-        [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="sudo_manage_admins")],
+        [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="gops:admins:0")],
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
