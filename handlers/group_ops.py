@@ -381,7 +381,7 @@ async def _render_admin_card(message: Message, admin_id: int) -> bool:
         ],
         [InlineKeyboardButton(text="⬅️ پنل‌ها و ادمین‌ها", callback_data="ops:hub:panels")],
     ]
-    await message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows), parse_mode="HTML")
     return True
 
 
