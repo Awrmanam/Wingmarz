@@ -309,13 +309,49 @@ async def kyc_review_reject(callback: CallbackQuery):
     )
 
     refund_orders = await db.mark_kyc_orders_refund_pending(user_id)
+
+    refund_payg: list[int] = []
+    try:
+        from payg_offers_service import payg_offer_service
+        pending_service_topups = await payg_offer_service.pending_kyc_topups(user_id)
+        for topup in pending_service_topups:
+            await db.create_refund_request(
+                user_id,
+                "payg_topup",
+                int(topup["id"]),
+                int(topup.get("amount_toman") or 0),
+                "kyc_rejected",
+            )
+            refund_payg.append(int(topup["id"]))
+
+        from payg_service import payg_service
+        if not await payg_service.get_user_account(user_id):
+            for topup in await payg_service.approved_initial_topups_for_user(user_id):
+                topup_id = int(topup["id"])
+                if topup_id in refund_payg:
+                    continue
+                await db.create_refund_request(
+                    user_id,
+                    "payg_topup",
+                    topup_id,
+                    int(topup.get("amount_toman") or 0),
+                    "kyc_rejected",
+                )
+                refund_payg.append(topup_id)
+    except Exception as exc:
+        await group_ops_service.report_error(
+            callback.bot, exc, context=f"KYC refund queue user={user_id}"
+        )
+
     await _notify_review_result(callback, user_id, False)
-    if refund_orders:
+    if refund_orders or refund_payg:
         try:
+            refs = [f"سفارش #{item}" for item in refund_orders]
+            refs.extend(f"PAYG #{item}" for item in refund_payg)
             await callback.bot.send_message(
                 user_id,
-                "↩️ پرداخت سفارش شما محفوظ است و درخواست استرداد برای بررسی مدیریت ثبت شد.\n"
-                "شناسه سفارش: " + "، ".join(f"#{item}" for item in refund_orders),
+                "↩️ پرداخت شما محفوظ است و درخواست استرداد برای بررسی مدیریت ثبت شد.\n"
+                + "، ".join(refs),
             )
         except Exception:
             pass
@@ -325,20 +361,25 @@ async def kyc_review_reject(callback: CallbackQuery):
         action="kyc.reject",
         subject_type="user",
         subject_id=user_id,
-        new_value={"status": "rejected", "refund_orders": refund_orders},
+        new_value={"status": "rejected", "refund_orders": refund_orders, "refund_payg": refund_payg},
     )
     await group_ops_service.send_text(
         callback.bot,
         "kyc",
         f"❌ KYC کاربر <code>{user_id}</code> توسط <code>{callback.from_user.id}</code> رد شد.",
     )
-    if refund_orders:
+    if refund_orders or refund_payg:
+        details = []
+        if refund_orders:
+            details.append("سفارش‌ها: " + "، ".join(f"<code>#{item}</code>" for item in refund_orders))
+        if refund_payg:
+            details.append("PAYG: " + "، ".join(f"<code>#{item}</code>" for item in refund_payg))
         await group_ops_service.send_text(
             callback.bot,
             "payments",
             "↩️ <b>استرداد در انتظار</b>\n"
             f"👤 <code>{user_id}</code>\n"
-            "سفارش‌ها: " + "، ".join(f"<code>#{item}</code>" for item in refund_orders),
+            + "\n".join(details),
         )
     await callback.answer("KYC رد شد", show_alert=True)
 
