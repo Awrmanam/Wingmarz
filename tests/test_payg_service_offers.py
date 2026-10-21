@@ -107,5 +107,5 @@ def test_service_payg_payment_can_be_approved_without_provisioning_before_kyc(tm
 
     assert result["awaiting_kyc"] is True
     provision.assert_not_awaited()
-    assert _run(payg_service.get_balance(555)) == 100000
-    assert _run(payg_service.get_topup(topup_id))["status"] == "approved"
+    assert _run(payg_service.get_balance(555)) == 0
+    assert _run(payg_service.get_topup(topup_id))["status"] == "paid_awaiting_kyc"
