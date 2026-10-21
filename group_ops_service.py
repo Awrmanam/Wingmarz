@@ -5,6 +5,7 @@ from html import escape
 import json
 import logging
 import re
+import traceback
 from typing import Any
 
 import aiosqlite
@@ -483,14 +484,18 @@ class GroupOpsService:
         return text[:3500]
 
     async def report_error(self, bot, exc: BaseException, *, context: str | None = None) -> bool:
-        context_line = f"\n📍 {escape(context)}" if context else ""
+        context_line = f"\n📍 {escape(self.redact_error(context))}" if context else ""
+        stack = traceback.format_exc(limit=6)
+        if stack.strip() == "NoneType: None":
+            stack = ""
+        detail = self.redact_error(stack or repr(exc))
         return await self.send_text(
             bot,
             "errors",
             (
                 "🐞 <b>خطای Wingmarz</b>"
                 f"{context_line}\n\n"
-                f"<code>{escape(self.redact_error(repr(exc)))}</code>"
+                f"<code>{escape(detail)}</code>"
             ),
         )
 
