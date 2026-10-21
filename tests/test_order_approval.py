@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -78,6 +79,31 @@ class FakeDB:
     async def update_order(self, oid, **fields): self.order.update(fields); return True
 
 
+class FakeCompliance:
+    def __init__(self):
+        self.rows = {}
+
+    async def confirm_payment(self, order_id, user_id, actor_id, *, kyc_required):
+        self.rows[int(order_id)] = {
+            "order_id": int(order_id),
+            "user_id": int(user_id),
+            "payment_confirmed": 1,
+            "kyc_state": "awaiting" if kyc_required else "not_required",
+            "refund_state": "none",
+        }
+
+    async def get(self, order_id):
+        return self.rows.get(int(order_id))
+
+
+@pytest.fixture(autouse=True)
+def approved_identity_and_compliance(monkeypatch):
+    async def approved(_user_id):
+        return True
+    monkeypatch.setattr(sudo.trust_service, "is_identity_approved", approved)
+    monkeypatch.setattr(sudo, "order_compliance_service", FakeCompliance())
+
+
 @pytest.fixture
 def rebecca(monkeypatch):
     monkeypatch.setattr(config, "PANEL_PROVIDER", "rebecca")
@@ -93,6 +119,30 @@ def rebecca(monkeypatch):
 def run(coro):
     import asyncio
     return asyncio.run(coro)
+
+
+def test_unverified_paid_order_waits_for_kyc(monkeypatch, rebecca):
+    db, callback = FakeDB(), FakeCallback()
+    db.order["status"] = "submitted"
+    monkeypatch.setattr(sudo, "db", db)
+
+    async def unverified(_user_id):
+        return False
+
+    compliance = FakeCompliance()
+    monkeypatch.setattr(sudo.trust_service, "is_identity_approved", unverified)
+    monkeypatch.setattr(sudo, "order_compliance_service", compliance)
+    monkeypatch.setattr(sudo.group_ops_service, "send_text", AsyncMock(return_value=True))
+
+    run(sudo.order_approve(callback))
+
+    assert db.reservations == 0
+    assert db.order["status"] == "submitted"
+    row = compliance.rows[1]
+    assert row["payment_confirmed"] == 1
+    assert row["kyc_state"] == "awaiting"
+    assert any("احراز هویت" in text for _uid, text, _kwargs in callback.bot.sent)
+    assert "منتظر KYC" in callback.answers[-1][0]
 
 
 def test_real_rebecca_approval_maps_identity_plan_and_notifies_after_verification(monkeypatch, rebecca):
