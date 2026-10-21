@@ -9,6 +9,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 import config
 from database import db
+from group_ops_service import group_ops_service
 from payg_offers_service import PaygOfferError, payg_offer_service
 from payg_service import PaygError, PaygInsufficientFunds, payg_service
 from rebecca_catalog import get_service, get_service_by_rebecca_id, list_services
