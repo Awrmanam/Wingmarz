@@ -872,6 +872,73 @@ class Database:
             await conn.commit()
             return cur.rowcount == 1
 
+    async def mark_order_paid_awaiting_kyc(self, order_id: int, actor_id: int) -> bool:
+        """Record a verified payment without allowing provisioning before identity approval."""
+        async with aiosqlite.connect(self.db_path) as conn:
+            cur = await conn.execute(
+                """
+                UPDATE orders
+                SET status='paid_awaiting_kyc', approved_by=?, updated_at=CURRENT_TIMESTAMP
+                WHERE id=? AND status IN ('pending','submitted','failed')
+                """,
+                (int(actor_id), int(order_id)),
+            )
+            await conn.commit()
+            return cur.rowcount == 1
+
+    async def get_paid_awaiting_kyc_orders(self, user_id: int) -> List[Dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            async with conn.execute(
+                """
+                SELECT * FROM orders
+                WHERE user_id=? AND status='paid_awaiting_kyc'
+                ORDER BY id ASC
+                """,
+                (int(user_id),),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [dict(row) for row in rows]
+
+    async def release_paid_kyc_orders(self, user_id: int) -> List[int]:
+        """Return paid/KYC-held orders to the existing issuance queue after KYC approval."""
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("BEGIN IMMEDIATE")
+            async with conn.execute(
+                "SELECT id FROM orders WHERE user_id=? AND status='paid_awaiting_kyc' ORDER BY id ASC",
+                (int(user_id),),
+            ) as cur:
+                rows = await cur.fetchall()
+            ids = [int(row["id"]) for row in rows]
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                await conn.execute(
+                    f"UPDATE orders SET status='submitted',updated_at=CURRENT_TIMESTAMP WHERE id IN ({placeholders})",
+                    ids,
+                )
+            await conn.commit()
+        return ids
+
+    async def mark_kyc_orders_refund_pending(self, user_id: int) -> List[int]:
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("BEGIN IMMEDIATE")
+            async with conn.execute(
+                "SELECT id FROM orders WHERE user_id=? AND status='paid_awaiting_kyc' ORDER BY id ASC",
+                (int(user_id),),
+            ) as cur:
+                rows = await cur.fetchall()
+            ids = [int(row["id"]) for row in rows]
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                await conn.execute(
+                    f"UPDATE orders SET status='refund_pending',updated_at=CURRENT_TIMESTAMP WHERE id IN ({placeholders})",
+                    ids,
+                )
+            await conn.commit()
+        return ids
+
     async def get_orders(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
         try:
             async with aiosqlite.connect(self.db_path) as db:
