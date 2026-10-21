@@ -211,7 +211,9 @@ async def kyc_review_approve(callback: CallbackQuery):
         from rebecca_catalog import get_service_by_rebecca_id
         from utils.rebecca import credential_message
 
-        resumed = await payg_offer_service.resume_approved_initial_topups(user_id)
+        resumed = await payg_offer_service.resume_approved_initial_topups(
+            user_id, callback.from_user.id
+        )
         for item in resumed:
             account = item["account"]
             admin = await db.get_admin_by_id(int(account["admin_id"]))
@@ -240,7 +242,11 @@ async def kyc_review_approve(callback: CallbackQuery):
         from payg_service import payg_service
         legacy_topups = await payg_service.approved_initial_topups_for_user(user_id)
         if legacy_topups and not await payg_service.get_user_account(user_id):
-            result = await payg_service.post_topup_approval(int(legacy_topups[0]["id"]))
+            legacy_id = int(legacy_topups[0]["id"])
+            await payg_service.approve_topup(
+                legacy_id, callback.from_user.id, credit=True
+            )
+            result = await payg_service.post_topup_approval(legacy_id)
             account = result.get("account")
             if account:
                 admin = await db.get_admin_by_id(int(account["admin_id"]))
