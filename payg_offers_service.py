@@ -403,9 +403,17 @@ class PaygOfferService:
         context = await self.topup_context(topup_id)
         if not context:
             raise PaygOfferError("PAYG service top-up context not found")
-        topup = await payg_service.approve_topup(int(topup_id), int(actor_id))
+        before = await payg_service.get_topup(int(topup_id))
+        if not before:
+            raise PaygOfferError("PAYG top-up not found")
+        initial = str(before["purpose"]) == "initial_service"
+        topup = await payg_service.approve_topup(
+            int(topup_id),
+            int(actor_id),
+            credit=(provision or not initial),
+        )
         result: dict[str, Any] = {"topup": topup, "service_id": int(context["service_id"])}
-        if str(topup["purpose"]) == "initial_service":
+        if initial:
             if provision:
                 result["account"] = await self.provision(
                     int(topup["user_id"]), int(context["service_id"])
@@ -426,7 +434,7 @@ class PaygOfferService:
                 SELECT t.*,s.service_id
                 FROM payg_topups t
                 JOIN payg_service_topups s ON s.topup_id=t.id
-                WHERE t.user_id=? AND t.status='approved' AND t.purpose='initial_service'
+                WHERE t.user_id=? AND t.status='paid_awaiting_kyc' AND t.purpose='initial_service'
                 ORDER BY t.id ASC
                 """,
                 (int(user_id),),
@@ -439,7 +447,9 @@ class PaygOfferService:
                 pending.append(item)
         return pending
 
-    async def resume_approved_initial_topups(self, user_id: int) -> list[dict[str, Any]]:
+    async def resume_approved_initial_topups(
+        self, user_id: int, actor_id: int
+    ) -> list[dict[str, Any]]:
         """Provision paid service-specific PAYG purchases that were held for KYC."""
         await self.ensure_schema()
         async with aiosqlite.connect(self.db_path) as conn:
@@ -449,7 +459,7 @@ class PaygOfferService:
                 SELECT t.id AS topup_id, s.service_id
                 FROM payg_topups t
                 JOIN payg_service_topups s ON s.topup_id=t.id
-                WHERE t.user_id=? AND t.status='approved' AND t.purpose='initial_service'
+                WHERE t.user_id=? AND t.status='paid_awaiting_kyc' AND t.purpose='initial_service'
                 ORDER BY t.id ASC
                 """,
                 (int(user_id),),
@@ -466,6 +476,9 @@ class PaygOfferService:
             existing = await self.account_for_user_service(int(user_id), service_id)
             if existing:
                 continue
+            await payg_service.approve_topup(
+                int(row["topup_id"]), int(actor_id), credit=True
+            )
             account = await self.provision(int(user_id), service_id)
             resumed.append({
                 "topup_id": int(row["topup_id"]),
