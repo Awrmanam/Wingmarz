@@ -76,6 +76,19 @@ class FakeDB:
     async def get_admins_for_user(self, user_id):
         return [self.admin.model_copy(update={"id": 5})] if self.admin else []
     async def update_order(self, oid, **fields): self.order.update(fields); return True
+    async def mark_order_paid_awaiting_kyc(self, oid, actor_id):
+        if self.order["status"] not in {"pending", "submitted", "failed"}:
+            return False
+        self.order["status"] = "paid_awaiting_kyc"
+        self.order["approved_by"] = actor_id
+        return True
+
+
+@pytest.fixture(autouse=True)
+def verified_identity(monkeypatch):
+    async def approved(_user_id):
+        return True
+    monkeypatch.setattr(sudo.trust_service, "is_identity_approved", approved)
 
 
 @pytest.fixture
@@ -342,3 +355,26 @@ def test_credential_username_with_underscores_reaches_telegram_exactly(monkeypat
     text = callback.bot.sent[0][1]
     assert "armanstore2_support_8090" in text
     assert "<pre>" not in text and "```" not in text and "Gold" in text
+
+
+
+def test_unverified_paid_order_is_held_before_remote_provisioning(monkeypatch, rebecca):
+    db, callback, calls = FakeDB(), FakeCallback(), []
+    monkeypatch.setattr(sudo, "db", db)
+
+    async def not_verified(_user_id):
+        return False
+
+    async def create(*args, **kwargs):
+        calls.append(1)
+        return {}
+
+    monkeypatch.setattr(sudo.trust_service, "is_identity_approved", not_verified)
+    monkeypatch.setattr(sudo.rebecca_api, "create_admin_verified", create)
+
+    run(sudo.order_approve(callback))
+
+    assert db.order["status"] == "paid_awaiting_kyc"
+    assert not calls
+    assert any("احراز هویت" in text for _uid, text, _kwargs in callback.bot.sent)
+    assert "منتظر KYC" in callback.answers[-1][0]
