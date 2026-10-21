@@ -432,6 +432,7 @@ async def _send_payment(message: Message, topup_id: int, *, edit: bool) -> None:
             await message.answer("❌ درخواست شارژ پیدا نشد.")
         return
     service = await get_service_by_rebecca_id(int(context["service_id"]))
+    identity_ok = await trust_service.is_identity_approved(int(topup["user_id"]))
     cards = await db.get_cards(only_active=True)
     lines = [
         f"💳 <b>شارژ PAYG · {escape(service.display_name if service else str(context['service_id']))}</b>",
@@ -439,8 +440,16 @@ async def _send_payment(message: Message, topup_id: int, *, edit: bool) -> None:
         f"شناسه: <code>PAYG-{int(topup_id)}</code>",
         f"مبلغ: <b>{_money(int(topup['amount_toman']))}</b>",
         "",
-        "مبلغ را به یکی از کارت‌های زیر واریز کنید و سپس رسید را ارسال کنید:",
     ]
+    if str(topup.get("purpose") or "") == "initial_service" and not identity_ok:
+        lines.extend([
+            "🪪 <b>برای ساخت پنل PAYG احراز هویت الزامی است.</b>",
+            "ابتدا پرداخت بررسی و کیف پول شارژ می‌شود؛ ساخت پنل تا تأیید KYC متوقف می‌ماند.",
+            "",
+        ])
+    lines.extend([
+        "مبلغ را به یکی از کارت‌های زیر واریز کنید و سپس رسید را ارسال کنید:",
+    ])
     if cards:
         for card in cards:
             lines.append(
@@ -540,12 +549,28 @@ async def service_payg_receipt(message: Message, state: FSMContext):
         InlineKeyboardButton(text="✅ تأیید شارژ", callback_data=f"paygsvcadmin:approve:{topup_id}"),
         InlineKeyboardButton(text="❌ رد", callback_data=f"paygsvcadmin:reject:{topup_id}"),
     ]])
+    trusted = await trust_service.is_identity_approved(message.from_user.id)
     caption = (
         f"🧾 شارژ PAYG #{topup_id}\n"
         f"سرویس: {escape(service.display_name if service else str(context['service_id']))}\n"
         f"کاربر: <code>{message.from_user.id}</code>\n"
-        f"مبلغ: <b>{_money(int(topup['amount_toman']))}</b>"
+        f"Username: {('@' + escape(message.from_user.username)) if message.from_user.username else '—'}\n"
+        f"مبلغ: <b>{_money(int(topup['amount_toman']))}</b>\n"
+        f"🪪 Identity: <b>{'تأیید' if trusted else 'تأییدنشده'}</b>"
     )
+    await group_ops_service.send_photo(
+        message.bot,
+        "receipts",
+        message.photo[-1].file_id,
+        caption=caption,
+        reply_markup=kb,
+    )
+    if not trusted:
+        await group_ops_service.send_text(
+            message.bot,
+            "unverified",
+            f"🟡 رسید PAYG سرویس <code>#{topup_id}</code> از کاربر تأییدنشده <code>{message.from_user.id}</code> دریافت شد.",
+        )
     for sudo_id in config.SUDO_ADMINS:
         try:
             await message.bot.send_photo(
