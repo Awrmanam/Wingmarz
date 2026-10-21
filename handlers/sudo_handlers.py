@@ -4984,6 +4984,41 @@ async def order_approve(callback: CallbackQuery):
     await callback.answer()
 
 
+class _KycAutoReviewMessage:
+    """No-op Telegram message adapter for automatic issuance after KYC approval."""
+    photo = None
+    caption = ""
+
+    async def edit_text(self, *_args, **_kwargs):
+        return None
+
+    async def edit_caption(self, *_args, **_kwargs):
+        return None
+
+    async def edit_reply_markup(self, *_args, **_kwargs):
+        return None
+
+
+class _KycAutoIssueCallback:
+    def __init__(self, bot, actor_id: int, order_id: int):
+        self.bot = bot
+        self.from_user = type("Actor", (), {"id": int(actor_id)})()
+        self.data = f"order_approve_{int(order_id)}"
+        self.message = _KycAutoReviewMessage()
+        self.last_answer: tuple | None = None
+
+    async def answer(self, *args, **kwargs):
+        self.last_answer = (args, kwargs)
+        return None
+
+
+async def issue_paid_order_after_kyc(bot, actor_id: int, order_id: int) -> dict:
+    """Resume a payment-approved order immediately after KYC approval."""
+    callback = _KycAutoIssueCallback(bot, int(actor_id), int(order_id))
+    await order_approve(callback)
+    return (await db.get_order_by_id(int(order_id))) or {}
+
+
 @sudo_router.callback_query(F.data.startswith("order_reject_"))
 async def order_reject(callback: CallbackQuery):
     if callback.from_user.id not in config.SUDO_ADMINS:
