@@ -24,6 +24,7 @@ from style_engine import style_engine
 from utils.bold_fix_bot import BoldFixBot
 from kyc_middleware import KycGateMiddleware, KycMessageGateMiddleware
 from group_ops_middleware import GroupOpsErrorMiddleware
+from group_ops_start_middleware import GroupOpsStartMiddleware
 from forced_join_service import ForcedJoinState, check_membership
 
 
@@ -77,6 +78,8 @@ class MarzbanAdminBot:
         # Register forced-join middleware BEFORE routers so it gates everything
         self.dp.message.outer_middleware(GroupOpsErrorMiddleware())
         self.dp.callback_query.outer_middleware(GroupOpsErrorMiddleware())
+        # /start observability must run before Forced Join can block a new user.
+        self.dp.message.outer_middleware(GroupOpsStartMiddleware())
         self.dp.message.outer_middleware(ForcedJoinMiddleware(self.bot))
         self.dp.callback_query.outer_middleware(ForcedJoinMiddleware(self.bot))
         # KYC gates sensitive regular-admin panel actions after forced-join.
