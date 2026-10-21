@@ -19,6 +19,7 @@ from database import db
 from operations_service import DiscountQuote, OperationsError, operations_service
 from style_engine import style_engine
 from group_ops_service import group_ops_service
+from trust_service import trust_service
 
 
 operations_router = Router(name="operations")
@@ -748,9 +749,19 @@ async def _create_checkout_order(callback: CallbackQuery | _MessageCheckoutAdapt
         await callback.answer()
         return
 
+    identity_ok = await trust_service.is_identity_approved(callback.from_user.id)
+    kyc_notice = (
+        "🪪 <b>احراز هویت برای صدور این پنل الزامی است.</b>\n"
+        "پرداخت شما ابتدا بررسی می‌شود؛ بعد از تأیید پرداخت، تا زمان تأیید KYC پنل صادر نمی‌شود. "
+        "اگر KYC تأیید نشود، سفارش وارد فرایند استرداد می‌شود."
+        if not identity_ok
+        else "✅ احراز هویت/Trust این حساب قبلاً تأیید شده است."
+    )
     cards = await db.get_cards(only_active=True)
     lines = [
         f"✅ سفارش ثبت شد.\n\nپلن: {escape(plan.name)}{discount_lines}\nقیمت نهایی: <b>{final_price:,} تومان</b>\n",
+        kyc_notice,
+        "",
         config.MESSAGES["public_payment_instructions"],
         "",
         "کارت‌های فعال:",
@@ -766,7 +777,11 @@ async def _create_checkout_order(callback: CallbackQuery | _MessageCheckoutAdapt
             )
     back_cb = "back_to_admin_main" if source == "a" else "public_back_main"
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [await _button(config.BUTTONS["mark_paid"], f"public_mark_paid_{order_id}", fallback="✅")],
+        [await _button(
+            config.BUTTONS["mark_paid"],
+            f"{'admin' if source == 'a' else 'public'}_mark_paid_{order_id}",
+            fallback="✅",
+        )],
         [await _button("بازگشت", back_cb, icon_key="back", fallback="⬅️")],
     ])
     await callback.message.edit_text("\n".join(lines), reply_markup=kb)
