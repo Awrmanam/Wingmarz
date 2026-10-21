@@ -89,6 +89,24 @@ class OrderComplianceService:
             )
             await conn.commit()
 
+    async def awaiting_kyc_orders(self, user_id: int) -> list[int]:
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            async with conn.execute(
+                """
+                SELECT order_id FROM order_compliance
+                WHERE user_id=? AND payment_confirmed=1 AND kyc_state='awaiting'
+                ORDER BY order_id
+                """,
+                (int(user_id),),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [int(row["order_id"]) for row in rows]
+
+    async def has_awaiting_kyc(self, user_id: int) -> bool:
+        return bool(await self.awaiting_kyc_orders(user_id))
+
     async def mark_kyc_approved(self, user_id: int) -> list[int]:
         await self.ensure_schema()
         async with aiosqlite.connect(self.db_path) as conn:
