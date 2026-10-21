@@ -4595,6 +4595,81 @@ async def order_approve(callback: CallbackQuery):
         await callback.answer("این سفارش دیگر قابل صدور نیست.", show_alert=True)
         return
 
+    # Payment approval and panel issuance are separate concerns.
+    # A paid reseller order must not be provisioned until identity is approved.
+    from trust_service import trust_service
+    from order_compliance_service import order_compliance_service
+
+    identity_ok = await trust_service.is_identity_approved(int(o["user_id"]))
+    await order_compliance_service.confirm_payment(
+        oid,
+        int(o["user_id"]),
+        int(callback.from_user.id),
+        kyc_required=not identity_ok,
+    )
+    compliance = await order_compliance_service.get(oid)
+
+    if not identity_ok:
+        user_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🪪 شروع احراز هویت", callback_data="kyc:start")],
+            [InlineKeyboardButton(text="📋 وضعیت KYC", callback_data="kyc:status")],
+        ])
+        try:
+            await callback.bot.send_message(
+                int(o["user_id"]),
+                "✅ <b>پرداخت سفارش شما تأیید شد.</b>\n\n"
+                f"🧾 سفارش: <code>#{oid}</code>\n"
+                "🪪 برای صدور پنل، احراز هویت را تکمیل کنید. "
+                "تا قبل از تأیید KYC هیچ پنلی صادر نمی‌شود.",
+                reply_markup=user_kb,
+            )
+        except Exception:
+            pass
+
+        await group_ops_service.send_text(
+            callback.bot,
+            "payments",
+            "✅ <b>پرداخت تأیید شد · منتظر KYC</b>\n\n"
+            f"🧾 سفارش: <code>#{oid}</code>\n"
+            f"👤 User ID: <code>{int(o['user_id'])}</code>\n"
+            "صدور تا تأیید احراز هویت متوقف شد.",
+        )
+        await group_ops_service.send_text(
+            callback.bot,
+            "unverified",
+            f"🟡 کاربر <code>{int(o['user_id'])}</code> برای سفارش "
+            f"<code>#{oid}</code> پرداخت تأییدشده دارد و منتظر KYC است.",
+        )
+
+        waiting_text = (
+            "✅ پرداخت تأیید شد.\n"
+            "🪪 صدور پنل تا تأیید KYC متوقف است.\n"
+            f"سفارش: #{oid}"
+        )
+        try:
+            if getattr(callback.message, "photo", None):
+                await callback.message.edit_caption(
+                    caption=(callback.message.caption or "") + "\n\n" + waiting_text,
+                    reply_markup=None,
+                )
+            else:
+                await callback.message.edit_text(waiting_text, reply_markup=None)
+        except Exception:
+            pass
+        await callback.answer("پرداخت تأیید شد؛ منتظر KYC", show_alert=True)
+        return
+
+    # Already-verified/manual-trusted identities can move directly to issuance.
+    if compliance and (
+        str(compliance.get("kyc_state")) == "rejected"
+        or str(compliance.get("refund_state")) == "pending"
+    ):
+        await callback.answer(
+            "این سفارش وارد مسیر استرداد شده و فعلاً قابل صدور نیست.",
+            show_alert=True,
+        )
+        return
+
     order_type = (o.get("order_type") or "").lower()
     if order_type == "renew":
         if config.PANEL_PROVIDER == "rebecca":
