@@ -41,6 +41,41 @@ class OrderComplianceService:
             )
             await conn.commit()
 
+    async def note_receipt(self, order_id: int, user_id: int, *, kyc_required: bool) -> None:
+        await self.ensure_schema()
+        kyc_state = "awaiting" if kyc_required else "not_required"
+        async with aiosqlite.connect(self.db_path) as conn:
+            await conn.execute(
+                """
+                INSERT INTO order_compliance(order_id,user_id,kyc_state,updated_at)
+                VALUES(?,?,?,CURRENT_TIMESTAMP)
+                ON CONFLICT(order_id) DO UPDATE SET
+                    user_id=excluded.user_id,
+                    kyc_state=CASE
+                        WHEN order_compliance.kyc_state IN ('approved','rejected') THEN order_compliance.kyc_state
+                        WHEN excluded.kyc_state='not_required' THEN 'not_required'
+                        ELSE 'awaiting'
+                    END,
+                    updated_at=CURRENT_TIMESTAMP
+                """,
+                (int(order_id), int(user_id), kyc_state),
+            )
+            await conn.commit()
+
+    async def has_kyc_case(self, user_id: int) -> bool:
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            async with conn.execute(
+                """
+                SELECT 1 FROM order_compliance
+                WHERE user_id=? AND kyc_state IN ('awaiting','rejected')
+                LIMIT 1
+                """,
+                (int(user_id),),
+            ) as cur:
+                row = await cur.fetchone()
+        return row is not None
+
     async def get(self, order_id: int) -> dict[str, Any] | None:
         await self.ensure_schema()
         async with aiosqlite.connect(self.db_path) as conn:
@@ -75,12 +110,13 @@ class OrderComplianceService:
                     payment_confirmed_by=excluded.payment_confirmed_by,
                     payment_confirmed_at=COALESCE(order_compliance.payment_confirmed_at,CURRENT_TIMESTAMP),
                     kyc_state=CASE
-                        WHEN order_compliance.kyc_state='approved' THEN 'approved'
+                        WHEN order_compliance.kyc_state IN ('approved','rejected') THEN order_compliance.kyc_state
                         WHEN excluded.kyc_state='not_required' THEN 'not_required'
                         ELSE 'awaiting'
                     END,
                     refund_state=CASE
                         WHEN order_compliance.refund_state='refunded' THEN 'refunded'
+                        WHEN order_compliance.kyc_state='rejected' THEN 'pending'
                         ELSE 'none'
                     END,
                     updated_at=CURRENT_TIMESTAMP
@@ -125,7 +161,7 @@ class OrderComplianceService:
                 """
                 UPDATE order_compliance
                 SET kyc_state='approved',refund_state='none',updated_at=CURRENT_TIMESTAMP
-                WHERE user_id=? AND payment_confirmed=1 AND kyc_state='awaiting'
+                WHERE user_id=? AND kyc_state='awaiting'
                 """,
                 (int(user_id),),
             )
@@ -149,8 +185,10 @@ class OrderComplianceService:
             await conn.execute(
                 """
                 UPDATE order_compliance
-                SET kyc_state='rejected',refund_state='pending',updated_at=CURRENT_TIMESTAMP
-                WHERE user_id=? AND payment_confirmed=1 AND kyc_state='awaiting'
+                SET kyc_state='rejected',
+                    refund_state=CASE WHEN payment_confirmed=1 THEN 'pending' ELSE 'none' END,
+                    updated_at=CURRENT_TIMESTAMP
+                WHERE user_id=? AND kyc_state='awaiting'
                 """,
                 (int(user_id),),
             )
