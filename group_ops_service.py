@@ -19,6 +19,7 @@ TOPICS: dict[str, str] = {
     "admins": "👥 ادمین‌ها",
     "orders": "🛒 سفارش‌ها",
     "payments": "💳 پرداخت‌ها",
+    "receipts": "🧾 رسیدهای پرداخت",
     "kyc": "🪪 احراز هویت",
     "unverified": "🟡 تاییدنشده‌ها",
     "errors": "🐞 خطاها",
@@ -161,50 +162,147 @@ class GroupOpsService:
                 rows = await cur.fetchall()
         return {str(row["topic_key"]): dict(row) for row in rows}
 
+    async def _store_topic(self, topic_key: str, title: str, thread_id: int) -> None:
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            await conn.execute(
+                """
+                INSERT INTO group_ops_topics(topic_key,title,thread_id,updated_at)
+                VALUES(?,?,?,CURRENT_TIMESTAMP)
+                ON CONFLICT(topic_key) DO UPDATE SET
+                    title=excluded.title,
+                    thread_id=excluded.thread_id,
+                    updated_at=CURRENT_TIMESTAMP
+                """,
+                (str(topic_key), str(title), int(thread_id)),
+            )
+            await conn.commit()
+
+    async def _delete_topic_state(self, topic_key: str) -> None:
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            await conn.execute("DELETE FROM group_ops_topics WHERE topic_key=?", (str(topic_key),))
+            await conn.commit()
+
     async def _target(self, topic_key: str) -> tuple[int, int] | None:
         cfg = await self.get_config()
         if not cfg or not int(cfg.get("enabled") or 0):
             return None
+        chat_id = int(cfg["chat_id"])
         topics = await self.topics()
         topic = topics.get(topic_key)
         if not topic:
+            return chat_id, 0
+        return chat_id, int(topic["thread_id"])
+
+    async def _ensure_topic(self, bot, topic_key: str) -> tuple[int, int] | None:
+        cfg = await self.get_config()
+        if not cfg or not int(cfg.get("enabled") or 0):
             return None
-        return int(cfg["chat_id"]), int(topic["thread_id"])
+        chat_id = int(cfg["chat_id"])
+        title = TOPICS.get(topic_key)
+        if not title:
+            logger.warning("Unknown Group Ops topic key: %s", topic_key)
+            return chat_id, 0
+
+        topics = await self.topics()
+        topic = topics.get(topic_key)
+        if topic:
+            return chat_id, int(topic["thread_id"])
+
+        try:
+            created = await bot.create_forum_topic(chat_id=chat_id, name=title)
+            thread_id = int(created.message_thread_id)
+            await self._store_topic(topic_key, title, thread_id)
+            logger.info("Group Ops topic auto-created: %s -> %s", topic_key, thread_id)
+            return chat_id, thread_id
+        except Exception as exc:
+            logger.warning("Group Ops topic auto-create failed (%s): %s", topic_key, exc)
+            # Keep the operations channel useful even if topic creation is temporarily
+            # unavailable. Sending without a thread lands in General.
+            return chat_id, 0
+
+    async def _repair_topic(self, bot, topic_key: str, chat_id: int) -> tuple[int, int]:
+        title = TOPICS.get(topic_key)
+        if not title:
+            return chat_id, 0
+        await self._delete_topic_state(topic_key)
+        try:
+            created = await bot.create_forum_topic(chat_id=chat_id, name=title)
+            thread_id = int(created.message_thread_id)
+            await self._store_topic(topic_key, title, thread_id)
+            logger.warning("Group Ops topic repaired: %s -> %s", topic_key, thread_id)
+            return chat_id, thread_id
+        except Exception as exc:
+            logger.warning("Group Ops topic repair failed (%s): %s", topic_key, exc)
+            return chat_id, 0
 
     async def send_text(self, bot, topic_key: str, text: str, *, reply_markup=None) -> bool:
-        target = await self._target(topic_key)
+        target = await self._ensure_topic(bot, topic_key)
         if not target:
+            logger.warning("Group Ops is not configured; dropping text event %s", topic_key)
             return False
         chat_id, thread_id = target
+
+        async def _send(thread: int):
+            kwargs = {
+                "chat_id": chat_id,
+                "text": text,
+                "reply_markup": reply_markup,
+            }
+            if thread:
+                kwargs["message_thread_id"] = thread
+            return await bot.send_message(**kwargs)
+
         try:
-            await bot.send_message(
-                chat_id=chat_id,
-                message_thread_id=thread_id,
-                text=text,
-                reply_markup=reply_markup,
-            )
+            await _send(thread_id)
             return True
-        except Exception as exc:
-            logger.warning("Group ops send_text failed (%s): %s", topic_key, exc)
-            return False
+        except Exception as first_exc:
+            logger.warning("Group ops send_text failed (%s/%s): %s", topic_key, thread_id, first_exc)
+            repaired_chat, repaired_thread = await self._repair_topic(bot, topic_key, chat_id)
+            try:
+                await _send(repaired_thread)
+                return True
+            except Exception as second_exc:
+                logger.error(
+                    "Group ops send_text retry failed (%s/%s): %s",
+                    topic_key, repaired_thread, second_exc,
+                )
+                return False
 
     async def send_photo(self, bot, topic_key: str, file_id: str, *, caption: str, reply_markup=None) -> bool:
-        target = await self._target(topic_key)
+        target = await self._ensure_topic(bot, topic_key)
         if not target:
+            logger.warning("Group Ops is not configured; dropping photo event %s", topic_key)
             return False
         chat_id, thread_id = target
+
+        async def _send(thread: int):
+            kwargs = {
+                "chat_id": chat_id,
+                "photo": file_id,
+                "caption": caption,
+                "reply_markup": reply_markup,
+            }
+            if thread:
+                kwargs["message_thread_id"] = thread
+            return await bot.send_photo(**kwargs)
+
         try:
-            await bot.send_photo(
-                chat_id=chat_id,
-                message_thread_id=thread_id,
-                photo=file_id,
-                caption=caption,
-                reply_markup=reply_markup,
-            )
+            await _send(thread_id)
             return True
-        except Exception as exc:
-            logger.warning("Group ops send_photo failed (%s): %s", topic_key, exc)
-            return False
+        except Exception as first_exc:
+            logger.warning("Group ops send_photo failed (%s/%s): %s", topic_key, thread_id, first_exc)
+            repaired_chat, repaired_thread = await self._repair_topic(bot, topic_key, chat_id)
+            try:
+                await _send(repaired_thread)
+                return True
+            except Exception as second_exc:
+                logger.error(
+                    "Group ops send_photo retry failed (%s/%s): %s",
+                    topic_key, repaired_thread, second_exc,
+                )
+                return False
 
     async def claim_event(self, event_key: str) -> bool:
         """Return True only once for a stable event key."""
@@ -312,8 +410,20 @@ class GroupOpsService:
         text = re.sub(r"\b(?:\d[ -]*?){16}\b", "[CARD-REDACTED]", text)
         return text[:3500]
 
-    async def report_error(self, bot, exc: BaseException, *, context: str | None = None) -> bool:
+    async def report_error(
+        self,
+        bot,
+        exc: BaseException,
+        *,
+        context: str | None = None,
+        details: str | None = None,
+    ) -> bool:
         context_line = f"\n📍 {escape(context)}" if context else ""
+        detail_text = ""
+        if details:
+            redacted = self.redact_error(details)
+            # Keep the useful tail where Python includes file/line/exception.
+            detail_text = f"\n\n<pre>{escape(redacted[-2800:])}</pre>"
         return await self.send_text(
             bot,
             "errors",
@@ -321,6 +431,7 @@ class GroupOpsService:
                 "🐞 <b>خطای Wingmarz</b>"
                 f"{context_line}\n\n"
                 f"<code>{escape(self.redact_error(repr(exc)))}</code>"
+                f"{detail_text}"
             ),
         )
 

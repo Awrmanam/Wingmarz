@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import traceback
 from typing import Any, Awaitable, Callable
 
 from aiogram.dispatcher.middlewares.base import BaseMiddleware
@@ -23,10 +24,12 @@ class GroupOpsErrorMiddleware(BaseMiddleware):
             if bot is not None:
                 try:
                     update_id = getattr(event, "update_id", None)
+                    trace = traceback.format_exc()
                     await group_ops_service.report_error(
                         bot,
                         exc,
                         context=f"update_id={update_id}" if update_id is not None else None,
+                        details=trace,
                     )
                 except Exception:
                     pass
