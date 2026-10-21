@@ -13,6 +13,7 @@ from payg_offers_service import PaygOfferError, payg_offer_service
 from payg_service import PaygError, PaygInsufficientFunds, payg_service
 from rebecca_catalog import get_service, get_service_by_rebecca_id, list_services
 from service_marketplace_service import service_marketplace_service
+from trust_service import trust_service
 from utils.rebecca import credential_message, parse_service_ids
 
 
