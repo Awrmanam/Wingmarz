@@ -416,6 +416,29 @@ class PaygOfferService:
             result["billing"] = await payg_service.sync_account(int(topup["account_id"]))
         return result
 
+    async def pending_kyc_topups(self, user_id: int) -> list[dict[str, Any]]:
+        """Approved initial service top-ups that have not provisioned a PAYG account."""
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            async with conn.execute(
+                """
+                SELECT t.*,s.service_id
+                FROM payg_topups t
+                JOIN payg_service_topups s ON s.topup_id=t.id
+                WHERE t.user_id=? AND t.status='approved' AND t.purpose='initial_service'
+                ORDER BY t.id ASC
+                """,
+                (int(user_id),),
+            ) as cur:
+                rows = await cur.fetchall()
+        pending: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            if not await self.account_for_user_service(int(user_id), int(item["service_id"])):
+                pending.append(item)
+        return pending
+
     async def resume_approved_initial_topups(self, user_id: int) -> list[dict[str, Any]]:
         """Provision paid service-specific PAYG purchases that were held for KYC."""
         await self.ensure_schema()
