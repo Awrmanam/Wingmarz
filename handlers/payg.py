@@ -599,7 +599,11 @@ async def payg_admin_approve(callback: CallbackQuery):
         identity_ok = await trust_service.is_identity_approved(user_id)
         initial = str(before.get("purpose") or "") == "initial"
 
-        topup = await payg_service.approve_topup(topup_id, callback.from_user.id)
+        topup = await payg_service.approve_topup(
+            topup_id,
+            callback.from_user.id,
+            credit=(not initial or identity_ok),
+        )
         continuation = {}
         if not initial or identity_ok:
             continuation = await payg_service.post_topup_approval(topup_id)
