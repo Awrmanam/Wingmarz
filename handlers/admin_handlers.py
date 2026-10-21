@@ -566,11 +566,18 @@ async def admin_receive_payment_receipt(message: Message, state: FSMContext):
         )
         await group_ops_service.send_photo(
             message.bot,
-            "payments" if trusted else "unverified",
+            "receipts",
             file_id,
             caption=caption,
             reply_markup=kb,
         )
+        if not trusted:
+            await group_ops_service.send_text(
+                message.bot,
+                "unverified",
+                f"🟡 رسید سفارش <code>#{order_id}</code> از کاربر تأییدنشده <code>{message.from_user.id}</code> دریافت شد.\n"
+                "پرداخت را بررسی کنید؛ صدور تا KYC/Trust متوقف می‌ماند.",
+            )
     except Exception:
         pass
     try:
