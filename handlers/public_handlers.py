@@ -9,6 +9,7 @@ from database import db
 from utils.notify import format_traffic_size, seconds_to_days
 from group_ops_service import group_ops_service
 from trust_service import trust_service
+from order_compliance_service import order_compliance_service
 from forced_join_service import ForcedJoinState, check_membership
 
 
@@ -109,6 +110,17 @@ async def public_order(callback: CallbackQuery):
         "",
         "کارت‌های فعال:",
     ]
+    identity_ok = await trust_service.is_identity_approved(callback.from_user.id)
+    if not identity_ok:
+        lines.extend([
+            "",
+            "🪪 <b>احراز هویت برای صدور این پنل الزامی است.</b>",
+            "می‌توانید ابتدا پرداخت کنید؛ تا زمان تأیید KYC پنل صادر نمی‌شود.",
+            "اگر KYC تأیید نشود، سفارش برای بررسی استرداد وجه ثبت می‌شود.",
+        ])
+    else:
+        lines.extend(["", "✅ احراز هویت این حساب قبلاً تأیید شده است."])
+
     if not cards:
         lines.append("— فعلاً کارتی ثبت نشده. لطفاً با پشتیبانی تماس بگیرید.")
     else:
@@ -212,10 +224,13 @@ async def public_receive_payment_receipt(message: Message, state: FSMContext):
     ])
     try:
         trusted = await trust_service.is_identity_approved(message.from_user.id)
+        await order_compliance_service.note_receipt(
+            order_id, message.from_user.id, kyc_required=not trusted
+        )
         auto_enabled = await trust_service.auto_approve_enabled(message.from_user.id)
         verification = await trust_service.payment_verification(order_id)
         bank_state = str((verification or {}).get("state") or "unverified")
-        topic = "payments" if trusted else "unverified"
+        topic = "receipts"
         caption = (
             f"🧾 <b>رسید سفارش #{order_id}</b>\n"
             f"👤 <code>{message.from_user.id}</code> "
@@ -229,6 +244,13 @@ async def public_receive_payment_receipt(message: Message, state: FSMContext):
         await group_ops_service.send_photo(
             message.bot, topic, file_id, caption=caption, reply_markup=kb
         )
+        if not trusted:
+            await group_ops_service.send_text(
+                message.bot,
+                "unverified",
+                f"🟡 سفارش <code>#{order_id}</code> پرداخت/رسید دارد ولی KYC کاربر "
+                f"<code>{message.from_user.id}</code> هنوز تأیید نشده است.",
+            )
     except Exception:
         pass
     try:
@@ -238,5 +260,20 @@ async def public_receive_payment_receipt(message: Message, state: FSMContext):
     except Exception:
         pass
     await state.clear()
-    await message.answer(config.MESSAGES["order_submitted_to_admin"], reply_markup=get_public_main_keyboard())
+    if trusted:
+        await message.answer(
+            "✅ رسید شما ثبت شد و برای بررسی پرداخت ارسال شد.",
+            reply_markup=get_public_main_keyboard(),
+        )
+    else:
+        await message.answer(
+            "✅ رسید شما ثبت شد.\n\n"
+            "🪪 برای صدور پنل، احراز هویت را تکمیل کنید. "
+            "پرداخت شما تا زمان بررسی KYC در وضعیت معلق می‌ماند.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🪪 شروع احراز هویت", callback_data="kyc:start")],
+                [InlineKeyboardButton(text="📋 وضعیت KYC", callback_data="kyc:status")],
+                [InlineKeyboardButton(text="🏠 صفحه اصلی", callback_data="public_back_main")],
+            ]),
+        )
 
