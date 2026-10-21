@@ -447,6 +447,22 @@ class PaygService:
             await conn.commit()
         return (await self.get_topup(topup_id)) or topup
 
+    async def mark_topup_refund_pending(self, topup_id: int, user_id: int) -> bool:
+        """Freeze an already-credited initial top-up while manual refund is processed."""
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            cur = await conn.execute(
+                """
+                UPDATE payg_topups
+                SET status='refund_pending',updated_at=CURRENT_TIMESTAMP
+                WHERE id=? AND user_id=? AND status='approved'
+                  AND purpose IN ('initial','initial_service')
+                """,
+                (int(topup_id), int(user_id)),
+            )
+            await conn.commit()
+            return cur.rowcount == 1
+
     async def reject_topup(self, topup_id: int, actor_id: int) -> bool:
         await self.ensure_schema()
         async with aiosqlite.connect(self.db_path) as conn:
