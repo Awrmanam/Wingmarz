@@ -133,13 +133,12 @@ async def _render_payment(message: Message, topup_id: int, source: str = "p") ->
     if str(topup.get("purpose") or "") == "initial" and not identity_ok:
         lines.extend([
             "🪪 <b>برای ساخت پنل PAYG احراز هویت الزامی است.</b>",
-            "ابتدا پرداخت بررسی و کیف پول شارژ می‌شود؛ ساخت پنل تا تأیید KYC متوقف می‌ماند.",
+            "ابتدا پرداخت بررسی می‌شود؛ مبلغ تا تأیید KYC در حالت رزرو می‌ماند و وارد کیف پول مصرفی نمی‌شود.",
             "",
         ])
     lines.extend([
         "مبلغ را به یکی از کارت‌های زیر واریز کنید و سپس رسید را ارسال کنید:",
     ])
-    ]
     if cards:
         for card in cards:
             lines.append(
