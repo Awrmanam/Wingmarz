@@ -325,6 +325,8 @@ async def kyc_review_reject(callback: CallbackQuery):
             refund_payg.append(int(topup["id"]))
 
         from payg_service import payg_service
+        for topup_id in list(refund_payg):
+            await payg_service.mark_topup_refund_pending(topup_id, user_id)
         if not await payg_service.get_user_account(user_id):
             for topup in await payg_service.approved_initial_topups_for_user(user_id):
                 topup_id = int(topup["id"])
@@ -337,6 +339,7 @@ async def kyc_review_reject(callback: CallbackQuery):
                     int(topup.get("amount_toman") or 0),
                     "kyc_rejected",
                 )
+                await payg_service.mark_topup_refund_pending(topup_id, user_id)
                 refund_payg.append(topup_id)
     except Exception as exc:
         await group_ops_service.report_error(
