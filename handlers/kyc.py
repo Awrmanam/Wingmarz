@@ -111,6 +111,7 @@ async def kyc_document(message: Message, state: FSMContext):
         photo.file_id,
         getattr(photo, "file_unique_id", None),
     )
+    await order_compliance_service.reset_kyc_pending(message.from_user.id)
     await state.clear()
 
     await message.answer(
