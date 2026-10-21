@@ -77,10 +77,22 @@ class GroupOpsErrorMiddleware(BaseMiddleware):
                     update_id = getattr(event, "update_id", None)
                     message_id = getattr(event, "message_id", None)
                     context_id = update_id if update_id is not None else message_id
+                    callback_data = getattr(event, "data", None)
+                    text_value = getattr(event, "text", None)
+                    route_hint = (
+                        f"callback={callback_data}"
+                        if callback_data
+                        else (f"text={str(text_value)[:120]}" if text_value else None)
+                    )
+                    parts = []
+                    if context_id is not None:
+                        parts.append(f"update={context_id}")
+                    if route_hint:
+                        parts.append(route_hint)
                     await group_ops_service.report_error(
                         bot,
                         exc,
-                        context=f"update={context_id}" if context_id is not None else None,
+                        context=" | ".join(parts) or None,
                     )
                 except Exception:
                     pass
