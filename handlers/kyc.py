@@ -58,15 +58,8 @@ async def kyc_status(callback: CallbackQuery):
 
 @kyc_router.callback_query(F.data == "kyc:start")
 async def kyc_start(callback: CallbackQuery, state: FSMContext):
-    if callback.from_user.id not in config.SUDO_ADMINS:
-        admins = await db.get_admins_for_user(callback.from_user.id)
-        has_kyc_case = await order_compliance_service.has_kyc_case(callback.from_user.id)
-        if not admins and not has_kyc_case:
-            await callback.answer(
-                "فعلاً سفارش پرداخت‌شده یا پنل نیازمند احراز برای این حساب وجود ندارد.",
-                show_alert=True,
-            )
-            return
+    # KYC may be started after a receipt and before panel issuance. Do not require
+    # an already-existing reseller admin, otherwise first-time buyers are locked out.
     await state.clear()
     await state.set_state(KycStates.waiting_full_name)
     await callback.message.edit_text(
