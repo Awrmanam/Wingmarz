@@ -109,3 +109,28 @@ def test_service_payg_payment_can_be_approved_without_provisioning_before_kyc(tm
     provision.assert_not_awaited()
     assert _run(payg_service.get_balance(555)) == 0
     assert _run(payg_service.get_topup(topup_id))["status"] == "paid_awaiting_kyc"
+
+
+
+def test_kyc_release_credits_held_payg_once(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "payg-release.sqlite")
+    monkeypatch.setattr(config, "DATABASE_PATH", db_path)
+    monkeypatch.setattr(config, "REBECCA_SERVICE_IDS", ())
+
+    _run(payg_service.ensure_schema())
+    topup_id = _run(payg_service.create_topup(
+        777, 150000, provider="rebecca", purpose="initial_service"
+    ))
+    assert _run(payg_service.submit_topup_receipt(topup_id, 777, "receipt"))
+
+    held = _run(payg_service.approve_topup(topup_id, 999, credit=False))
+    assert held["status"] == "paid_awaiting_kyc"
+    assert _run(payg_service.get_balance(777)) == 0
+
+    released = _run(payg_service.approve_topup(topup_id, 999, credit=True))
+    assert released["status"] == "approved"
+    assert _run(payg_service.get_balance(777)) == 150000
+
+    # Idempotent: retrying after KYC cannot credit the wallet twice.
+    _run(payg_service.approve_topup(topup_id, 999, credit=True))
+    assert _run(payg_service.get_balance(777)) == 150000
