@@ -389,6 +389,22 @@ class PaygService:
             await conn.commit()
             return cur.rowcount == 1
 
+    async def approved_initial_topups_for_user(self, user_id: int) -> list[dict[str, Any]]:
+        """Legacy provider-wide paid starts that may have been held for KYC."""
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            async with conn.execute(
+                """
+                SELECT * FROM payg_topups
+                WHERE user_id=? AND status='approved' AND purpose='initial'
+                ORDER BY id ASC
+                """,
+                (int(user_id),),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [dict(row) for row in rows]
+
     async def approve_topup(self, topup_id: int, actor_id: int) -> dict[str, Any]:
         """Atomically approve once and credit the wallet exactly once."""
         await self.ensure_schema()
