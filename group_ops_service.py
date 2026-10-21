@@ -5,6 +5,7 @@ from html import escape
 import json
 import logging
 import re
+import traceback
 from typing import Any
 
 import aiosqlite
@@ -18,6 +19,7 @@ TOPICS: dict[str, str] = {
     "starts": "👋 استارت‌ها",
     "admins": "👥 ادمین‌ها",
     "orders": "🛒 سفارش‌ها",
+    "receipts": "🧾 رسیدها",
     "payments": "💳 پرداخت‌ها",
     "kyc": "🪪 احراز هویت",
     "unverified": "🟡 تاییدنشده‌ها",
@@ -77,6 +79,13 @@ class GroupOpsService:
                     last_rank INTEGER NOT NULL DEFAULT 0,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY(admin_id, metric)
+                );
+
+                CREATE TABLE IF NOT EXISTS group_ops_delivery_status (
+                    topic_key TEXT PRIMARY KEY,
+                    ok INTEGER NOT NULL DEFAULT 0 CHECK(ok IN (0,1)),
+                    last_error TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_group_ops_audit_created
@@ -171,10 +180,127 @@ class GroupOpsService:
             return None
         return int(cfg["chat_id"]), int(topic["thread_id"])
 
-    async def send_text(self, bot, topic_key: str, text: str, *, reply_markup=None) -> bool:
+    async def _record_delivery(self, topic_key: str, ok: bool, error: str | None = None) -> None:
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            await conn.execute(
+                """
+                INSERT INTO group_ops_delivery_status(topic_key,ok,last_error,updated_at)
+                VALUES(?,?,?,CURRENT_TIMESTAMP)
+                ON CONFLICT(topic_key) DO UPDATE SET
+                    ok=excluded.ok,
+                    last_error=excluded.last_error,
+                    updated_at=CURRENT_TIMESTAMP
+                """,
+                (str(topic_key), 1 if ok else 0, (str(error)[:500] if error else None)),
+            )
+            await conn.commit()
+
+    async def delivery_status(self) -> dict[str, dict[str, Any]]:
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            async with conn.execute("SELECT * FROM group_ops_delivery_status") as cur:
+                rows = await cur.fetchall()
+        return {str(row["topic_key"]): dict(row) for row in rows}
+
+    async def _drop_topic(self, topic_key: str) -> None:
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            await conn.execute("DELETE FROM group_ops_topics WHERE topic_key=?", (str(topic_key),))
+            await conn.commit()
+
+    async def _create_topic(self, bot, topic_key: str) -> tuple[int, int] | None:
+        cfg = await self.get_config()
+        if not cfg or not int(cfg.get("enabled") or 0):
+            return None
+        title = TOPICS.get(str(topic_key))
+        if not title:
+            return None
+        chat_id = int(cfg["chat_id"])
+        created = await bot.create_forum_topic(chat_id=chat_id, name=title)
+        thread_id = int(created.message_thread_id)
+        async with aiosqlite.connect(self.db_path) as conn:
+            await conn.execute(
+                """
+                INSERT INTO group_ops_topics(topic_key,title,thread_id,updated_at)
+                VALUES(?,?,?,CURRENT_TIMESTAMP)
+                ON CONFLICT(topic_key) DO UPDATE SET
+                    title=excluded.title,
+                    thread_id=excluded.thread_id,
+                    updated_at=CURRENT_TIMESTAMP
+                """,
+                (str(topic_key), title, thread_id),
+            )
+            await conn.commit()
+        return chat_id, thread_id
+
+    async def _ensure_target(self, bot, topic_key: str) -> tuple[int, int] | None:
         target = await self._target(topic_key)
-        if not target:
+        if target:
+            return target
+        try:
+            return await self._create_topic(bot, topic_key)
+        except Exception as exc:
+            await self._record_delivery(topic_key, False, f"topic-create: {exc}")
+            logger.warning("Group ops topic creation failed (%s): %s", topic_key, exc)
+            return None
+
+    @staticmethod
+    def _stale_thread_error(exc: BaseException) -> bool:
+        raw = str(exc).lower()
+        return any(
+            token in raw
+            for token in (
+                "message thread not found",
+                "message thread is closed",
+                "topic_closed",
+                "thread not found",
+                "forum topic",
+            )
+        )
+
+    async def _fallback_text(self, bot, topic_key: str, text: str, *, reply_markup=None) -> bool:
+        cfg = await self.get_config()
+        if not cfg or not int(cfg.get("enabled") or 0):
             return False
+        title = TOPICS.get(str(topic_key), str(topic_key))
+        try:
+            await bot.send_message(
+                chat_id=int(cfg["chat_id"]),
+                text=f"<b>{escape(title)}</b>\n\n{text}",
+                reply_markup=reply_markup,
+            )
+            return True
+        except Exception as exc:
+            logger.warning("Group ops general fallback failed (%s): %s", topic_key, exc)
+            return False
+
+    async def _fallback_photo(
+        self, bot, topic_key: str, file_id: str, *, caption: str, reply_markup=None
+    ) -> bool:
+        cfg = await self.get_config()
+        if not cfg or not int(cfg.get("enabled") or 0):
+            return False
+        title = TOPICS.get(str(topic_key), str(topic_key))
+        try:
+            await bot.send_photo(
+                chat_id=int(cfg["chat_id"]),
+                photo=file_id,
+                caption=f"<b>{escape(title)}</b>\n\n{caption}",
+                reply_markup=reply_markup,
+            )
+            return True
+        except Exception as exc:
+            logger.warning("Group ops photo fallback failed (%s): %s", topic_key, exc)
+            return False
+
+    async def send_text(self, bot, topic_key: str, text: str, *, reply_markup=None) -> bool:
+        target = await self._ensure_target(bot, topic_key)
+        if not target:
+            ok = await self._fallback_text(bot, topic_key, text, reply_markup=reply_markup)
+            await self._record_delivery(topic_key, ok, None if ok else "no topic target")
+            return ok
         chat_id, thread_id = target
         try:
             await bot.send_message(
@@ -183,15 +309,38 @@ class GroupOpsService:
                 text=text,
                 reply_markup=reply_markup,
             )
+            await self._record_delivery(topic_key, True)
             return True
         except Exception as exc:
             logger.warning("Group ops send_text failed (%s): %s", topic_key, exc)
-            return False
+            if self._stale_thread_error(exc):
+                try:
+                    await self._drop_topic(topic_key)
+                    repaired = await self._create_topic(bot, topic_key)
+                    if repaired:
+                        chat_id, thread_id = repaired
+                        await bot.send_message(
+                            chat_id=chat_id,
+                            message_thread_id=thread_id,
+                            text=text,
+                            reply_markup=reply_markup,
+                        )
+                        await self._record_delivery(topic_key, True)
+                        return True
+                except Exception as repair_exc:
+                    logger.warning("Group ops text repair failed (%s): %s", topic_key, repair_exc)
+            ok = await self._fallback_text(bot, topic_key, text, reply_markup=reply_markup)
+            await self._record_delivery(topic_key, ok, None if ok else str(exc))
+            return ok
 
     async def send_photo(self, bot, topic_key: str, file_id: str, *, caption: str, reply_markup=None) -> bool:
-        target = await self._target(topic_key)
+        target = await self._ensure_target(bot, topic_key)
         if not target:
-            return False
+            ok = await self._fallback_photo(
+                bot, topic_key, file_id, caption=caption, reply_markup=reply_markup
+            )
+            await self._record_delivery(topic_key, ok, None if ok else "no topic target")
+            return ok
         chat_id, thread_id = target
         try:
             await bot.send_photo(
@@ -201,10 +350,32 @@ class GroupOpsService:
                 caption=caption,
                 reply_markup=reply_markup,
             )
+            await self._record_delivery(topic_key, True)
             return True
         except Exception as exc:
             logger.warning("Group ops send_photo failed (%s): %s", topic_key, exc)
-            return False
+            if self._stale_thread_error(exc):
+                try:
+                    await self._drop_topic(topic_key)
+                    repaired = await self._create_topic(bot, topic_key)
+                    if repaired:
+                        chat_id, thread_id = repaired
+                        await bot.send_photo(
+                            chat_id=chat_id,
+                            message_thread_id=thread_id,
+                            photo=file_id,
+                            caption=caption,
+                            reply_markup=reply_markup,
+                        )
+                        await self._record_delivery(topic_key, True)
+                        return True
+                except Exception as repair_exc:
+                    logger.warning("Group ops photo repair failed (%s): %s", topic_key, repair_exc)
+            ok = await self._fallback_photo(
+                bot, topic_key, file_id, caption=caption, reply_markup=reply_markup
+            )
+            await self._record_delivery(topic_key, ok, None if ok else str(exc))
+            return ok
 
     async def claim_event(self, event_key: str) -> bool:
         """Return True only once for a stable event key."""
@@ -313,14 +484,18 @@ class GroupOpsService:
         return text[:3500]
 
     async def report_error(self, bot, exc: BaseException, *, context: str | None = None) -> bool:
-        context_line = f"\n📍 {escape(context)}" if context else ""
+        context_line = f"\n📍 {escape(self.redact_error(context))}" if context else ""
+        stack = traceback.format_exc(limit=6)
+        if stack.strip() == "NoneType: None":
+            stack = ""
+        detail = self.redact_error(stack or repr(exc))
         return await self.send_text(
             bot,
             "errors",
             (
                 "🐞 <b>خطای Wingmarz</b>"
                 f"{context_line}\n\n"
-                f"<code>{escape(self.redact_error(repr(exc)))}</code>"
+                f"<code>{escape(detail)}</code>"
             ),
         )
 

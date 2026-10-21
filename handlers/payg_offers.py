@@ -9,10 +9,12 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 import config
 from database import db
+from group_ops_service import group_ops_service
 from payg_offers_service import PaygOfferError, payg_offer_service
 from payg_service import PaygError, PaygInsufficientFunds, payg_service
 from rebecca_catalog import get_service, get_service_by_rebecca_id, list_services
 from service_marketplace_service import service_marketplace_service
+from trust_service import trust_service
 from utils.rebecca import credential_message, parse_service_ids
 
 
@@ -342,6 +344,17 @@ async def service_payg_create(callback: CallbackQuery, state: FSMContext):
         await callback.answer("نامعتبر", show_alert=True)
         return
     source, service_id = parts[2], int(parts[3])
+    if not await trust_service.is_identity_approved(callback.from_user.id):
+        await callback.message.edit_text(
+            "🪪 <b>برای ساخت پنل PAYG احراز هویت لازم است.</b>\n\n"
+            "موجودی کیف پول شما محفوظ می‌ماند و بعد از تأیید KYC می‌توانید پنل را بسازید.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🪪 شروع احراز هویت", callback_data="kyc:start")],
+                [InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"paygsvc:offer:{source}:{service_id}")],
+            ]),
+        )
+        await callback.answer()
+        return
     try:
         account = await payg_offer_service.provision(callback.from_user.id, service_id)
         admin = await db.get_admin_by_id(int(account["admin_id"]))
@@ -432,6 +445,7 @@ async def _send_payment(message: Message, topup_id: int, *, edit: bool) -> None:
             await message.answer("❌ درخواست شارژ پیدا نشد.")
         return
     service = await get_service_by_rebecca_id(int(context["service_id"]))
+    identity_ok = await trust_service.is_identity_approved(int(topup["user_id"]))
     cards = await db.get_cards(only_active=True)
     lines = [
         f"💳 <b>شارژ PAYG · {escape(service.display_name if service else str(context['service_id']))}</b>",
@@ -439,8 +453,16 @@ async def _send_payment(message: Message, topup_id: int, *, edit: bool) -> None:
         f"شناسه: <code>PAYG-{int(topup_id)}</code>",
         f"مبلغ: <b>{_money(int(topup['amount_toman']))}</b>",
         "",
-        "مبلغ را به یکی از کارت‌های زیر واریز کنید و سپس رسید را ارسال کنید:",
     ]
+    if str(topup.get("purpose") or "") == "initial_service" and not identity_ok:
+        lines.extend([
+            "🪪 <b>برای ساخت پنل PAYG احراز هویت الزامی است.</b>",
+            "ابتدا پرداخت بررسی می‌شود؛ مبلغ تا تأیید KYC در حالت رزرو می‌ماند و وارد کیف پول مصرفی نمی‌شود.",
+            "",
+        ])
+    lines.extend([
+        "مبلغ را به یکی از کارت‌های زیر واریز کنید و سپس رسید را ارسال کنید:",
+    ])
     if cards:
         for card in cards:
             lines.append(
@@ -540,12 +562,28 @@ async def service_payg_receipt(message: Message, state: FSMContext):
         InlineKeyboardButton(text="✅ تأیید شارژ", callback_data=f"paygsvcadmin:approve:{topup_id}"),
         InlineKeyboardButton(text="❌ رد", callback_data=f"paygsvcadmin:reject:{topup_id}"),
     ]])
+    trusted = await trust_service.is_identity_approved(message.from_user.id)
     caption = (
         f"🧾 شارژ PAYG #{topup_id}\n"
         f"سرویس: {escape(service.display_name if service else str(context['service_id']))}\n"
         f"کاربر: <code>{message.from_user.id}</code>\n"
-        f"مبلغ: <b>{_money(int(topup['amount_toman']))}</b>"
+        f"Username: {('@' + escape(message.from_user.username)) if message.from_user.username else '—'}\n"
+        f"مبلغ: <b>{_money(int(topup['amount_toman']))}</b>\n"
+        f"🪪 Identity: <b>{'تأیید' if trusted else 'تأییدنشده'}</b>"
     )
+    await group_ops_service.send_photo(
+        message.bot,
+        "receipts",
+        message.photo[-1].file_id,
+        caption=caption,
+        reply_markup=kb,
+    )
+    if not trusted:
+        await group_ops_service.send_text(
+            message.bot,
+            "unverified",
+            f"🟡 رسید PAYG سرویس <code>#{topup_id}</code> از کاربر تأییدنشده <code>{message.from_user.id}</code> دریافت شد.",
+        )
     for sudo_id in config.SUDO_ADMINS:
         try:
             await message.bot.send_photo(
@@ -816,11 +854,43 @@ async def service_payg_admin_approve(callback: CallbackQuery):
         return
     topup_id = int((callback.data or "").rsplit(":", 1)[-1])
     try:
-        result = await payg_offer_service.approve_topup(topup_id, callback.from_user.id)
+        before = await payg_service.get_topup(topup_id)
+        if not before:
+            await callback.answer("درخواست شارژ پیدا نشد.", show_alert=True)
+            return
+        user_id = int(before["user_id"])
+        identity_ok = await trust_service.is_identity_approved(user_id)
+        initial = str(before.get("purpose") or "") == "initial_service"
+        result = await payg_offer_service.approve_topup(
+            topup_id,
+            callback.from_user.id,
+            provision=(identity_ok or not initial),
+        )
         topup = result["topup"]
-        user_id = int(topup["user_id"])
         balance = await payg_service.get_balance(user_id)
-        if result.get("account"):
+
+        if result.get("awaiting_kyc"):
+            await callback.bot.send_message(
+                user_id,
+                "✅ <b>پرداخت PAYG تأیید شد.</b>\n"
+                f"💰 موجودی کیف پول: <b>{_money(balance)}</b>\n\n"
+                "🪪 ساخت پنل تا تأیید احراز هویت متوقف است.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="🪪 شروع احراز هویت", callback_data="kyc:start")
+                ]]),
+            )
+            await group_ops_service.send_text(
+                callback.bot,
+                "payments",
+                f"✅ پرداخت PAYG <code>#{topup_id}</code> تأیید شد؛ "
+                f"کاربر <code>{user_id}</code> منتظر KYC است.",
+            )
+            await group_ops_service.send_text(
+                callback.bot,
+                "unverified",
+                f"🟡 PAYG <code>#{topup_id}</code> پرداخت شده ولی هنوز KYC/Trust ندارد.",
+            )
+        elif result.get("account"):
             account = result["account"]
             admin = await db.get_admin_by_id(int(account["admin_id"]))
             service = await get_service_by_rebecca_id(int(result["service_id"]))
@@ -842,11 +912,22 @@ async def service_payg_admin_approve(callback: CallbackQuery):
                 user_id,
                 f"✅ شارژ PAYG تأیید شد.\n💰 موجودی کیف پول: <b>{_money(balance)}</b>",
             )
+
         try:
             await callback.message.edit_reply_markup(reply_markup=None)
         except Exception:
             pass
-        await callback.answer("تأیید شد ✅", show_alert=True)
+        await group_ops_service.audit(
+            actor_id=callback.from_user.id,
+            action="payg.service_topup.approve",
+            subject_type="topup",
+            subject_id=topup_id,
+            new_value={"user_id": user_id, "awaiting_kyc": bool(result.get("awaiting_kyc"))},
+        )
+        await callback.answer(
+            "پرداخت تأیید شد؛ منتظر KYC" if result.get("awaiting_kyc") else "تأیید شد ✅",
+            show_alert=True,
+        )
     except Exception as exc:
         await callback.answer(f"خطا: {str(exc)[:140]}", show_alert=True)
 

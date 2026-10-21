@@ -215,7 +215,6 @@ async def public_receive_payment_receipt(message: Message, state: FSMContext):
         auto_enabled = await trust_service.auto_approve_enabled(message.from_user.id)
         verification = await trust_service.payment_verification(order_id)
         bank_state = str((verification or {}).get("state") or "unverified")
-        topic = "payments" if trusted else "unverified"
         caption = (
             f"🧾 <b>رسید سفارش #{order_id}</b>\n"
             f"👤 <code>{message.from_user.id}</code> "
@@ -227,8 +226,15 @@ async def public_receive_payment_receipt(message: Message, state: FSMContext):
             f"🏦 Bank Match: <b>{escape(bank_state)}</b>"
         )
         await group_ops_service.send_photo(
-            message.bot, topic, file_id, caption=caption, reply_markup=kb
+            message.bot, "receipts", file_id, caption=caption, reply_markup=kb
         )
+        if not trusted:
+            await group_ops_service.send_text(
+                message.bot,
+                "unverified",
+                f"🟡 رسید سفارش <code>#{order_id}</code> از کاربر تأییدنشده <code>{message.from_user.id}</code> دریافت شد.\n"
+                "پرداخت را بررسی کنید؛ صدور تا KYC/Trust متوقف می‌ماند.",
+            )
     except Exception:
         pass
     try:

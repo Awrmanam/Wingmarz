@@ -149,24 +149,6 @@ async def admin_start(message: Message):
 
     from kyc_service import kyc_service
     from trust_service import trust_service
-    from group_ops_service import group_ops_service
-
-    # Every /start is mirrored to the operations group when configured.
-    try:
-        kyc_status = await kyc_service.status(message.from_user.id)
-        manual_trust = await trust_service.is_manually_trusted(message.from_user.id)
-        await group_ops_service.notify_start(
-            message.bot,
-            message.from_user,
-            account_kind=(
-                f"ادمین Rebecca · {len(active_admins)} پنل"
-                if active_admins else "مشتری"
-            ),
-            kyc_status=kyc_status,
-            trusted=manual_trust,
-        )
-    except Exception:
-        pass
 
     if not active_admins:
         from handlers.public_handlers import get_public_main_keyboard
@@ -584,11 +566,18 @@ async def admin_receive_payment_receipt(message: Message, state: FSMContext):
         )
         await group_ops_service.send_photo(
             message.bot,
-            "payments" if trusted else "unverified",
+            "receipts",
             file_id,
             caption=caption,
             reply_markup=kb,
         )
+        if not trusted:
+            await group_ops_service.send_text(
+                message.bot,
+                "unverified",
+                f"🟡 رسید سفارش <code>#{order_id}</code> از کاربر تأییدنشده <code>{message.from_user.id}</code> دریافت شد.\n"
+                "پرداخت را بررسی کنید؛ صدور تا KYC/Trust متوقف می‌ماند.",
+            )
     except Exception:
         pass
     try:

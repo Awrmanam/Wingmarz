@@ -292,6 +292,7 @@ def test_group_ops_button_first_keyboards_are_valid():
         "gops:connect",
         "gops:repair",
         "gops:status",
+        "gops:test",
         "back_to_main",
     ]
     assert "gops:admins:0" not in callbacks

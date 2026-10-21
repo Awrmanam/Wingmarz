@@ -393,19 +393,99 @@ class PaygOfferService:
                 row = await cur.fetchone()
         return dict(row) if row else None
 
-    async def approve_topup(self, topup_id: int, actor_id: int) -> dict[str, Any]:
+    async def approve_topup(
+        self,
+        topup_id: int,
+        actor_id: int,
+        *,
+        provision: bool = True,
+    ) -> dict[str, Any]:
         context = await self.topup_context(topup_id)
         if not context:
             raise PaygOfferError("PAYG service top-up context not found")
-        topup = await payg_service.approve_topup(int(topup_id), int(actor_id))
+        before = await payg_service.get_topup(int(topup_id))
+        if not before:
+            raise PaygOfferError("PAYG top-up not found")
+        initial = str(before["purpose"]) == "initial_service"
+        topup = await payg_service.approve_topup(
+            int(topup_id),
+            int(actor_id),
+            credit=(provision or not initial),
+        )
         result: dict[str, Any] = {"topup": topup, "service_id": int(context["service_id"])}
-        if str(topup["purpose"]) == "initial_service":
-            result["account"] = await self.provision(
-                int(topup["user_id"]), int(context["service_id"])
-            )
+        if initial:
+            if provision:
+                result["account"] = await self.provision(
+                    int(topup["user_id"]), int(context["service_id"])
+                )
+            else:
+                result["awaiting_kyc"] = True
         elif topup.get("account_id"):
             result["billing"] = await payg_service.sync_account(int(topup["account_id"]))
         return result
+
+    async def pending_kyc_topups(self, user_id: int) -> list[dict[str, Any]]:
+        """Approved initial service top-ups that have not provisioned a PAYG account."""
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            async with conn.execute(
+                """
+                SELECT t.*,s.service_id
+                FROM payg_topups t
+                JOIN payg_service_topups s ON s.topup_id=t.id
+                WHERE t.user_id=? AND t.status='paid_awaiting_kyc' AND t.purpose='initial_service'
+                ORDER BY t.id ASC
+                """,
+                (int(user_id),),
+            ) as cur:
+                rows = await cur.fetchall()
+        pending: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            if not await self.account_for_user_service(int(user_id), int(item["service_id"])):
+                pending.append(item)
+        return pending
+
+    async def resume_approved_initial_topups(
+        self, user_id: int, actor_id: int
+    ) -> list[dict[str, Any]]:
+        """Provision paid service-specific PAYG purchases that were held for KYC."""
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            async with conn.execute(
+                """
+                SELECT t.id AS topup_id, s.service_id
+                FROM payg_topups t
+                JOIN payg_service_topups s ON s.topup_id=t.id
+                WHERE t.user_id=? AND t.status='paid_awaiting_kyc' AND t.purpose='initial_service'
+                ORDER BY t.id ASC
+                """,
+                (int(user_id),),
+            ) as cur:
+                rows = await cur.fetchall()
+
+        resumed: list[dict[str, Any]] = []
+        seen_services: set[int] = set()
+        for row in rows:
+            service_id = int(row["service_id"])
+            if service_id in seen_services:
+                continue
+            seen_services.add(service_id)
+            existing = await self.account_for_user_service(int(user_id), service_id)
+            if existing:
+                continue
+            await payg_service.approve_topup(
+                int(row["topup_id"]), int(actor_id), credit=True
+            )
+            account = await self.provision(int(user_id), service_id)
+            resumed.append({
+                "topup_id": int(row["topup_id"]),
+                "service_id": service_id,
+                "account": account,
+            })
+        return resumed
 
 
 payg_offer_service = PaygOfferService()

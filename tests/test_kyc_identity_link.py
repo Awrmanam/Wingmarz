@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 from kyc_service import KycService
 import rebecca_identity_link as identity
 from kyc_middleware import _target_admin_id
+import handlers.kyc as kyc_handlers
 
 
 def run(coro):
@@ -135,3 +136,20 @@ def test_sync_one_rebinds_existing_local_panel_to_authoritative_telegram_id(monk
 def test_sudo_start_does_not_consume_regular_user_start():
     source = open("handlers/sudo_handlers.py", encoding="utf-8").read()
     assert '@sudo_router.message(Command("start"), F.from_user.id.in_(config.SUDO_ADMINS))' in source
+
+
+
+def test_buyer_can_start_kyc_before_any_panel_exists(monkeypatch):
+    callback = SimpleNamespace(
+        from_user=SimpleNamespace(id=321),
+        message=SimpleNamespace(edit_text=AsyncMock()),
+        answer=AsyncMock(),
+    )
+    state = SimpleNamespace(clear=AsyncMock(), set_state=AsyncMock())
+
+    run(kyc_handlers.kyc_start(callback, state))
+
+    state.clear.assert_awaited_once()
+    state.set_state.assert_awaited_once_with(kyc_handlers.KycStates.waiting_full_name)
+    callback.message.edit_text.assert_awaited_once()
+    assert "احراز هویت" in callback.message.edit_text.await_args.args[0]

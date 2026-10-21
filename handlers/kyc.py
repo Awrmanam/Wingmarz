@@ -57,11 +57,8 @@ async def kyc_status(callback: CallbackQuery):
 
 @kyc_router.callback_query(F.data == "kyc:start")
 async def kyc_start(callback: CallbackQuery, state: FSMContext):
-    if callback.from_user.id not in config.SUDO_ADMINS:
-        admins = await db.get_admins_for_user(callback.from_user.id)
-        if not admins:
-            await callback.answer("برای این حساب پنل نمایندگی ثبت نشده است.", show_alert=True)
-            return
+    # Buyers may need KYC after payment but before a panel exists, so KYC must
+    # never require an already-provisioned admin record.
     await state.clear()
     await state.set_state(KycStates.waiting_full_name)
     await callback.message.edit_text(
@@ -176,10 +173,12 @@ async def kyc_review_approve(callback: CallbackQuery):
     if not await kyc_service.approve(user_id, callback.from_user.id):
         await callback.answer("این درخواست قبلاً بررسی شده است.", show_alert=True)
         return
+
     await callback.message.edit_caption(
         caption=(callback.message.caption or "") + "\n\n✅ <b>تأیید شد</b>",
+        reply_markup=None,
     )
-    await _notify_review_result(callback, user_id, True)
+
     await group_ops_service.audit(
         actor_id=callback.from_user.id,
         action="kyc.approve",
@@ -187,12 +186,118 @@ async def kyc_review_approve(callback: CallbackQuery):
         subject_id=user_id,
         new_value="approved",
     )
+
+    issued_orders: list[int] = []
+    failed_orders: list[int] = []
+    released_orders = await db.release_paid_kyc_orders(user_id)
+    if released_orders:
+        from handlers.sudo_handlers import issue_paid_order_after_kyc
+        for order_id in released_orders:
+            try:
+                final_order = await issue_paid_order_after_kyc(
+                    callback.bot, callback.from_user.id, order_id
+                )
+                if str(final_order.get("status") or "") == "approved":
+                    issued_orders.append(int(order_id))
+                else:
+                    failed_orders.append(int(order_id))
+            except Exception:
+                failed_orders.append(int(order_id))
+
+    # Resume service-specific PAYG starts that were paid before KYC.
+    resumed_payg: list[int] = []
+    try:
+        from payg_offers_service import payg_offer_service
+        from rebecca_catalog import get_service_by_rebecca_id
+        from utils.rebecca import credential_message
+
+        resumed = await payg_offer_service.resume_approved_initial_topups(
+            user_id, callback.from_user.id
+        )
+        for item in resumed:
+            account = item["account"]
+            admin = await db.get_admin_by_id(int(account["admin_id"]))
+            if not admin:
+                continue
+            service = await get_service_by_rebecca_id(int(item["service_id"]))
+            login_url = admin.login_url or config.REBECCA_LOGIN_URL or config.REBECCA_URL
+            await callback.bot.send_message(
+                user_id,
+                "✅ <b>احراز هویت تأیید شد و پنل PAYG شما ساخته شد.</b>\n\n"
+                + credential_message(
+                    str(admin.marzban_username),
+                    str(admin.marzban_password),
+                    str(login_url),
+                    f"PAYG {service.display_name if service else item['service_id']}",
+                ),
+            )
+            resumed_payg.append(int(item["topup_id"]))
+    except Exception as exc:
+        await group_ops_service.report_error(
+            callback.bot, exc, context=f"KYC PAYG resume user={user_id}"
+        )
+
+    # Backward-compatible provider-wide PAYG purchases.
+    try:
+        from payg_service import payg_service
+        legacy_topups = await payg_service.approved_initial_topups_for_user(user_id)
+        if legacy_topups and not await payg_service.get_user_account(user_id):
+            legacy_id = int(legacy_topups[0]["id"])
+            await payg_service.approve_topup(
+                legacy_id, callback.from_user.id, credit=True
+            )
+            result = await payg_service.post_topup_approval(legacy_id)
+            account = result.get("account")
+            if account:
+                admin = await db.get_admin_by_id(int(account["admin_id"]))
+                if admin:
+                    from utils.rebecca import credential_message
+                    login_url = admin.login_url or config.REBECCA_LOGIN_URL or config.REBECCA_URL
+                    await callback.bot.send_message(
+                        user_id,
+                        "✅ <b>احراز هویت تأیید شد و پنل PAYG شما ساخته شد.</b>\n\n"
+                        + credential_message(
+                            str(admin.marzban_username),
+                            str(admin.marzban_password),
+                            str(login_url),
+                            "PAYG Rebecca",
+                        ),
+                    )
+    except Exception as exc:
+        await group_ops_service.report_error(
+            callback.bot, exc, context=f"KYC legacy PAYG resume user={user_id}"
+        )
+
+    await _notify_review_result(callback, user_id, True)
+
+    summary = [
+        f"✅ KYC کاربر <code>{user_id}</code> توسط <code>{callback.from_user.id}</code> تأیید شد."
+    ]
+    if issued_orders:
+        summary.append("🚀 سفارش‌های صادرشده: " + ", ".join(f"#{x}" for x in issued_orders))
+    if resumed_payg:
+        summary.append("⚡ PAYG فعال‌شده: " + ", ".join(f"#{x}" for x in resumed_payg))
+    if failed_orders:
+        summary.append("⚠️ نیازمند صدور مجدد: " + ", ".join(f"#{x}" for x in failed_orders))
+
+    retry_rows = [
+        [InlineKeyboardButton(text=f"🔁 صدور سفارش #{order_id}", callback_data=f"order_retry_{order_id}")]
+        for order_id in failed_orders
+    ]
     await group_ops_service.send_text(
         callback.bot,
         "kyc",
-        f"✅ KYC کاربر <code>{user_id}</code> توسط <code>{callback.from_user.id}</code> تأیید شد.",
+        "\n".join(summary),
+        reply_markup=(InlineKeyboardMarkup(inline_keyboard=retry_rows) if retry_rows else None),
     )
-    await callback.answer("KYC تأیید شد")
+    if failed_orders:
+        await group_ops_service.send_text(
+            callback.bot,
+            "orders",
+            f"⚠️ بعد از KYC، صدور سفارش‌های کاربر <code>{user_id}</code> کامل نشد.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=retry_rows),
+        )
+    await callback.answer("KYC تأیید شد ✅", show_alert=True)
 
 
 @kyc_router.callback_query(F.data.startswith("kycreview:reject:"))
@@ -206,21 +311,86 @@ async def kyc_review_reject(callback: CallbackQuery):
         return
     await callback.message.edit_caption(
         caption=(callback.message.caption or "") + "\n\n❌ <b>رد شد</b>",
+        reply_markup=None,
     )
+
+    refund_orders = await db.mark_kyc_orders_refund_pending(user_id)
+
+    refund_payg: list[int] = []
+    try:
+        from payg_offers_service import payg_offer_service
+        pending_service_topups = await payg_offer_service.pending_kyc_topups(user_id)
+        for topup in pending_service_topups:
+            await db.create_refund_request(
+                user_id,
+                "payg_topup",
+                int(topup["id"]),
+                int(topup.get("amount_toman") or 0),
+                "kyc_rejected",
+            )
+            refund_payg.append(int(topup["id"]))
+
+        from payg_service import payg_service
+        for topup_id in list(refund_payg):
+            await payg_service.mark_topup_refund_pending(topup_id, user_id)
+        if not await payg_service.get_user_account(user_id):
+            for topup in await payg_service.approved_initial_topups_for_user(user_id):
+                topup_id = int(topup["id"])
+                if topup_id in refund_payg:
+                    continue
+                await db.create_refund_request(
+                    user_id,
+                    "payg_topup",
+                    topup_id,
+                    int(topup.get("amount_toman") or 0),
+                    "kyc_rejected",
+                )
+                await payg_service.mark_topup_refund_pending(topup_id, user_id)
+                refund_payg.append(topup_id)
+    except Exception as exc:
+        await group_ops_service.report_error(
+            callback.bot, exc, context=f"KYC refund queue user={user_id}"
+        )
+
     await _notify_review_result(callback, user_id, False)
+    if refund_orders or refund_payg:
+        try:
+            refs = [f"سفارش #{item}" for item in refund_orders]
+            refs.extend(f"PAYG #{item}" for item in refund_payg)
+            await callback.bot.send_message(
+                user_id,
+                "↩️ پرداخت شما محفوظ است و درخواست استرداد برای بررسی مدیریت ثبت شد.\n"
+                + "، ".join(refs),
+            )
+        except Exception:
+            pass
+
     await group_ops_service.audit(
         actor_id=callback.from_user.id,
         action="kyc.reject",
         subject_type="user",
         subject_id=user_id,
-        new_value="rejected",
+        new_value={"status": "rejected", "refund_orders": refund_orders, "refund_payg": refund_payg},
     )
     await group_ops_service.send_text(
         callback.bot,
         "kyc",
         f"❌ KYC کاربر <code>{user_id}</code> توسط <code>{callback.from_user.id}</code> رد شد.",
     )
-    await callback.answer("KYC رد شد")
+    if refund_orders or refund_payg:
+        details = []
+        if refund_orders:
+            details.append("سفارش‌ها: " + "، ".join(f"<code>#{item}</code>" for item in refund_orders))
+        if refund_payg:
+            details.append("PAYG: " + "، ".join(f"<code>#{item}</code>" for item in refund_payg))
+        await group_ops_service.send_text(
+            callback.bot,
+            "payments",
+            "↩️ <b>استرداد در انتظار</b>\n"
+            f"👤 <code>{user_id}</code>\n"
+            + "\n".join(details),
+        )
+    await callback.answer("KYC رد شد", show_alert=True)
 
 
 @kyc_router.callback_query(F.data == "kycadmin:pending")

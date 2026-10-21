@@ -872,6 +872,150 @@ class Database:
             await conn.commit()
             return cur.rowcount == 1
 
+    async def _ensure_refund_schema(self, conn: aiosqlite.Connection) -> None:
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS refund_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                reference_type TEXT NOT NULL,
+                reference_id INTEGER NOT NULL,
+                amount_toman INTEGER NOT NULL DEFAULT 0,
+                reason TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(reference_type, reference_id)
+            )
+            """
+        )
+
+    async def create_refund_request(
+        self,
+        user_id: int,
+        reference_type: str,
+        reference_id: int,
+        amount_toman: int,
+        reason: str,
+    ) -> bool:
+        async with aiosqlite.connect(self.db_path) as conn:
+            await self._ensure_refund_schema(conn)
+            await conn.execute(
+                """
+                INSERT INTO refund_requests(
+                    user_id,reference_type,reference_id,amount_toman,reason,status
+                ) VALUES(?,?,?,?,?,'pending')
+                ON CONFLICT(reference_type,reference_id) DO UPDATE SET
+                    user_id=excluded.user_id,
+                    amount_toman=excluded.amount_toman,
+                    reason=excluded.reason,
+                    updated_at=CURRENT_TIMESTAMP
+                """,
+                (
+                    int(user_id), str(reference_type), int(reference_id),
+                    max(0, int(amount_toman)), str(reason),
+                ),
+            )
+            await conn.commit()
+        return True
+
+    async def get_refund_requests(self, status: str = "pending") -> List[Dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as conn:
+            await self._ensure_refund_schema(conn)
+            conn.row_factory = aiosqlite.Row
+            async with conn.execute(
+                "SELECT * FROM refund_requests WHERE status=? ORDER BY id DESC",
+                (str(status),),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [dict(row) for row in rows]
+
+    async def mark_order_paid_awaiting_kyc(self, order_id: int, actor_id: int) -> bool:
+        """Record a verified payment without allowing provisioning before identity approval."""
+        async with aiosqlite.connect(self.db_path) as conn:
+            cur = await conn.execute(
+                """
+                UPDATE orders
+                SET status='paid_awaiting_kyc', approved_by=?, updated_at=CURRENT_TIMESTAMP
+                WHERE id=? AND status IN ('pending','submitted','failed')
+                """,
+                (int(actor_id), int(order_id)),
+            )
+            await conn.commit()
+            return cur.rowcount == 1
+
+    async def get_paid_awaiting_kyc_orders(self, user_id: int) -> List[Dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            async with conn.execute(
+                """
+                SELECT * FROM orders
+                WHERE user_id=? AND status='paid_awaiting_kyc'
+                ORDER BY id ASC
+                """,
+                (int(user_id),),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [dict(row) for row in rows]
+
+    async def release_paid_kyc_orders(self, user_id: int) -> List[int]:
+        """Return paid/KYC-held orders to the existing issuance queue after KYC approval."""
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("BEGIN IMMEDIATE")
+            async with conn.execute(
+                "SELECT id FROM orders WHERE user_id=? AND status='paid_awaiting_kyc' ORDER BY id ASC",
+                (int(user_id),),
+            ) as cur:
+                rows = await cur.fetchall()
+            ids = [int(row["id"]) for row in rows]
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                await conn.execute(
+                    f"UPDATE orders SET status='submitted',updated_at=CURRENT_TIMESTAMP WHERE id IN ({placeholders})",
+                    ids,
+                )
+            await conn.commit()
+        return ids
+
+    async def mark_kyc_orders_refund_pending(self, user_id: int) -> List[int]:
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("BEGIN IMMEDIATE")
+            await self._ensure_refund_schema(conn)
+            async with conn.execute(
+                """
+                SELECT id,COALESCE(price_snapshot,0) AS amount_toman
+                FROM orders
+                WHERE user_id=? AND status='paid_awaiting_kyc'
+                ORDER BY id ASC
+                """,
+                (int(user_id),),
+            ) as cur:
+                rows = await cur.fetchall()
+            ids = [int(row["id"]) for row in rows]
+            for row in rows:
+                await conn.execute(
+                    """
+                    INSERT INTO refund_requests(
+                        user_id,reference_type,reference_id,amount_toman,reason,status
+                    ) VALUES(?,?,?,?,?,'pending')
+                    ON CONFLICT(reference_type,reference_id) DO NOTHING
+                    """,
+                    (
+                        int(user_id), "order", int(row["id"]),
+                        int(row["amount_toman"] or 0), "kyc_rejected",
+                    ),
+                )
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                await conn.execute(
+                    f"UPDATE orders SET status='refund_pending',updated_at=CURRENT_TIMESTAMP WHERE id IN ({placeholders})",
+                    ids,
+                )
+            await conn.commit()
+        return ids
+
     async def get_orders(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
         try:
             async with aiosqlite.connect(self.db_path) as db:
