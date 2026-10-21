@@ -561,11 +561,11 @@ async def admin_receive_payment_receipt(message: Message, state: FSMContext):
         [InlineKeyboardButton(text="❌ رد", callback_data=f"order_reject_{order_id}")],
         [InlineKeyboardButton(text="🔁 تلاش دوباره صدور", callback_data=f"order_retry_{order_id}")]
     ])
+    trusted = await trust_service.is_identity_approved(message.from_user.id)
+    await order_compliance_service.note_receipt(
+        order_id, message.from_user.id, kyc_required=not trusted
+    )
     try:
-        trusted = await trust_service.is_identity_approved(message.from_user.id)
-        await order_compliance_service.note_receipt(
-            order_id, message.from_user.id, kyc_required=not trusted
-        )
         auto_enabled = await trust_service.auto_approve_enabled(message.from_user.id)
         verification = await trust_service.payment_verification(order_id)
         bank_state = str((verification or {}).get("state") or "unverified")
