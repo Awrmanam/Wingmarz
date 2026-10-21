@@ -162,7 +162,13 @@ async def panel_provider_select(callback: CallbackQuery, state: FSMContext):
 async def _render_purchase_services(message: Message, source: str) -> None:
     services = await service_marketplace_service.sellable_services()
     if len(services) == 1:
-        service = services[0][0]
+        entry = services[0]
+        if not isinstance(entry, (tuple, list)) or len(entry) < 1 or entry[0] is None:
+            await message.edit_text(
+                "❌ اطلاعات سرویس فروش ناقص است. مدیریت از بخش سرویس‌های Rebecca آن را دوباره Sync کند."
+            )
+            return
+        service = entry[0]
         plans = await service_marketplace_service.plans_for_service(service.rebecca_service_id)
         groups = service_marketplace_service.group_plans_by_duration(plans)
         home = "back_to_admin_main" if source == "a" else "public_back_main"
