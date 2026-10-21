@@ -4597,9 +4597,6 @@ async def order_approve(callback: CallbackQuery):
 
     # Payment approval and panel issuance are separate concerns.
     # A paid reseller order must not be provisioned until identity is approved.
-    from trust_service import trust_service
-    from order_compliance_service import order_compliance_service
-
     identity_ok = await trust_service.is_identity_approved(int(o["user_id"]))
     await order_compliance_service.confirm_payment(
         oid,
