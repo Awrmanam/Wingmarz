@@ -169,6 +169,16 @@ async def payg_offer(callback: CallbackQuery, state: FSMContext):
 async def payg_create_from_wallet(callback: CallbackQuery, state: FSMContext):
     provider = (callback.data or "").rsplit(":", 1)[-1]
     await state.clear()
+    if not await trust_service.is_identity_approved(callback.from_user.id):
+        await callback.message.edit_text(
+            "🪪 <b>برای ساخت پنل PAYG احراز هویت لازم است.</b>\n\n"
+            "موجودی کیف پول شما محفوظ است.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="🪪 شروع احراز هویت", callback_data="kyc:start")
+            ]]),
+        )
+        await callback.answer()
+        return
     try:
         account = await payg_service.ensure_payg_account(callback.from_user.id, provider)
         admin = await db.get_admin_by_id(int(account["admin_id"]))
@@ -581,10 +591,23 @@ async def payg_admin_approve(callback: CallbackQuery):
         return
     try:
         topup_id = int((callback.data or "").rsplit(":", 1)[-1])
+        before = await payg_service.get_topup(topup_id)
+        if not before:
+            await callback.answer("درخواست شارژ پیدا نشد.", show_alert=True)
+            return
+        user_id = int(before["user_id"])
+        identity_ok = await trust_service.is_identity_approved(user_id)
+        initial = str(before.get("purpose") or "") == "initial"
+
         topup = await payg_service.approve_topup(topup_id, callback.from_user.id)
-        continuation = await payg_service.post_topup_approval(topup_id)
-        balance = await payg_service.get_balance(int(topup["user_id"]))
+        continuation = {}
+        if not initial or identity_ok:
+            continuation = await payg_service.post_topup_approval(topup_id)
+
+        balance = await payg_service.get_balance(user_id)
         user_text = f"✅ پرداخت تأیید شد.\n💰 موجودی کیف پول: <b>{_money(balance)}</b>"
+        if initial and not identity_ok:
+            user_text += "\n\n🪪 ساخت پنل تا تأیید احراز هویت متوقف است."
         if continuation.get("account"):
             account = continuation["account"]
             admin = await db.get_admin_by_id(int(account["admin_id"]))
@@ -601,32 +624,49 @@ async def payg_admin_approve(callback: CallbackQuery):
         billing = continuation.get("billing")
         if billing and billing.old_status == "suspended" and billing.new_status == "active":
             user_text += "\n\n🟢 پنل PAYG شما مجدداً فعال شد."
+
+        kb = None
+        if initial and not identity_ok:
+            kb = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="🪪 شروع احراز هویت", callback_data="kyc:start")
+            ]])
         try:
-            await callback.bot.send_message(int(topup["user_id"]), user_text)
+            await callback.bot.send_message(user_id, user_text, reply_markup=kb)
         except Exception:
             pass
-        await callback.message.edit_caption(
-            caption=(callback.message.caption or "") + "\n\n✅ تأیید شد",
-            reply_markup=None,
-        )
+        try:
+            await callback.message.edit_caption(
+                caption=(callback.message.caption or "") + "\n\n✅ تأیید شد",
+                reply_markup=None,
+            )
+        except Exception:
+            try:
+                await callback.message.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+
         await group_ops_service.audit(
             actor_id=callback.from_user.id,
             action="payg.topup.approve",
             subject_type="topup",
             subject_id=topup_id,
-            new_value={"user_id": int(topup["user_id"]), "amount_toman": int(topup["amount_toman"])},
+            new_value={"user_id": user_id, "amount_toman": int(topup["amount_toman"]), "awaiting_kyc": bool(initial and not identity_ok)},
         )
         await group_ops_service.send_text(
             callback.bot,
             "payments",
-            f"✅ شارژ PAYG <code>#{topup_id}</code> برای کاربر <code>{int(topup['user_id'])}</code> تأیید شد.\n"
-            f"💵 {_money(int(topup['amount_toman']))}",
+            f"✅ شارژ PAYG <code>#{topup_id}</code> برای کاربر <code>{user_id}</code> تأیید شد.\n"
+            f"💵 {_money(int(topup['amount_toman']))}"
+            + ("\n🪪 منتظر KYC" if initial and not identity_ok else ""),
         )
+        if initial and not identity_ok:
+            await group_ops_service.send_text(
+                callback.bot,
+                "unverified",
+                f"🟡 PAYG <code>#{topup_id}</code> پرداخت شده ولی هنوز KYC/Trust ندارد.",
+            )
         await callback.answer("شارژ تأیید شد ✅")
     except Exception as exc:
-        # Payment approval may already have credited the wallet; never silently
-        # retry the financial mutation. The idempotent approval function keeps
-        # the balance safe and this error is surfaced for operational follow-up.
         await callback.answer(f"پرداخت ثبت شد/نیاز به پیگیری: {str(exc)[:120]}", show_alert=True)
 
 
