@@ -4609,6 +4609,29 @@ async def order_approve(callback: CallbackQuery):
     )
     compliance = await order_compliance_service.get(oid)
 
+    if compliance and (
+        str(compliance.get("kyc_state")) == "rejected"
+        or str(compliance.get("refund_state")) == "pending"
+    ):
+        try:
+            await callback.bot.send_message(
+                int(o["user_id"]),
+                "↩️ <b>پرداخت تأیید شد، اما KYC شما رد شده است.</b>\n\n"
+                f"سفارش <code>#{oid}</code> برای بررسی استرداد وجه ثبت شد.",
+            )
+        except Exception:
+            pass
+        await group_ops_service.send_text(
+            callback.bot,
+            "payments",
+            "↩️ <b>Refund Pending</b>\n\n"
+            f"🧾 سفارش: <code>#{oid}</code>\n"
+            f"👤 User ID: <code>{int(o['user_id'])}</code>\n"
+            "KYC رد شده و صدور مسدود است.",
+        )
+        await callback.answer("KYC رد شده؛ سفارش وارد صف استرداد شد.", show_alert=True)
+        return
+
     if not identity_ok:
         user_kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🪪 شروع احراز هویت", callback_data="kyc:start")],
@@ -4660,16 +4683,6 @@ async def order_approve(callback: CallbackQuery):
         return
 
     # Already-verified/manual-trusted identities can move directly to issuance.
-    if compliance and (
-        str(compliance.get("kyc_state")) == "rejected"
-        or str(compliance.get("refund_state")) == "pending"
-    ):
-        await callback.answer(
-            "این سفارش وارد مسیر استرداد شده و فعلاً قابل صدور نیست.",
-            show_alert=True,
-        )
-        return
-
     order_type = (o.get("order_type") or "").lower()
     if order_type == "renew":
         if config.PANEL_PROVIDER == "rebecca":
