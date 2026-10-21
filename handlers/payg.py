@@ -130,6 +130,14 @@ async def _render_payment(message: Message, topup_id: int, source: str = "p") ->
         "",
         "مبلغ را به یکی از کارت‌های زیر واریز کنید و سپس رسید را ارسال کنید:",
     ]
+    identity_ok = await trust_service.is_identity_approved(int(topup["user_id"]))
+    if not identity_ok:
+        lines.extend([
+            "",
+            "🪪 <b>احراز هویت برای ساخت پنل PAYG الزامی است.</b>",
+            "پرداخت می‌تواند انجام شود؛ صدور پنل تا تأیید KYC متوقف می‌ماند.",
+        ])
+
     if cards:
         for card in cards:
             lines.append(
@@ -159,6 +167,18 @@ async def payg_offer(callback: CallbackQuery, state: FSMContext):
 async def payg_create_from_wallet(callback: CallbackQuery, state: FSMContext):
     provider = (callback.data or "").rsplit(":", 1)[-1]
     await state.clear()
+    if not await trust_service.is_identity_approved(callback.from_user.id):
+        await callback.message.edit_text(
+            "🪪 <b>احراز هویت برای صدور پنل PAYG لازم است.</b>\n\n"
+            "اعتبار کیف پول شما محفوظ می‌ماند و بعد از تأیید KYC می‌توانید پنل را بسازید.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🪪 شروع احراز هویت", callback_data="kyc:start")],
+                [InlineKeyboardButton(text="📋 وضعیت KYC", callback_data="kyc:status")],
+                [InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"payg:offer:a:{provider}")],
+            ]),
+        )
+        await callback.answer("ابتدا KYC را تکمیل کنید.", show_alert=True)
+        return
     try:
         account = await payg_service.ensure_payg_account(callback.from_user.id, provider)
         admin = await db.get_admin_by_id(int(account["admin_id"]))
@@ -303,11 +323,18 @@ async def payg_receipt_received(message: Message, state: FSMContext):
     try:
         await group_ops_service.send_photo(
             message.bot,
-            "payments" if trusted else "unverified",
+            "receipts",
             file_id,
             caption=caption,
             reply_markup=kb,
         )
+        if not trusted:
+            await group_ops_service.send_text(
+                message.bot,
+                "unverified",
+                f"🟡 شارژ PAYG <code>#{topup_id}</code> برای کاربر "
+                f"<code>{message.from_user.id}</code> بدون KYC تأییدشده ثبت شد.",
+            )
     except Exception:
         pass
     for sudo_id in config.SUDO_ADMINS:
@@ -316,7 +343,16 @@ async def payg_receipt_received(message: Message, state: FSMContext):
         except Exception:
             pass
     await state.clear()
-    await message.answer("✅ رسید ارسال شد. پس از تأیید، اعتبار به کیف پول اضافه می‌شود.")
+    if trusted:
+        await message.answer("✅ رسید ارسال شد. پس از تأیید، اعتبار به کیف پول اضافه می‌شود.")
+    else:
+        await message.answer(
+            "✅ رسید ارسال شد.\n\n🪪 برای صدور پنل PAYG احراز هویت را تکمیل کنید.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🪪 شروع احراز هویت", callback_data="kyc:start")],
+                [InlineKeyboardButton(text="📋 وضعیت KYC", callback_data="kyc:status")],
+            ]),
+        )
 
 
 @payg_router.callback_query(F.data.startswith("payg:history:"))
