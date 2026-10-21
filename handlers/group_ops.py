@@ -45,7 +45,10 @@ def _ops_home_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🔗 اتصال/تعویض گروه", callback_data="gops:connect"),
             InlineKeyboardButton(text="🧱 تکمیل تاپیک‌ها", callback_data="gops:repair"),
         ],
-        [InlineKeyboardButton(text="📊 وضعیت Group Ops", callback_data="gops:status")],
+        [
+            InlineKeyboardButton(text="📊 وضعیت Group Ops", callback_data="gops:status"),
+            InlineKeyboardButton(text="🧪 تست ارسال", callback_data="gops:test"),
+        ],
         [InlineKeyboardButton(text="🏠 بازگشت به داشبورد", callback_data="back_to_main")],
     ])
 
@@ -132,12 +135,20 @@ async def _render_ops_status(message: Message) -> None:
             "روی «اتصال/تعویض گروه» بزنید و گروه Forum را انتخاب کنید."
         )
     else:
+        delivery = await group_ops_service.delivery_status()
+        failed = [
+            key for key, row in delivery.items()
+            if not int(row.get("ok") or 0)
+        ]
         text = (
             "📊 <b>وضعیت Group Ops</b>\n\n"
             f"Chat ID: <code>{int(cfg['chat_id'])}</code>\n"
             f"وضعیت: <b>{'فعال' if int(cfg.get('enabled') or 0) else 'خاموش'}</b>\n"
-            f"Topics: <b>{len(topics)}/{len(TOPICS)}</b>"
+            f"Topics: <b>{len(topics)}/{len(TOPICS)}</b>\n"
+            f"آخرین خطای ارسال: <b>{len(failed)}</b>"
         )
+        if failed:
+            text += "\n\n⚠️ " + "، ".join(escape(TOPICS.get(key, key)) for key in failed[:5])
     await message.edit_text(text, reply_markup=_ops_home_keyboard())
 
 
@@ -582,6 +593,29 @@ async def ops_auto_bootstrap(event: ChatMemberUpdated):
         await _bootstrap_ops_group(event.bot, chat.id, actor.id)
     except Exception:
         return
+
+
+@group_ops_router.callback_query(F.data == "gops:test")
+async def ops_delivery_test(callback: CallbackQuery):
+    if await _deny_event(callback):
+        return
+    await callback.answer("در حال تست ارسال...")
+    ok = []
+    failed = []
+    for key, title in TOPICS.items():
+        sent = await group_ops_service.send_text(
+            callback.bot,
+            key,
+            f"🧪 <b>تست Group Ops</b>\n{escape(title)} آماده دریافت پیام است.",
+        )
+        (ok if sent else failed).append(title)
+    summary = (
+        f"✅ موفق: <b>{len(ok)}/{len(TOPICS)}</b>\n"
+        f"❌ ناموفق: <b>{len(failed)}</b>"
+    )
+    if failed:
+        summary += "\n\n" + "\n".join(f"• {escape(item)}" for item in failed)
+    await callback.message.answer(summary)
 
 
 @group_ops_router.callback_query(F.data == "gops:status")
