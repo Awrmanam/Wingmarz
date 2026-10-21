@@ -15,6 +15,7 @@ from marzban_api import marzban_api
 from rebecca_api import rebecca_api, RebeccaAPIError
 from group_ops_service import group_ops_service
 from trust_service import trust_service
+from order_compliance_service import order_compliance_service
 from datetime import datetime
 from aiogram.exceptions import TelegramBadRequest
 
@@ -488,6 +489,17 @@ async def admin_order(callback: CallbackQuery):
         "",
         "کارت‌های فعال:",
     ]
+    identity_ok = await trust_service.is_identity_approved(callback.from_user.id)
+    if not identity_ok:
+        lines.extend([
+            "",
+            "🪪 <b>احراز هویت برای صدور سفارش الزامی است.</b>",
+            "می‌توانید پرداخت را انجام دهید؛ صدور تا تأیید KYC متوقف می‌ماند.",
+            "در صورت رد KYC، سفارش برای بررسی استرداد وجه ثبت می‌شود.",
+        ])
+    else:
+        lines.extend(["", "✅ احراز هویت این حساب قبلاً تأیید شده است."])
+
     if not cards:
         lines.append("— فعلاً کارتی ثبت نشده. لطفاً با پشتیبانی تماس بگیرید.")
     else:
@@ -551,6 +563,9 @@ async def admin_receive_payment_receipt(message: Message, state: FSMContext):
     ])
     try:
         trusted = await trust_service.is_identity_approved(message.from_user.id)
+        await order_compliance_service.note_receipt(
+            order_id, message.from_user.id, kyc_required=not trusted
+        )
         auto_enabled = await trust_service.auto_approve_enabled(message.from_user.id)
         verification = await trust_service.payment_verification(order_id)
         bank_state = str((verification or {}).get("state") or "unverified")
@@ -566,11 +581,18 @@ async def admin_receive_payment_receipt(message: Message, state: FSMContext):
         )
         await group_ops_service.send_photo(
             message.bot,
-            "payments" if trusted else "unverified",
+            "receipts",
             file_id,
             caption=caption,
             reply_markup=kb,
         )
+        if not trusted:
+            await group_ops_service.send_text(
+                message.bot,
+                "unverified",
+                f"🟡 سفارش/تمدید <code>#{order_id}</code> رسید دارد ولی KYC کاربر "
+                f"<code>{message.from_user.id}</code> تأیید نشده است.",
+            )
     except Exception:
         pass
     try:
@@ -580,7 +602,22 @@ async def admin_receive_payment_receipt(message: Message, state: FSMContext):
     except Exception:
         pass
     await state.clear()
-    await message.answer(config.MESSAGES["order_submitted_to_admin"], reply_markup=get_admin_keyboard())
+    if trusted:
+        await message.answer(
+            "✅ رسید شما ثبت شد و برای بررسی پرداخت ارسال شد.",
+            reply_markup=get_admin_keyboard(),
+        )
+    else:
+        await message.answer(
+            "✅ رسید ثبت شد.\n\n"
+            "🪪 برای صدور/تمدید، احراز هویت را تکمیل کنید. "
+            "پرداخت تا زمان بررسی KYC معلق می‌ماند.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🪪 شروع احراز هویت", callback_data="kyc:start")],
+                [InlineKeyboardButton(text="📋 وضعیت KYC", callback_data="kyc:status")],
+                [InlineKeyboardButton(text="🏠 صفحه اصلی", callback_data="back_to_admin_main")],
+            ]),
+        )
 
 
 # ===== Admin Renew/Extend Flow =====
