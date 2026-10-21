@@ -1,5 +1,6 @@
 import asyncio
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import config
 from payg_offers_service import PaygOfferService
@@ -76,3 +77,35 @@ def test_storefront_is_billing_first_and_admin_no_longer_needs_raw_service_ids()
     assert "پلن کامل · حجم و زمان مشخص" in offers
     assert "PAYG · پرداخت به‌اندازه مصرف" in offers
     assert "Service ID را فقط در «سرویس‌های Rebecca» تعریف می‌کنید" in offers
+
+
+
+def test_service_payg_payment_can_be_approved_without_provisioning_before_kyc(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "payg-kyc.sqlite")
+    monkeypatch.setattr(config, "DATABASE_PATH", db_path)
+    monkeypatch.setattr(config, "REBECCA_SERVICE_IDS", ())
+
+    _run(payg_service.ensure_schema())
+    _run(import_services_atomic([
+        {"service_id": 7, "display_name": "OpenVPN", "provider_name": "openvpn"},
+    ], source_username="catalog-test"))
+
+    offers = PaygOfferService()
+    _run(offers.ensure_offer(7))
+    _run(offers.update_offer(
+        7, price_per_gb_toman=2500, min_topup_toman=100000, max_users=20
+    ))
+    _run(offers.update_offer(7, enabled=True))
+
+    topup_id = _run(offers.create_topup(555, 7, 100000, source="p"))
+    assert _run(payg_service.submit_topup_receipt(topup_id, 555, "receipt"))
+
+    provision = AsyncMock(return_value={"id": 1})
+    monkeypatch.setattr(offers, "provision", provision)
+
+    result = _run(offers.approve_topup(topup_id, 999, provision=False))
+
+    assert result["awaiting_kyc"] is True
+    provision.assert_not_awaited()
+    assert _run(payg_service.get_balance(555)) == 100000
+    assert _run(payg_service.get_topup(topup_id))["status"] == "approved"
