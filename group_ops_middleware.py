@@ -36,8 +36,13 @@ class GroupOpsErrorMiddleware(BaseMiddleware):
         if not await group_ops_service.claim_event(event_key):
             return
 
-        admins = await db.get_admins_for_user(int(user.id))
-        active = [item for item in admins if bool(getattr(item, "is_active", False))]
+        active = []
+        try:
+            admins = await db.get_admins_for_user(int(user.id))
+            active = [item for item in admins if bool(getattr(item, "is_active", False))]
+        except Exception:
+            pass
+
         if int(user.id) in config.SUDO_ADMINS:
             account_kind = "سودو ادمین"
         elif active:
@@ -45,9 +50,19 @@ class GroupOpsErrorMiddleware(BaseMiddleware):
         else:
             account_kind = "مشتری"
 
-        profile = await kyc_service.get_profile(int(user.id))
-        kyc_status = str((profile or {}).get("status") or "not_submitted")
-        trusted = await trust_service.is_manually_trusted(int(user.id))
+        kyc_status = "unknown"
+        try:
+            profile = await kyc_service.get_profile(int(user.id))
+            kyc_status = str((profile or {}).get("status") or "not_submitted")
+        except Exception:
+            pass
+
+        trusted = False
+        try:
+            trusted = await trust_service.is_manually_trusted(int(user.id))
+        except Exception:
+            pass
+
         await group_ops_service.notify_start(
             bot,
             user,
