@@ -121,6 +121,7 @@ async def _render_payment(message: Message, topup_id: int, source: str = "p") ->
     if not topup:
         await message.edit_text("❌ درخواست شارژ پیدا نشد.")
         return
+    identity_ok = await trust_service.is_identity_approved(int(topup["user_id"]))
     cards = await db.get_cards(only_active=True)
     lines = [
         "💳 <b>پرداخت شارژ کیف پول</b>",
@@ -128,7 +129,16 @@ async def _render_payment(message: Message, topup_id: int, source: str = "p") ->
         f"شناسه: <code>PAYG-{int(topup_id)}</code>",
         f"مبلغ: <b>{_money(int(topup['amount_toman']))}</b>",
         "",
+    ]
+    if str(topup.get("purpose") or "") == "initial" and not identity_ok:
+        lines.extend([
+            "🪪 <b>برای ساخت پنل PAYG احراز هویت الزامی است.</b>",
+            "ابتدا پرداخت بررسی و کیف پول شارژ می‌شود؛ ساخت پنل تا تأیید KYC متوقف می‌ماند.",
+            "",
+        ])
+    lines.extend([
         "مبلغ را به یکی از کارت‌های زیر واریز کنید و سپس رسید را ارسال کنید:",
+    ])
     ]
     if cards:
         for card in cards:
@@ -303,11 +313,17 @@ async def payg_receipt_received(message: Message, state: FSMContext):
     try:
         await group_ops_service.send_photo(
             message.bot,
-            "payments" if trusted else "unverified",
+            "receipts",
             file_id,
             caption=caption,
             reply_markup=kb,
         )
+        if not trusted:
+            await group_ops_service.send_text(
+                message.bot,
+                "unverified",
+                f"🟡 رسید PAYG <code>#{topup_id}</code> از کاربر تأییدنشده <code>{message.from_user.id}</code> دریافت شد.",
+            )
     except Exception:
         pass
     for sudo_id in config.SUDO_ADMINS:
