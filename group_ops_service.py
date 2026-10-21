@@ -410,8 +410,20 @@ class GroupOpsService:
         text = re.sub(r"\b(?:\d[ -]*?){16}\b", "[CARD-REDACTED]", text)
         return text[:3500]
 
-    async def report_error(self, bot, exc: BaseException, *, context: str | None = None) -> bool:
+    async def report_error(
+        self,
+        bot,
+        exc: BaseException,
+        *,
+        context: str | None = None,
+        details: str | None = None,
+    ) -> bool:
         context_line = f"\n📍 {escape(context)}" if context else ""
+        detail_text = ""
+        if details:
+            redacted = self.redact_error(details)
+            # Keep the useful tail where Python includes file/line/exception.
+            detail_text = f"\n\n<pre>{escape(redacted[-2800:])}</pre>"
         return await self.send_text(
             bot,
             "errors",
@@ -419,6 +431,7 @@ class GroupOpsService:
                 "🐞 <b>خطای Wingmarz</b>"
                 f"{context_line}\n\n"
                 f"<code>{escape(self.redact_error(repr(exc)))}</code>"
+                f"{detail_text}"
             ),
         )
 
