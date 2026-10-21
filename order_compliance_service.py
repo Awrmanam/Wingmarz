@@ -143,6 +143,22 @@ class OrderComplianceService:
     async def has_awaiting_kyc(self, user_id: int) -> bool:
         return bool(await self.awaiting_kyc_orders(user_id))
 
+    async def reset_kyc_pending(self, user_id: int) -> None:
+        """A resubmitted document re-opens rejected KYC unless money was already refunded."""
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            await conn.execute(
+                """
+                UPDATE order_compliance
+                SET kyc_state='awaiting',
+                    refund_state=CASE WHEN refund_state='refunded' THEN 'refunded' ELSE 'none' END,
+                    updated_at=CURRENT_TIMESTAMP
+                WHERE user_id=? AND kyc_state='rejected' AND refund_state!='refunded'
+                """,
+                (int(user_id),),
+            )
+            await conn.commit()
+
     async def mark_kyc_approved(self, user_id: int) -> list[int]:
         await self.ensure_schema()
         async with aiosqlite.connect(self.db_path) as conn:
