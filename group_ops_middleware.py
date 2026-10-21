@@ -78,13 +78,14 @@ class GroupOpsErrorMiddleware(BaseMiddleware):
         data: dict[str, Any],
     ) -> Any:
         try:
-            result = await handler(event, data)
             try:
-                await self._log_start(event, data)
-            except Exception:
-                # Telemetry must never break the user's /start path.
-                pass
-            return result
+                return await handler(event, data)
+            finally:
+                try:
+                    await self._log_start(event, data)
+                except Exception:
+                    # Telemetry must never break the user's /start path.
+                    pass
         except Exception as exc:
             bot = data.get("bot")
             if bot is not None:
