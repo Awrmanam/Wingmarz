@@ -11,6 +11,7 @@ import config
 from database import db
 from kyc_service import kyc_service
 from group_ops_service import group_ops_service
+from order_kyc_gate import order_kyc_gate
 
 
 kyc_router = Router(name="kyc")
@@ -32,10 +33,18 @@ def _user_status_text(profile: dict | None) -> str:
     }.get(status, "⚪ نامشخص")
 
 
-async def _status_keyboard() -> InlineKeyboardMarkup:
+async def _home_callback(user_id: int) -> str:
+    if int(user_id) in config.SUDO_ADMINS:
+        return "back_to_main"
+    if await db.is_admin_authorized(int(user_id)):
+        return "back_to_admin_main"
+    return "public_back_main"
+
+
+async def _status_keyboard(user_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🪪 شروع/ارسال مجدد KYC", callback_data="kyc:start")],
-        [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="back_to_admin_main")],
+        [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data=await _home_callback(user_id))],
     ])
 
 
@@ -51,7 +60,10 @@ async def kyc_status(callback: CallbackQuery):
         lines.append(f"نام ثبت‌شده: <b>{escape(str(profile['full_name']))}</b>")
     if profile and profile.get("status") == "rejected":
         lines.append(f"دلیل رد: {escape(str(profile.get('rejection_reason') or 'مدرک قابل تأیید نبود.'))}")
-    await callback.message.edit_text("\n".join(lines), reply_markup=await _status_keyboard())
+    await callback.message.edit_text(
+        "\n".join(lines),
+        reply_markup=await _status_keyboard(callback.from_user.id),
+    )
     await callback.answer()
 
 
@@ -59,8 +71,12 @@ async def kyc_status(callback: CallbackQuery):
 async def kyc_start(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id not in config.SUDO_ADMINS:
         admins = await db.get_admins_for_user(callback.from_user.id)
-        if not admins:
-            await callback.answer("برای این حساب پنل نمایندگی ثبت نشده است.", show_alert=True)
+        has_paid_order = await order_kyc_gate.has_waiting_order(callback.from_user.id)
+        if not admins and not has_paid_order:
+            await callback.answer(
+                "برای این حساب پنل یا سفارش پرداخت‌شده منتظر KYC وجود ندارد.",
+                show_alert=True,
+            )
             return
     await state.clear()
     await state.set_state(KycStates.waiting_full_name)
@@ -179,6 +195,44 @@ async def kyc_review_approve(callback: CallbackQuery):
     await callback.message.edit_caption(
         caption=(callback.message.caption or "") + "\n\n✅ <b>تأیید شد</b>",
     )
+    released_orders = await order_kyc_gate.release_after_kyc(
+        user_id, callback.from_user.id
+    )
+    if released_orders:
+        for order in released_orders:
+            order_id = int(order["id"])
+            kb = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(
+                    text="✅ صدور سفارش",
+                    callback_data=f"order_approve_{order_id}",
+                )
+            ], [
+                InlineKeyboardButton(
+                    text="❌ رد / مشکل پرداخت",
+                    callback_data=f"order_reject_{order_id}",
+                )
+            ]])
+            await group_ops_service.send_text(
+                callback.bot,
+                "orders",
+                (
+                    f"✅ <b>KYC تأیید شد؛ سفارش آماده صدور است</b>\n\n"
+                    f"🧾 سفارش: <code>#{order_id}</code>\n"
+                    f"👤 <code>{user_id}</code>\n"
+                    f"📦 {escape(str(order.get('plan_name_snapshot') or 'پنل نمایندگی'))}\n"
+                    f"💵 <b>{int(order.get('price_snapshot') or 0):,}</b> تومان"
+                ),
+                reply_markup=kb,
+            )
+        try:
+            await callback.bot.send_message(
+                user_id,
+                "✅ <b>احراز هویت شما تأیید شد.</b>\n"
+                "پرداخت قبلاً تأیید شده و سفارش شما وارد صف صدور شد.",
+            )
+        except Exception:
+            pass
+
     await _notify_review_result(callback, user_id, True)
     await group_ops_service.audit(
         actor_id=callback.from_user.id,
@@ -207,6 +261,21 @@ async def kyc_review_reject(callback: CallbackQuery):
     await callback.message.edit_caption(
         caption=(callback.message.caption or "") + "\n\n❌ <b>رد شد</b>",
     )
+    refund_orders = await order_kyc_gate.refund_pending_after_rejection(
+        user_id, callback.from_user.id
+    )
+    if refund_orders:
+        await group_ops_service.send_text(
+            callback.bot,
+            "payments",
+            (
+                "↩️ <b>استرداد وجه نیازمند بررسی</b>\n\n"
+                f"👤 کاربر: <code>{user_id}</code>\n"
+                f"🧾 سفارش‌ها: <code>{', '.join('#' + str(x) for x in refund_orders)}</code>\n"
+                "علت: KYC رد شده است."
+            ),
+        )
+
     await _notify_review_result(callback, user_id, False)
     await group_ops_service.audit(
         actor_id=callback.from_user.id,
