@@ -146,3 +146,25 @@ def test_payg_routers_precede_legacy_marketplace():
     source = open("handlers/__init__.py", encoding="utf-8").read()
     assert source.index("include_router(payg_entry_router)") < source.index("include_router(service_marketplace_router)")
     assert source.index("include_router(payg_router)") < source.index("include_router(service_marketplace_router)")
+
+
+def test_initial_topup_kyc_hold_does_not_credit_until_release(tmp_path):
+    service = PaygService(str(tmp_path / "payg.db"))
+
+    async def scenario():
+        topup_id = await service.create_topup(321, 80_000, purpose="initial")
+        assert await service.submit_topup_receipt(topup_id, 321, "receipt-file") is True
+
+        held = await service.hold_topup_for_kyc(topup_id, 999)
+        assert held["status"] == "paid_awaiting_kyc"
+        assert await service.get_balance(321) == 0
+
+        approved = await service.approve_topup(topup_id, 999)
+        assert approved["status"] == "approved"
+        assert await service.get_balance(321) == 80_000
+
+        # Repeated approval remains idempotent after the KYC release.
+        await service.approve_topup(topup_id, 999)
+        assert await service.get_balance(321) == 80_000
+
+    run(scenario())
