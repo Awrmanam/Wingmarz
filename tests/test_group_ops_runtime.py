@@ -226,3 +226,12 @@ def test_kyc_gate_release_returns_paid_orders_to_submitted(tmp_path, monkeypatch
                 assert (await cur.fetchone())[0] == "submitted"
 
     run(scenario())
+
+
+def test_canonical_checkout_warns_about_kyc_before_payment():
+    source = open("handlers/operations.py", encoding="utf-8").read()
+    start = source.index("async def _create_checkout_order")
+    end = source.index("# ---------------------------- Trial configs", start)
+    checkout = source[start:end]
+    assert "بعد از تأیید پرداخت باید احراز هویت را تکمیل کنید" in checkout
+    assert "order_kyc_gate.requires_kyc" in checkout
