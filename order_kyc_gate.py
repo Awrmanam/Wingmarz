@@ -153,6 +153,47 @@ class OrderKycGate:
             )
         return rows
 
+    async def expire_stale(self, hours: int = 48) -> list[dict[str, Any]]:
+        """Move unpaid-fulfillment holds to manual refund review after the KYC deadline."""
+        await self.ensure_schema()
+        hours = max(1, int(hours))
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("BEGIN IMMEDIATE")
+            async with conn.execute(
+                """
+                SELECT o.* FROM orders o
+                JOIN order_kyc_gate g ON g.order_id=o.id
+                WHERE g.state='awaiting_kyc'
+                  AND o.status='paid_awaiting_kyc'
+                  AND g.payment_approved_at <= datetime('now', ?)
+                ORDER BY g.payment_approved_at ASC
+                """,
+                (f"-{hours} hours",),
+            ) as cur:
+                rows = [dict(row) for row in await cur.fetchall()]
+            for order in rows:
+                order_id = int(order["id"])
+                await conn.execute(
+                    """
+                    UPDATE orders
+                    SET status='refund_pending',updated_at=CURRENT_TIMESTAMP
+                    WHERE id=? AND status='paid_awaiting_kyc'
+                    """,
+                    (order_id,),
+                )
+                await conn.execute(
+                    """
+                    UPDATE order_kyc_gate
+                    SET state='refund_pending',reviewed_at=CURRENT_TIMESTAMP,
+                        updated_at=CURRENT_TIMESTAMP
+                    WHERE order_id=? AND state='awaiting_kyc'
+                    """,
+                    (order_id,),
+                )
+            await conn.commit()
+        return rows
+
     async def refund_pending_after_rejection(self, user_id: int, reviewer_id: int) -> list[int]:
         """Mark paid orders for manual refund if KYC is explicitly rejected."""
         await self.ensure_schema()
