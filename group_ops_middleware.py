@@ -91,4 +91,17 @@ class GroupOpsErrorMiddleware(BaseMiddleware):
                     )
                 except Exception:
                     pass
+            try:
+                if hasattr(event, "answer"):
+                    if hasattr(event, "data"):
+                        await event.answer(
+                            "یک خطای داخلی ثبت شد. دوباره تلاش کنید؛ اگر تکرار شد مدیریت گزارش خطا را می‌بیند.",
+                            show_alert=True,
+                        )
+                    else:
+                        await event.answer(
+                            "⚠️ یک خطای داخلی رخ داد و برای مدیریت ثبت شد. لطفاً دوباره تلاش کنید."
+                        )
+            except Exception:
+                pass
             raise
