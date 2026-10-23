@@ -9,6 +9,10 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 import config
 from database import db
+from group_ops_events import mirror_payg_receipt
+from group_ops_service import group_ops_service
+from payg_kyc_gate import payg_kyc_gate
+from trust_service import trust_service
 from payg_offers_service import PaygOfferError, payg_offer_service
 from payg_service import PaygError, PaygInsufficientFunds, payg_service
 from rebecca_catalog import get_service, get_service_by_rebecca_id, list_services
@@ -433,6 +437,10 @@ async def _send_payment(message: Message, topup_id: int, *, edit: bool) -> None:
         return
     service = await get_service_by_rebecca_id(int(context["service_id"]))
     cards = await db.get_cards(only_active=True)
+    kyc_needed = (
+        str(topup.get("purpose") or "") == "initial_service"
+        and await payg_kyc_gate.requires_kyc(int(topup["user_id"]))
+    )
     lines = [
         f"💳 <b>شارژ PAYG · {escape(service.display_name if service else str(context['service_id']))}</b>",
         "",
@@ -440,6 +448,13 @@ async def _send_payment(message: Message, topup_id: int, *, edit: bool) -> None:
         f"مبلغ: <b>{_money(int(topup['amount_toman']))}</b>",
         "",
         "مبلغ را به یکی از کارت‌های زیر واریز کنید و سپس رسید را ارسال کنید:",
+        "",
+        (
+            "🪪 <b>توجه:</b> پس از تأیید پرداخت، ساخت پنل PAYG تا تکمیل KYC متوقف می‌ماند. "
+            "تا آن زمان مبلغ وارد کیف پول قابل‌مصرف نمی‌شود."
+            if kyc_needed else
+            "✅ هویت شما تأیید شده و پس از تأیید پرداخت، شارژ/فعال‌سازی ادامه پیدا می‌کند."
+        ),
     ]
     if cards:
         for card in cards:
@@ -540,6 +555,14 @@ async def service_payg_receipt(message: Message, state: FSMContext):
         InlineKeyboardButton(text="✅ تأیید شارژ", callback_data=f"paygsvcadmin:approve:{topup_id}"),
         InlineKeyboardButton(text="❌ رد", callback_data=f"paygsvcadmin:reject:{topup_id}"),
     ]])
+    await mirror_payg_receipt(
+        message.bot,
+        topup=topup,
+        topup_id=topup_id,
+        user=message.from_user,
+        file_id=message.photo[-1].file_id,
+        reply_markup=kb,
+    )
     caption = (
         f"🧾 شارژ PAYG #{topup_id}\n"
         f"سرویس: {escape(service.display_name if service else str(context['service_id']))}\n"
@@ -816,9 +839,49 @@ async def service_payg_admin_approve(callback: CallbackQuery):
         return
     topup_id = int((callback.data or "").rsplit(":", 1)[-1])
     try:
+        topup = await payg_service.get_topup(topup_id)
+        context = await payg_offer_service.topup_context(topup_id)
+        if not topup or not context:
+            await callback.answer("درخواست شارژ پیدا نشد.", show_alert=True)
+            return
+
+        user_id = int(topup["user_id"])
+        if (
+            str(topup.get("purpose") or "") == "initial_service"
+            and await payg_kyc_gate.requires_kyc(user_id)
+        ):
+            await payg_kyc_gate.hold_after_payment(topup_id, callback.from_user.id)
+            try:
+                await callback.bot.send_message(
+                    user_id,
+                    "💰 <b>پرداخت PAYG شما تأیید شد.</b>\n\n"
+                    "ساخت پنل تا تکمیل احراز هویت متوقف است و مبلغ هنوز وارد کیف پول قابل‌مصرف نشده است.",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                        InlineKeyboardButton(text="🪪 شروع احراز هویت", callback_data="kyc:start"),
+                        InlineKeyboardButton(text="📋 وضعیت KYC", callback_data="kyc:status"),
+                    ]]),
+                )
+            except Exception:
+                pass
+            await group_ops_service.send_text(
+                callback.bot,
+                "payments",
+                f"💰 PAYG <code>#{topup_id}</code> پرداخت شد · کاربر <code>{user_id}</code> · <b>منتظر KYC</b>",
+            )
+            await group_ops_service.send_text(
+                callback.bot,
+                "unverified",
+                f"🪪 کاربر <code>{user_id}</code> برای PAYG <code>#{topup_id}</code> باید KYC را تکمیل کند.",
+            )
+            try:
+                await callback.message.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+            await callback.answer("پرداخت تأیید شد؛ منتظر KYC", show_alert=True)
+            return
+
         result = await payg_offer_service.approve_topup(topup_id, callback.from_user.id)
         topup = result["topup"]
-        user_id = int(topup["user_id"])
         balance = await payg_service.get_balance(user_id)
         if result.get("account"):
             account = result["account"]
