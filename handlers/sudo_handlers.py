@@ -18,6 +18,7 @@ import time
 import config
 from order_tracking import track_approval
 from group_ops_service import group_ops_service
+from order_kyc_gate import order_kyc_gate
 from forced_join_service import inspect_channel_access
 from database import db
 from models.schemas import AdminModel, LogModel
@@ -35,6 +36,21 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 logger = logging.getLogger(__name__)
+
+
+async def _replace_order_action_message(callback: CallbackQuery, text: str) -> None:
+    """Update an order action message whether it is text or a receipt photo."""
+    try:
+        if getattr(callback.message, "photo", None):
+            await callback.message.edit_caption(caption=text, reply_markup=None)
+        else:
+            await callback.message.edit_text(text, reply_markup=None)
+    except Exception:
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+            await callback.message.answer(text)
+        except Exception:
+            pass
 
 
 async def _notify_rebecca_deactivated(bot, admin: AdminModel) -> None:
@@ -1437,18 +1453,6 @@ def get_panel_list_keyboard(admins: List[AdminModel], action: str) -> InlineKeyb
 @sudo_router.message(Command("start"), F.from_user.id.in_(config.SUDO_ADMINS))
 async def sudo_start(message: Message):
     """Start command reserved for sudo users only."""
-    try:
-        from kyc_service import kyc_service
-        from trust_service import trust_service
-        await group_ops_service.notify_start(
-            message.bot,
-            message.from_user,
-            account_kind="سودو ادمین",
-            kyc_status=await kyc_service.status(message.from_user.id),
-            trusted=await trust_service.is_manually_trusted(message.from_user.id),
-        )
-    except Exception:
-        pass
     from handlers.operations import _send_dashboard
     await _send_dashboard(message)
 
@@ -4602,9 +4606,57 @@ async def order_approve(callback: CallbackQuery):
     if not o:
         await callback.answer("سفارش یافت نشد.", show_alert=True)
         return
-    # Prevent double-approval
-    if (o.get("status") or "").lower() not in {"pending", "submitted", "failed"}:
+    # Payment-first KYC gate. A verified payment may be held until identity
+    # is approved; manually trusted users and KYC-exempt renewals bypass this.
+    status = (o.get("status") or "").lower()
+    if status not in {"pending", "submitted", "failed", "paid_awaiting_kyc"}:
         await callback.answer("این سفارش دیگر قابل صدور نیست.", show_alert=True)
+        return
+
+    if status == "paid_awaiting_kyc":
+        if await order_kyc_gate.requires_kyc(o):
+            await callback.answer("پرداخت تأیید شده؛ این سفارش هنوز منتظر KYC است.", show_alert=True)
+            return
+        await db.update_order(oid, status="submitted")
+        o = await db.get_order_by_id(oid) or o
+    elif status == "submitted" and await order_kyc_gate.requires_kyc(o):
+        if not await order_kyc_gate.hold_after_payment(o, callback.from_user.id):
+            await callback.answer("وضعیت سفارش تغییر کرده؛ دوباره بررسی کنید.", show_alert=True)
+            return
+
+        kyc_kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="🪪 شروع احراز هویت", callback_data="kyc:start"),
+            InlineKeyboardButton(text="📋 وضعیت KYC", callback_data="kyc:status"),
+        ]])
+        try:
+            await callback.bot.send_message(
+                int(o["user_id"]),
+                "💰 <b>پرداخت شما تأیید شد.</b>\n\n"
+                "صدور پنل تا تکمیل احراز هویت متوقف است. "
+                "مدرک را ارسال کنید؛ پس از تأیید KYC سفارش برای صدور آزاد می‌شود.\n\n"
+                "اگر KYC رد شود، سفارش وارد صف استرداد وجه می‌شود.",
+                reply_markup=kyc_kb,
+            )
+        except Exception:
+            pass
+
+        await group_ops_service.send_text(
+            callback.bot,
+            "payments",
+            f"💰 <b>پرداخت سفارش #{oid} تأیید شد</b>\n"
+            f"👤 <code>{int(o['user_id'])}</code>\n"
+            "🪪 وضعیت: <b>منتظر KYC</b>",
+        )
+        await group_ops_service.send_text(
+            callback.bot,
+            "unverified",
+            f"🪪 کاربر <code>{int(o['user_id'])}</code> برای سفارش <code>#{oid}</code> باید KYC را تکمیل کند.",
+        )
+        await _replace_order_action_message(
+            callback,
+            f"💰 پرداخت سفارش #{oid} تأیید شد.\n🪪 وضعیت: منتظر KYC · صدور تا تأیید هویت متوقف است.",
+        )
+        await callback.answer("پرداخت تأیید شد؛ منتظر KYC")
         return
 
     order_type = (o.get("order_type") or "").lower()
@@ -4629,7 +4681,7 @@ async def order_approve(callback: CallbackQuery):
                 f"🧩 Admin ID: <code>{result.admin_id}</code>\n"
                 f"{result.message}",
             )
-            await callback.message.edit_text("✅ سفارش تأیید و تمدید Rebecca اعمال شد.")
+            await _replace_order_action_message(callback, "✅ سفارش تأیید و تمدید Rebecca اعمال شد.")
             await callback.answer("تمدید انجام شد ✅")
             return
         # Apply renewal on target admin
@@ -4670,7 +4722,7 @@ async def order_approve(callback: CallbackQuery):
                 await bot.send_message(chat_id=o['user_id'], text="\n".join(lines))
             except Exception as e:
                 logger.error(f"Failed to notify user {o['user_id']} after reset-renew approve: {e}")
-            await callback.message.edit_text("✅ سفارش تایید و تمدید کامل اعمال شد.")
+            await _replace_order_action_message(callback, "✅ سفارش تایید و تمدید کامل اعمال شد.")
             await callback.answer()
             return
         else:
@@ -4707,7 +4759,7 @@ async def order_approve(callback: CallbackQuery):
                 await bot.send_message(chat_id=o['user_id'], text="\n".join(lines))
             except Exception as e:
                 logger.error(f"Failed to notify user {o['user_id']} after renewal approve: {e}")
-            await callback.message.edit_text("✅ سفارش تایید و تمدید اعمال شد.")
+            await _replace_order_action_message(callback, "✅ سفارش تایید و تمدید اعمال شد.")
             await callback.answer()
             return
 
@@ -4932,7 +4984,7 @@ async def order_approve(callback: CallbackQuery):
         f"👤 <code>{int(o['user_id'])}</code>\n"
         f"🔐 <code>{escape(str(new_username))}</code>",
     )
-    await callback.message.edit_text("✅ سفارش تأیید و پنل صادر شد.")
+    await _replace_order_action_message(callback, "✅ سفارش تأیید و پنل صادر شد.")
     await callback.answer()
 
 
@@ -4970,7 +5022,7 @@ async def order_reject(callback: CallbackQuery):
         "orders",
         f"❌ <b>سفارش #{oid} رد شد.</b>\n👤 <code>{int(o['user_id'])}</code>",
     )
-    await callback.message.edit_text("⛔ سفارش رد شد.")
+    await _replace_order_action_message(callback, "⛔ سفارش رد شد.")
     await callback.answer()
 
 

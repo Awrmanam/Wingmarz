@@ -21,6 +21,7 @@ class MonitoringScheduler:
         self.backup_job_id = "bot_backup_job"
         self.group_ops_admin_job_id = "group_ops_admin_alerts"
         self.group_ops_daily_job_id = "group_ops_daily_summary"
+        self.kyc_refund_job_id = "order_kyc_refund_watch"
         self._backup_lock = asyncio.Lock()
         self._group_ops_lock = asyncio.Lock()
 
@@ -264,6 +265,71 @@ class MonitoringScheduler:
                 except Exception:
                     pass
 
+    async def expire_stale_kyc_orders(self):
+        try:
+            from order_kyc_gate import order_kyc_gate
+            from group_ops_service import group_ops_service
+
+            expired = await order_kyc_gate.expire_stale(48)
+            from payg_kyc_gate import payg_kyc_gate
+            expired_payg = await payg_kyc_gate.expire_stale(48)
+            for order in expired:
+                order_id = int(order["id"])
+                user_id = int(order["user_id"])
+                amount = int(order.get("price_snapshot") or 0)
+                try:
+                    await self.bot.send_message(
+                        user_id,
+                        "⌛ <b>مهلت احراز هویت سفارش شما پایان یافت.</b>\n\n"
+                        f"سفارش: <code>#{order_id}</code>\n"
+                        "سفارش صادر نشده و برای بررسی استرداد وجه به مدیریت ارجاع شد.",
+                    )
+                except Exception:
+                    pass
+                await group_ops_service.send_text(
+                    self.bot,
+                    "payments",
+                    (
+                        "↩️ <b>استرداد به‌دلیل عدم تکمیل KYC</b>\n\n"
+                        f"🧾 سفارش: <code>#{order_id}</code>\n"
+                        f"👤 <code>{user_id}</code>\n"
+                        f"💵 <b>{amount:,}</b> تومان\n"
+                        "⏱ مهلت KYC: ۴۸ ساعت"
+                    ),
+                )
+            for topup in expired_payg:
+                topup_id = int(topup["id"])
+                user_id = int(topup["user_id"])
+                amount = int(topup.get("amount_toman") or 0)
+                try:
+                    await self.bot.send_message(
+                        user_id,
+                        "⌛ <b>مهلت KYC پرداخت PAYG پایان یافت.</b>\n\n"
+                        f"شناسه: <code>PAYG-{topup_id}</code>\n"
+                        "پنل ساخته نشده و پرداخت برای بررسی استرداد وجه به مدیریت ارجاع شد.",
+                    )
+                except Exception:
+                    pass
+                await group_ops_service.send_text(
+                    self.bot,
+                    "payments",
+                    (
+                        "↩️ <b>استرداد PAYG به‌دلیل عدم تکمیل KYC</b>\n\n"
+                        f"🧾 PAYG: <code>#{topup_id}</code>\n"
+                        f"👤 <code>{user_id}</code>\n"
+                        f"💵 <b>{amount:,}</b> تومان\n"
+                        "⏱ مهلت KYC: ۴۸ ساعت"
+                    ),
+                )
+        except Exception as exc:
+            try:
+                from group_ops_service import group_ops_service
+                await group_ops_service.report_error(
+                    self.bot, exc, context="KYC refund watch"
+                )
+            except Exception:
+                pass
+
     async def send_group_ops_daily(self):
         try:
             from group_ops_service import group_ops_service
@@ -283,6 +349,17 @@ class MonitoringScheduler:
             trigger=CronTrigger(hour=23, minute=55),
             id=self.group_ops_daily_job_id,
             name="Group Ops Daily Summary",
+            replace_existing=True,
+            max_instances=1,
+        )
+        self.scheduler.add_job(
+            self.expire_stale_kyc_orders,
+            trigger=IntervalTrigger(
+                hours=1,
+                start_date=datetime.now() + timedelta(minutes=2),
+            ),
+            id=self.kyc_refund_job_id,
+            name="KYC Refund Watch",
             replace_existing=True,
             max_instances=1,
         )

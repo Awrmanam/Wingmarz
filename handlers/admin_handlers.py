@@ -14,6 +14,8 @@ from utils.notify import format_traffic_size, format_time_duration
 from marzban_api import marzban_api
 from rebecca_api import rebecca_api, RebeccaAPIError
 from group_ops_service import group_ops_service
+from group_ops_events import mirror_order_receipt
+from order_kyc_gate import order_kyc_gate
 from trust_service import trust_service
 from datetime import datetime
 from aiogram.exceptions import TelegramBadRequest
@@ -149,24 +151,6 @@ async def admin_start(message: Message):
 
     from kyc_service import kyc_service
     from trust_service import trust_service
-    from group_ops_service import group_ops_service
-
-    # Every /start is mirrored to the operations group when configured.
-    try:
-        kyc_status = await kyc_service.status(message.from_user.id)
-        manual_trust = await trust_service.is_manually_trusted(message.from_user.id)
-        await group_ops_service.notify_start(
-            message.bot,
-            message.from_user,
-            account_kind=(
-                f"ادمین Rebecca · {len(active_admins)} پنل"
-                if active_admins else "مشتری"
-            ),
-            kyc_status=kyc_status,
-            trusted=manual_trust,
-        )
-    except Exception:
-        pass
 
     if not active_admins:
         from handlers.public_handlers import get_public_main_keyboard
@@ -498,11 +482,22 @@ async def admin_order(callback: CallbackQuery):
         return
     await _mirror_admin_order_created(callback.bot, order_id)
     price_txt = f"{plan.price:,}"
+    current_order = await db.get_order_by_id(order_id)
+    kyc_needed = await order_kyc_gate.requires_kyc(current_order or {
+        "id": order_id, "user_id": callback.from_user.id, "order_type": "purchase"
+    })
     # Show manual payment cards
     cards = await db.get_cards(only_active=True)
     lines = [
         f"✅ سفارش ثبت شد.\n\nشناسه سفارش: {order_id}\nپلن: {plan.name}\nقیمت: {price_txt} تومان\n",
         config.MESSAGES["public_payment_instructions"],
+        "",
+        (
+            "🪪 <b>توجه:</b> بعد از تأیید پرداخت، صدور این سفارش تا تکمیل KYC متوقف می‌ماند. "
+            "در صورت رد KYC، سفارش وارد صف استرداد می‌شود."
+            if kyc_needed else
+            "✅ هویت شما تأیید شده؛ بعد از تأیید پرداخت، سفارش وارد مرحله صدور می‌شود."
+        ),
         "",
         "کارت‌های فعال:",
     ]
@@ -567,30 +562,14 @@ async def admin_receive_payment_receipt(message: Message, state: FSMContext):
         [InlineKeyboardButton(text="❌ رد", callback_data=f"order_reject_{order_id}")],
         [InlineKeyboardButton(text="🔁 تلاش دوباره صدور", callback_data=f"order_retry_{order_id}")]
     ])
-    try:
-        trusted = await trust_service.is_identity_approved(message.from_user.id)
-        auto_enabled = await trust_service.auto_approve_enabled(message.from_user.id)
-        verification = await trust_service.payment_verification(order_id)
-        bank_state = str((verification or {}).get("state") or "unverified")
-        caption = (
-            f"🧾 <b>رسید سفارش/تمدید #{order_id}</b>\n"
-            f"👤 <code>{message.from_user.id}</code> "
-            f"{('@' + escape(message.from_user.username)) if message.from_user.username else ''}\n"
-            f"📦 {escape(plan.name if plan else order.get('plan_name_snapshot',''))}\n"
-            f"💵 <b>{int(order.get('price_snapshot',0)):,}</b> تومان\n"
-            f"🪪 Identity: <b>{'تأیید' if trusted else 'تأییدنشده'}</b>\n"
-            f"🤖 Auto Approve: <b>{'مجاز' if auto_enabled else 'خاموش'}</b>\n"
-            f"🏦 Bank Match: <b>{escape(bank_state)}</b>"
-        )
-        await group_ops_service.send_photo(
-            message.bot,
-            "payments" if trusted else "unverified",
-            file_id,
-            caption=caption,
-            reply_markup=kb,
-        )
-    except Exception:
-        pass
+    await mirror_order_receipt(
+        message.bot,
+        order=order,
+        user=message.from_user,
+        file_id=file_id,
+        reply_markup=kb,
+        label="سفارش/تمدید",
+    )
     try:
         for sudo_id in config.SUDO_ADMINS:
             await message.bot.send_message(chat_id=sudo_id, text=text, reply_markup=kb)
