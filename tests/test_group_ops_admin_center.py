@@ -401,3 +401,18 @@ def test_canonical_operational_dashboard_is_clean_and_nonduplicated(monkeypatch)
         "ops:hub:monitor",
         "ops:hub:settings",
     ]
+
+
+def test_scheduler_registers_kyc_refund_watch(monkeypatch):
+    monkeypatch.setattr(config, "PANEL_PROVIDER", "rebecca")
+    scheduler = MonitoringScheduler(bot=None)
+
+    async def scenario():
+        await scheduler.start()
+        try:
+            assert scheduler.scheduler.get_job("order_kyc_refund_watch") is not None
+            assert scheduler.scheduler.get_job("payg_billing_job") is None
+        finally:
+            await scheduler.stop()
+
+    run(scenario())
