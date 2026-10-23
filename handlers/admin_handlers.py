@@ -149,24 +149,6 @@ async def admin_start(message: Message):
 
     from kyc_service import kyc_service
     from trust_service import trust_service
-    from group_ops_service import group_ops_service
-
-    # Every /start is mirrored to the operations group when configured.
-    try:
-        kyc_status = await kyc_service.status(message.from_user.id)
-        manual_trust = await trust_service.is_manually_trusted(message.from_user.id)
-        await group_ops_service.notify_start(
-            message.bot,
-            message.from_user,
-            account_kind=(
-                f"ادمین Rebecca · {len(active_admins)} پنل"
-                if active_admins else "مشتری"
-            ),
-            kyc_status=kyc_status,
-            trusted=manual_trust,
-        )
-    except Exception:
-        pass
 
     if not active_admins:
         from handlers.public_handlers import get_public_main_keyboard
