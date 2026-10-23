@@ -4654,7 +4654,7 @@ async def order_approve(callback: CallbackQuery):
         )
         await _replace_order_action_message(
             callback,
-            f"💰 پرداخت سفارش #{oid} تأیید شد.\n🪪 صدور تا تأیید KYC متوقف است.",
+            f"💰 پرداخت سفارش #{oid} تأیید شد.\n🪪 وضعیت: منتظر KYC · صدور تا تأیید هویت متوقف است.",
         )
         await callback.answer("پرداخت تأیید شد؛ منتظر KYC")
         return
