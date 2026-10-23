@@ -4619,7 +4619,7 @@ async def order_approve(callback: CallbackQuery):
             return
         await db.update_order(oid, status="submitted")
         o = await db.get_order_by_id(oid) or o
-    elif await order_kyc_gate.requires_kyc(o):
+    elif status == "submitted" and await order_kyc_gate.requires_kyc(o):
         if not await order_kyc_gate.hold_after_payment(o, callback.from_user.id):
             await callback.answer("وضعیت سفارش تغییر کرده؛ دوباره بررسی کنید.", show_alert=True)
             return
