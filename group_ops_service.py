@@ -8,6 +8,7 @@ import re
 from typing import Any
 
 import aiosqlite
+from aiogram.exceptions import TelegramBadRequest
 
 import config
 
@@ -18,7 +19,8 @@ TOPICS: dict[str, str] = {
     "starts": "👋 استارت‌ها",
     "admins": "👥 ادمین‌ها",
     "orders": "🛒 سفارش‌ها",
-    "payments": "💳 پرداخت‌ها",
+    "receipts": "🧾 رسیدهای پرداخت",
+    "payments": "💳 وضعیت پرداخت‌ها",
     "kyc": "🪪 احراز هویت",
     "unverified": "🟡 تاییدنشده‌ها",
     "errors": "🐞 خطاها",
@@ -161,19 +163,83 @@ class GroupOpsService:
                 rows = await cur.fetchall()
         return {str(row["topic_key"]): dict(row) for row in rows}
 
-    async def _target(self, topic_key: str) -> tuple[int, int] | None:
+    async def _upsert_topic(self, topic_key: str, title: str, thread_id: int) -> None:
+        async with aiosqlite.connect(self.db_path) as conn:
+            await conn.execute(
+                """
+                INSERT INTO group_ops_topics(topic_key,title,thread_id,updated_at)
+                VALUES(?,?,?,CURRENT_TIMESTAMP)
+                ON CONFLICT(topic_key) DO UPDATE SET
+                    title=excluded.title,
+                    thread_id=excluded.thread_id,
+                    updated_at=CURRENT_TIMESTAMP
+                """,
+                (str(topic_key), str(title), int(thread_id)),
+            )
+            await conn.commit()
+
+    async def ensure_topic(self, bot, topic_key: str, *, recreate: bool = False) -> tuple[int, int] | None:
+        """Return a live Group Ops target, creating/replacing the topic when needed."""
         cfg = await self.get_config()
         if not cfg or not int(cfg.get("enabled") or 0):
             return None
+        if topic_key not in TOPICS:
+            raise ValueError(f"Unknown Group Ops topic: {topic_key}")
+
+        chat_id = int(cfg["chat_id"])
         topics = await self.topics()
-        topic = topics.get(topic_key)
-        if not topic:
-            return None
-        return int(cfg["chat_id"]), int(topic["thread_id"])
+        current = topics.get(topic_key)
+        if current and not recreate:
+            return chat_id, int(current["thread_id"])
+
+        created = await bot.create_forum_topic(chat_id=chat_id, name=TOPICS[topic_key])
+        thread_id = int(created.message_thread_id)
+        await self._upsert_topic(topic_key, TOPICS[topic_key], thread_id)
+        logger.info("Group Ops topic ready: %s -> %s", topic_key, thread_id)
+        return chat_id, thread_id
+
+    @staticmethod
+    def _is_stale_topic_error(exc: Exception) -> bool:
+        if not isinstance(exc, TelegramBadRequest):
+            return False
+        value = str(exc).lower()
+        return any(token in value for token in (
+            "message thread not found",
+            "message_thread_id",
+            "topic closed",
+            "topic_deleted",
+            "topic deleted",
+        ))
+
+    async def _fallback_text(self, bot, chat_id: int, topic_key: str, text: str, reply_markup=None) -> bool:
+        try:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=f"⚠️ <b>{escape(TOPICS.get(topic_key, topic_key))}</b>\n\n{text}",
+                reply_markup=reply_markup,
+            )
+            return True
+        except Exception as exc:
+            logger.error("Group Ops fallback text failed (%s): %s", topic_key, exc)
+            return False
+
+    async def _fallback_photo(self, bot, chat_id: int, topic_key: str, file_id: str, caption: str, reply_markup=None) -> bool:
+        try:
+            await bot.send_photo(
+                chat_id=chat_id,
+                photo=file_id,
+                caption=f"⚠️ <b>{escape(TOPICS.get(topic_key, topic_key))}</b>\n\n{caption}",
+                reply_markup=reply_markup,
+            )
+            return True
+        except Exception as exc:
+            logger.error("Group Ops fallback photo failed (%s): %s", topic_key, exc)
+            return False
 
     async def send_text(self, bot, topic_key: str, text: str, *, reply_markup=None) -> bool:
-        target = await self._target(topic_key)
+        target = await self.ensure_topic(bot, topic_key)
         if not target:
+            logger.warning("Group Ops is not configured; dropped text event for %s", topic_key)
             return False
         chat_id, thread_id = target
         try:
@@ -185,12 +251,25 @@ class GroupOpsService:
             )
             return True
         except Exception as exc:
-            logger.warning("Group ops send_text failed (%s): %s", topic_key, exc)
-            return False
+            logger.warning("Group Ops send_text failed (%s/%s): %s", topic_key, thread_id, exc)
+            if self._is_stale_topic_error(exc):
+                try:
+                    chat_id, thread_id = await self.ensure_topic(bot, topic_key, recreate=True)
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        message_thread_id=thread_id,
+                        text=text,
+                        reply_markup=reply_markup,
+                    )
+                    return True
+                except Exception as retry_exc:
+                    logger.warning("Group Ops topic repair failed (%s): %s", topic_key, retry_exc)
+            return await self._fallback_text(bot, chat_id, topic_key, text, reply_markup)
 
     async def send_photo(self, bot, topic_key: str, file_id: str, *, caption: str, reply_markup=None) -> bool:
-        target = await self._target(topic_key)
+        target = await self.ensure_topic(bot, topic_key)
         if not target:
+            logger.warning("Group Ops is not configured; dropped photo event for %s", topic_key)
             return False
         chat_id, thread_id = target
         try:
@@ -203,8 +282,21 @@ class GroupOpsService:
             )
             return True
         except Exception as exc:
-            logger.warning("Group ops send_photo failed (%s): %s", topic_key, exc)
-            return False
+            logger.warning("Group Ops send_photo failed (%s/%s): %s", topic_key, thread_id, exc)
+            if self._is_stale_topic_error(exc):
+                try:
+                    chat_id, thread_id = await self.ensure_topic(bot, topic_key, recreate=True)
+                    await bot.send_photo(
+                        chat_id=chat_id,
+                        message_thread_id=thread_id,
+                        photo=file_id,
+                        caption=caption,
+                        reply_markup=reply_markup,
+                    )
+                    return True
+                except Exception as retry_exc:
+                    logger.warning("Group Ops topic repair failed (%s): %s", topic_key, retry_exc)
+            return await self._fallback_photo(bot, chat_id, topic_key, file_id, caption, reply_markup)
 
     async def claim_event(self, event_key: str) -> bool:
         """Return True only once for a stable event key."""
