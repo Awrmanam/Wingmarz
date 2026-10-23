@@ -97,6 +97,19 @@ class OrderKycGate:
         )
         return True
 
+    async def has_waiting_order(self, user_id: int) -> bool:
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            async with conn.execute(
+                """
+                SELECT 1 FROM orders
+                WHERE user_id=? AND status='paid_awaiting_kyc'
+                LIMIT 1
+                """,
+                (int(user_id),),
+            ) as cur:
+                return await cur.fetchone() is not None
+
     async def release_after_kyc(self, user_id: int, reviewer_id: int) -> list[dict[str, Any]]:
         """Return paid orders to submitted state after identity approval."""
         await self.ensure_schema()
