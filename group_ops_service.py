@@ -404,8 +404,17 @@ class GroupOpsService:
         text = re.sub(r"\b(?:\d[ -]*?){16}\b", "[CARD-REDACTED]", text)
         return text[:3500]
 
-    async def report_error(self, bot, exc: BaseException, *, context: str | None = None) -> bool:
+    async def report_error(
+        self,
+        bot,
+        exc: BaseException,
+        *,
+        context: str | None = None,
+        traceback_text: str | None = None,
+    ) -> bool:
         context_line = f"\n📍 {escape(context)}" if context else ""
+        trace = self.redact_error(traceback_text or "")
+        trace_block = f"\n\n<pre>{escape(trace[-2500:])}</pre>" if trace else ""
         return await self.send_text(
             bot,
             "errors",
@@ -413,6 +422,7 @@ class GroupOpsService:
                 "🐞 <b>خطای Wingmarz</b>"
                 f"{context_line}\n\n"
                 f"<code>{escape(self.redact_error(repr(exc)))}</code>"
+                f"{trace_block}"
             ),
         )
 
