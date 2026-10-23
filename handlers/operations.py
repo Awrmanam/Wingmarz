@@ -19,6 +19,7 @@ from database import db
 from operations_service import DiscountQuote, OperationsError, operations_service
 from style_engine import style_engine
 from group_ops_service import group_ops_service
+from order_kyc_gate import order_kyc_gate
 
 
 operations_router = Router(name="operations")
@@ -719,6 +720,13 @@ async def _create_checkout_order(callback: CallbackQuery | _MessageCheckoutAdapt
             )
     except Exception:
         pass
+    current_order = await db.get_order_by_id(order_id)
+    kyc_needed = await order_kyc_gate.requires_kyc(current_order or {
+        "id": order_id,
+        "user_id": callback.from_user.id,
+        "order_type": "purchase",
+    })
+
     if quote:
         try:
             await operations_service.record_redemption(quote, callback.from_user.id, order_id)
@@ -752,6 +760,14 @@ async def _create_checkout_order(callback: CallbackQuery | _MessageCheckoutAdapt
     lines = [
         f"✅ سفارش ثبت شد.\n\nپلن: {escape(plan.name)}{discount_lines}\nقیمت نهایی: <b>{final_price:,} تومان</b>\n",
         config.MESSAGES["public_payment_instructions"],
+        "",
+        (
+            "🪪 <b>قبل از صدور:</b> بعد از تأیید پرداخت باید احراز هویت را تکمیل کنید. "
+            "پرداخت شما محفوظ می‌ماند و تا تأیید KYC هیچ پنلی صادر نمی‌شود. "
+            "در صورت رد یا تکمیل‌نشدن KYC، سفارش وارد صف استرداد می‌شود."
+            if kyc_needed else
+            "✅ هویت شما قبلاً تأیید شده؛ بعد از تأیید پرداخت، سفارش وارد مرحله صدور می‌شود."
+        ),
         "",
         "کارت‌های فعال:",
     ]
