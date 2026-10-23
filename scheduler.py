@@ -271,6 +271,8 @@ class MonitoringScheduler:
             from group_ops_service import group_ops_service
 
             expired = await order_kyc_gate.expire_stale(48)
+            from payg_kyc_gate import payg_kyc_gate
+            expired_payg = await payg_kyc_gate.expire_stale(48)
             for order in expired:
                 order_id = int(order["id"])
                 user_id = int(order["user_id"])
@@ -290,6 +292,30 @@ class MonitoringScheduler:
                     (
                         "↩️ <b>استرداد به‌دلیل عدم تکمیل KYC</b>\n\n"
                         f"🧾 سفارش: <code>#{order_id}</code>\n"
+                        f"👤 <code>{user_id}</code>\n"
+                        f"💵 <b>{amount:,}</b> تومان\n"
+                        "⏱ مهلت KYC: ۴۸ ساعت"
+                    ),
+                )
+            for topup in expired_payg:
+                topup_id = int(topup["id"])
+                user_id = int(topup["user_id"])
+                amount = int(topup.get("amount_toman") or 0)
+                try:
+                    await self.bot.send_message(
+                        user_id,
+                        "⌛ <b>مهلت KYC پرداخت PAYG پایان یافت.</b>\n\n"
+                        f"شناسه: <code>PAYG-{topup_id}</code>\n"
+                        "پنل ساخته نشده و پرداخت برای بررسی استرداد وجه به مدیریت ارجاع شد.",
+                    )
+                except Exception:
+                    pass
+                await group_ops_service.send_text(
+                    self.bot,
+                    "payments",
+                    (
+                        "↩️ <b>استرداد PAYG به‌دلیل عدم تکمیل KYC</b>\n\n"
+                        f"🧾 PAYG: <code>#{topup_id}</code>\n"
                         f"👤 <code>{user_id}</code>\n"
                         f"💵 <b>{amount:,}</b> تومان\n"
                         "⏱ مهلت KYC: ۴۸ ساعت"
