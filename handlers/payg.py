@@ -11,6 +11,7 @@ import config
 from database import db
 from payg_service import PaygError, PaygInsufficientFunds, payg_service
 from group_ops_service import group_ops_service
+from group_ops_events import mirror_payg_receipt
 from trust_service import trust_service
 from utils.rebecca import credential_message
 
@@ -289,27 +290,19 @@ async def payg_receipt_received(message: Message, state: FSMContext):
         InlineKeyboardButton(text="✅ تأیید شارژ", callback_data=f"paygadmin:approve:{topup_id}"),
         InlineKeyboardButton(text="❌ رد", callback_data=f"paygadmin:reject:{topup_id}"),
     ]])
-    trusted = await trust_service.is_identity_approved(message.from_user.id)
-    auto_enabled = await trust_service.auto_approve_enabled(message.from_user.id)
+    await mirror_payg_receipt(
+        message.bot,
+        topup=topup,
+        topup_id=topup_id,
+        user=message.from_user,
+        file_id=file_id,
+        reply_markup=kb,
+    )
     caption = (
         f"🧾 شارژ PAYG #{topup_id}\n"
         f"کاربر: <code>{message.from_user.id}</code>\n"
-        f"Username: {('@' + escape(message.from_user.username)) if message.from_user.username else '—'}\n"
-        f"مبلغ: <b>{_money(int(topup['amount_toman']))}</b>\n"
-        f"نوع: {escape(str(topup['purpose']))}\n"
-        f"🪪 Identity: <b>{'تأیید' if trusted else 'تأییدنشده'}</b>\n"
-        f"🤖 Auto Approve: <b>{'مجاز (نیازمند Bank Match)' if auto_enabled else 'خاموش'}</b>"
+        f"مبلغ: <b>{_money(int(topup['amount_toman']))}</b>"
     )
-    try:
-        await group_ops_service.send_photo(
-            message.bot,
-            "payments" if trusted else "unverified",
-            file_id,
-            caption=caption,
-            reply_markup=kb,
-        )
-    except Exception:
-        pass
     for sudo_id in config.SUDO_ADMINS:
         try:
             await message.bot.send_photo(sudo_id, photo=file_id, caption=caption, reply_markup=kb)
