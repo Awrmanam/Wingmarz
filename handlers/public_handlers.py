@@ -8,6 +8,8 @@ import config
 from database import db
 from utils.notify import format_traffic_size, seconds_to_days
 from group_ops_service import group_ops_service
+from group_ops_events import mirror_order_receipt
+from order_kyc_gate import order_kyc_gate
 from trust_service import trust_service
 from forced_join_service import ForcedJoinState, check_membership
 
@@ -101,11 +103,22 @@ async def public_order(callback: CallbackQuery):
     except Exception:
         pass
     price_txt = f"{plan.price:,}"
+    current_order = await db.get_order_by_id(order_id)
+    kyc_needed = await order_kyc_gate.requires_kyc(current_order or {
+        "id": order_id, "user_id": callback.from_user.id, "order_type": "purchase"
+    })
     # Show manual payment cards
     cards = await db.get_cards(only_active=True)
     lines = [
         f"✅ سفارش ثبت شد.\n\nشناسه سفارش: {order_id}\nپلن: {plan.name}\nقیمت: {price_txt} تومان\n",
         config.MESSAGES["public_payment_instructions"],
+        "",
+        (
+            "🪪 <b>توجه:</b> بعد از تأیید پرداخت، برای صدور پنل باید KYC را تکمیل کنید. "
+            "تا قبل از تأیید هویت هیچ پنلی صادر نمی‌شود و در صورت رد KYC، سفارش وارد صف استرداد می‌شود."
+            if kyc_needed else
+            "✅ هویت شما قبلاً تأیید شده و بعد از تأیید پرداخت، سفارش مستقیم وارد مرحله صدور می‌شود."
+        ),
         "",
         "کارت‌های فعال:",
     ]
@@ -210,27 +223,14 @@ async def public_receive_payment_receipt(message: Message, state: FSMContext):
         [InlineKeyboardButton(text="❌ رد", callback_data=f"order_reject_{order_id}")],
         [InlineKeyboardButton(text="🔁 تلاش دوباره صدور", callback_data=f"order_retry_{order_id}")]
     ])
-    try:
-        trusted = await trust_service.is_identity_approved(message.from_user.id)
-        auto_enabled = await trust_service.auto_approve_enabled(message.from_user.id)
-        verification = await trust_service.payment_verification(order_id)
-        bank_state = str((verification or {}).get("state") or "unverified")
-        topic = "payments" if trusted else "unverified"
-        caption = (
-            f"🧾 <b>رسید سفارش #{order_id}</b>\n"
-            f"👤 <code>{message.from_user.id}</code> "
-            f"{('@' + escape(message.from_user.username)) if message.from_user.username else ''}\n"
-            f"📦 {escape(plan.name if plan else order.get('plan_name_snapshot',''))}\n"
-            f"💵 <b>{int(order.get('price_snapshot',0)):,}</b> تومان\n"
-            f"🪪 Identity: <b>{'تأیید' if trusted else 'تأییدنشده'}</b>\n"
-            f"🤖 Auto Approve: <b>{'مجاز' if auto_enabled else 'خاموش'}</b>\n"
-            f"🏦 Bank Match: <b>{escape(bank_state)}</b>"
-        )
-        await group_ops_service.send_photo(
-            message.bot, topic, file_id, caption=caption, reply_markup=kb
-        )
-    except Exception:
-        pass
+    await mirror_order_receipt(
+        message.bot,
+        order=order,
+        user=message.from_user,
+        file_id=file_id,
+        reply_markup=kb,
+        label="سفارش",
+    )
     try:
         for sudo_id in config.SUDO_ADMINS:
             await message.bot.send_message(chat_id=sudo_id, text=text, reply_markup=kb)
