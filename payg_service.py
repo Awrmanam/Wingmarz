@@ -389,6 +389,97 @@ class PaygService:
             await conn.commit()
             return cur.rowcount == 1
 
+    async def hold_topup_for_kyc(self, topup_id: int, actor_id: int) -> dict[str, Any]:
+        """Verify payment without crediting wallet until KYC is approved."""
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("BEGIN IMMEDIATE")
+            async with conn.execute(
+                "SELECT * FROM payg_topups WHERE id=?",
+                (int(topup_id),),
+            ) as cur:
+                row = await cur.fetchone()
+            if not row:
+                await conn.rollback()
+                raise PaygError("top-up not found")
+            topup = dict(row)
+            if topup["status"] == "paid_awaiting_kyc":
+                await conn.rollback()
+                return topup
+            if topup["status"] != "submitted":
+                await conn.rollback()
+                raise PaygError("top-up is not awaiting payment approval")
+            await conn.execute(
+                """
+                UPDATE payg_topups
+                SET status='paid_awaiting_kyc',approved_by=?,updated_at=CURRENT_TIMESTAMP
+                WHERE id=? AND status='submitted'
+                """,
+                (int(actor_id), int(topup_id)),
+            )
+            await conn.commit()
+        return (await self.get_topup(topup_id)) or topup
+
+    async def list_kyc_held_topups(self, user_id: int) -> list[dict[str, Any]]:
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            async with conn.execute(
+                """
+                SELECT * FROM payg_topups
+                WHERE user_id=? AND status='paid_awaiting_kyc'
+                  AND purpose IN ('initial','initial_service')
+                ORDER BY id ASC
+                """,
+                (int(user_id),),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [dict(row) for row in rows]
+
+    async def mark_topup_refund_pending(self, topup_id: int) -> bool:
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            cur = await conn.execute(
+                """
+                UPDATE payg_topups
+                SET status='refund_pending',updated_at=CURRENT_TIMESTAMP
+                WHERE id=? AND status='paid_awaiting_kyc'
+                """,
+                (int(topup_id),),
+            )
+            await conn.commit()
+            return cur.rowcount == 1
+
+    async def expire_kyc_held_topups(self, hours: int = 48) -> list[dict[str, Any]]:
+        await self.ensure_schema()
+        hours = max(1, int(hours))
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("BEGIN IMMEDIATE")
+            async with conn.execute(
+                """
+                SELECT * FROM payg_topups
+                WHERE status='paid_awaiting_kyc'
+                  AND purpose IN ('initial','initial_service')
+                  AND updated_at <= datetime('now', ?)
+                ORDER BY updated_at ASC
+                """,
+                (f"-{hours} hours",),
+            ) as cur:
+                rows = [dict(row) for row in await cur.fetchall()]
+            for row in rows:
+                await conn.execute(
+                    """
+                    UPDATE payg_topups
+                    SET status='refund_pending',updated_at=CURRENT_TIMESTAMP
+                    WHERE id=? AND status='paid_awaiting_kyc'
+                    """,
+                    (int(row["id"]),),
+                )
+            await conn.commit()
+        return rows
+
     async def approve_topup(self, topup_id: int, actor_id: int) -> dict[str, Any]:
         """Atomically approve once and credit the wallet exactly once."""
         await self.ensure_schema()
@@ -404,7 +495,7 @@ class PaygService:
             if topup["status"] == "approved":
                 await conn.rollback()
                 return topup
-            if topup["status"] != "submitted":
+            if topup["status"] not in {"submitted", "paid_awaiting_kyc"}:
                 await conn.rollback()
                 raise PaygError("top-up is not awaiting approval")
             user_id = int(topup["user_id"])
