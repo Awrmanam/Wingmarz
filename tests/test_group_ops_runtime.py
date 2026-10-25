@@ -235,3 +235,133 @@ def test_canonical_checkout_warns_about_kyc_before_payment():
     checkout = source[start:end]
     assert "بعد از تأیید پرداخت باید احراز هویت را تکمیل کنید" in checkout
     assert "order_kyc_gate.requires_kyc" in checkout
+
+
+
+def test_start_middleware_does_not_crash_on_photo_message(monkeypatch):
+    """Regression: receipt/KYC photos have no text and must reach their FSM handlers."""
+    middleware = group_ops_middleware.GroupOpsStartMiddleware()
+    monkeypatch.setattr(
+        group_ops_middleware.group_ops_service,
+        "get_config",
+        AsyncMock(return_value={"enabled": 1, "chat_id": -1001}),
+    )
+    notify = AsyncMock(return_value=True)
+    monkeypatch.setattr(group_ops_middleware.group_ops_service, "notify_start", notify)
+
+    # Textless messages are how receipt/KYC photos enter the middleware.
+    # The regression is specifically about event.text being None.
+    event = Message(
+        message_id=88,
+        date=datetime.now(timezone.utc),
+        chat=Chat(id=42, type="private"),
+        from_user=User(id=42, is_bot=False, first_name="Buyer"),
+    )
+    handler = AsyncMock(return_value="receipt-handler-ran")
+
+    result = run(middleware(handler, event, {"bot": SimpleNamespace()}))
+
+    assert result == "receipt-handler-ran"
+    handler.assert_awaited_once()
+    notify.assert_not_awaited()
+
+
+def test_group_ops_falls_back_to_group_root_when_topic_creation_fails(tmp_path):
+    service = GroupOpsService(str(tmp_path / "ops.db"))
+
+    class FallbackBot(FakeTopicBot):
+        async def create_forum_topic(self, chat_id, name):
+            raise RuntimeError("not enough rights to manage topics")
+
+    bot = FallbackBot()
+
+    async def scenario():
+        await service.configure_group(-100555, 1)
+        ok = await service.send_text(bot, "starts", "hello")
+        assert ok is True
+        assert bot.messages
+        assert bot.messages[0]["chat_id"] == -100555
+        assert "message_thread_id" not in bot.messages[0]
+        assert "استارت‌ها" in bot.messages[0]["text"]
+
+    run(scenario())
+
+
+def test_payg_receipt_is_separate_from_kyc_topic(monkeypatch):
+    send_photo = AsyncMock(return_value=True)
+    send_text = AsyncMock(return_value=True)
+    monkeypatch.setattr(group_ops_events.group_ops_service, "send_photo", send_photo)
+    monkeypatch.setattr(group_ops_events.group_ops_service, "send_text", send_text)
+    monkeypatch.setattr(
+        group_ops_events.trust_service,
+        "is_identity_approved",
+        AsyncMock(return_value=False),
+    )
+    monkeypatch.setattr(
+        group_ops_events.trust_service,
+        "auto_approve_enabled",
+        AsyncMock(return_value=False),
+    )
+
+    run(group_ops_events.mirror_payg_receipt(
+        SimpleNamespace(),
+        topup={"user_id": 42, "amount_toman": 100000, "purpose": "wallet"},
+        topup_id=9,
+        user=SimpleNamespace(id=42, username="buyer"),
+        file_id="payg-receipt",
+    ))
+
+    assert send_photo.await_args.args[1] == "receipts"
+    assert "kyc" not in [call.args[1] for call in send_text.await_args_list]
+
+
+
+def test_public_start_reaches_real_group_ops_topic(tmp_path, monkeypatch):
+    service = GroupOpsService(str(tmp_path / "ops.db"))
+    bot = FakeTopicBot()
+    middleware = group_ops_middleware.GroupOpsStartMiddleware()
+
+    async def scenario():
+        await service.configure_group(-100777, 1)
+        monkeypatch.setattr(group_ops_middleware, "group_ops_service", service)
+        monkeypatch.setattr(
+            group_ops_middleware.db,
+            "get_admins_for_user",
+            AsyncMock(return_value=[]),
+        )
+        monkeypatch.setattr(
+            group_ops_middleware.kyc_service,
+            "status",
+            AsyncMock(return_value="not_submitted"),
+        )
+        monkeypatch.setattr(
+            group_ops_middleware.trust_service,
+            "is_manually_trusted",
+            AsyncMock(return_value=False),
+        )
+        monkeypatch.setattr(config, "SUDO_ADMINS", [999])
+
+        event = Message(
+            message_id=99,
+            date=datetime.now(timezone.utc),
+            chat=Chat(id=42, type="private"),
+            from_user=User(
+                id=42,
+                is_bot=False,
+                first_name="New",
+                last_name="Buyer",
+                username="newbuyer",
+            ),
+            text="/start",
+        )
+        handler = AsyncMock(return_value="ok")
+        result = await middleware(handler, event, {"bot": bot})
+
+        assert result == "ok"
+        assert bot.created == [(-100777, "👋 استارت‌ها")]
+        assert len(bot.messages) == 1
+        assert bot.messages[0]["message_thread_id"] == 101
+        assert "New Buyer" in bot.messages[0]["text"]
+        assert "42" in bot.messages[0]["text"]
+
+    run(scenario())

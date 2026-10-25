@@ -24,6 +24,7 @@ from style_engine import style_engine
 from utils.bold_fix_bot import BoldFixBot
 from kyc_middleware import KycGateMiddleware, KycMessageGateMiddleware
 from group_ops_middleware import GroupOpsErrorMiddleware, GroupOpsStartMiddleware
+from group_ops_service import group_ops_service
 from forced_join_service import ForcedJoinState, check_membership
 
 
@@ -59,6 +60,19 @@ class MarzbanAdminBot:
             await db.init_db()
             await style_engine.init()
             logger.info("Database and style engine initialized successfully")
+
+            # Heal Group Ops after upgrades. New topic types (for example
+            # receipts) are created automatically for an already-connected
+            # management forum, without requiring setup again.
+            try:
+                group_cfg = await group_ops_service.get_config()
+                if group_cfg and int(group_cfg.get("enabled") or 0):
+                    await group_ops_service.setup_topics(
+                        self.bot, int(group_cfg["chat_id"])
+                    )
+                    logger.info("Group Ops topics verified/extended on startup")
+            except Exception as group_exc:
+                logger.warning("Group Ops startup repair skipped: %s", group_exc)
         except Exception as e:
             logger.error(f"Failed to initialize database/style engine: {e}")
             raise

@@ -219,7 +219,7 @@ async def public_receive_payment_receipt(message: Message, state: FSMContext):
         f"عکس رسید در پیام بعدی ارسال می‌شود."
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ تایید و صدور", callback_data=f"order_approve_{order_id}")],
+        [InlineKeyboardButton(text="✅ تأیید پرداخت", callback_data=f"order_approve_{order_id}")],
         [InlineKeyboardButton(text="❌ رد", callback_data=f"order_reject_{order_id}")],
         [InlineKeyboardButton(text="🔁 تلاش دوباره صدور", callback_data=f"order_retry_{order_id}")]
     ])
