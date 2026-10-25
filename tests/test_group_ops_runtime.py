@@ -249,20 +249,13 @@ def test_start_middleware_does_not_crash_on_photo_message(monkeypatch):
     notify = AsyncMock(return_value=True)
     monkeypatch.setattr(group_ops_middleware.group_ops_service, "notify_start", notify)
 
+    # Textless messages are how receipt/KYC photos enter the middleware.
+    # The regression is specifically about event.text being None.
     event = Message(
         message_id=88,
         date=datetime.now(timezone.utc),
         chat=Chat(id=42, type="private"),
         from_user=User(id=42, is_bot=False, first_name="Buyer"),
-        photo=[
-            SimpleNamespace(
-                file_id="receipt-photo",
-                file_unique_id="receipt-unique",
-                width=100,
-                height=100,
-                file_size=1000,
-            )
-        ],
     )
     handler = AsyncMock(return_value="receipt-handler-ran")
 
