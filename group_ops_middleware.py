@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import traceback
+import logging
 from typing import Any, Awaitable, Callable
 
 from aiogram.dispatcher.middlewares.base import BaseMiddleware
@@ -11,6 +12,9 @@ from database import db
 from group_ops_service import group_ops_service
 from kyc_service import kyc_service
 from trust_service import trust_service
+
+
+logger = logging.getLogger(__name__)
 
 
 class GroupOpsStartMiddleware(BaseMiddleware):
@@ -25,7 +29,8 @@ class GroupOpsStartMiddleware(BaseMiddleware):
         try:
             if isinstance(event, Message) and event.from_user and event.chat:
                 chat_type = str(getattr(getattr(event.chat, "type", None), "value", getattr(event.chat, "type", ""))).lower()
-                command = str(event.text or "").strip().split(maxsplit=1)[0].lower()
+                raw_text = str(event.text or "").strip()
+                command = raw_text.split(maxsplit=1)[0].lower() if raw_text else ""
                 command = command.split("@", 1)[0]
                 if chat_type == "private" and command == "/start":
                     cfg = await group_ops_service.get_config()
@@ -47,16 +52,22 @@ class GroupOpsStartMiddleware(BaseMiddleware):
                             trusted = await trust_service.is_manually_trusted(user_id)
                         except Exception:
                             trusted = False
-                        await group_ops_service.notify_start(
-                            data.get("bot"),
-                            event.from_user,
-                            account_kind=account_kind,
-                            kyc_status=kyc_status,
-                            trusted=trusted,
-                        )
+                        bot = data.get("bot") or getattr(event, "bot", None)
+                        if bot is None:
+                            logger.warning("Group Ops start mirror skipped: bot instance unavailable")
+                        else:
+                            ok = await group_ops_service.notify_start(
+                                bot,
+                                event.from_user,
+                                account_kind=account_kind,
+                                kyc_status=kyc_status,
+                                trusted=trusted,
+                            )
+                            if not ok:
+                                logger.warning("Group Ops start mirror failed for user %s", user_id)
         except Exception:
-            # Observability must never block /start.
-            pass
+            # Observability must never block /start or photo/FSM messages.
+            logger.exception("Group Ops start observer failed")
         return await handler(event, data)
 
 
