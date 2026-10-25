@@ -152,7 +152,10 @@ class KycMessageGateMiddleware(BaseMiddleware):
         if event.from_user.id in config.SUDO_ADMINS:
             return await handler(event, data)
 
-        text = str(event.text or "").strip().split(maxsplit=1)[0].lower()
+        words = str(event.text or "").strip().split(maxsplit=1)
+        if not words:
+            return await handler(event, data)
+        text = words[0].lower()
         # Telegram may append @bot_username to a command.
         text = text.split("@", 1)[0]
         if text not in _PROTECTED_COMMANDS:
