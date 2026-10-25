@@ -237,7 +237,19 @@ class GroupOpsService:
             return False
 
     async def send_text(self, bot, topic_key: str, text: str, *, reply_markup=None) -> bool:
-        target = await self.ensure_topic(bot, topic_key)
+        if bot is None:
+            logger.error("Group Ops send_text called without bot (%s)", topic_key)
+            return False
+        try:
+            target = await self.ensure_topic(bot, topic_key)
+        except Exception as exc:
+            logger.warning("Group Ops target creation failed (%s): %s", topic_key, exc)
+            cfg = await self.get_config()
+            if cfg and int(cfg.get("enabled") or 0):
+                return await self._fallback_text(
+                    bot, int(cfg["chat_id"]), topic_key, text, reply_markup
+                )
+            return False
         if not target:
             logger.warning("Group Ops is not configured; dropped text event for %s", topic_key)
             return False
@@ -267,7 +279,19 @@ class GroupOpsService:
             return await self._fallback_text(bot, chat_id, topic_key, text, reply_markup)
 
     async def send_photo(self, bot, topic_key: str, file_id: str, *, caption: str, reply_markup=None) -> bool:
-        target = await self.ensure_topic(bot, topic_key)
+        if bot is None:
+            logger.error("Group Ops send_photo called without bot (%s)", topic_key)
+            return False
+        try:
+            target = await self.ensure_topic(bot, topic_key)
+        except Exception as exc:
+            logger.warning("Group Ops target creation failed (%s): %s", topic_key, exc)
+            cfg = await self.get_config()
+            if cfg and int(cfg.get("enabled") or 0):
+                return await self._fallback_photo(
+                    bot, int(cfg["chat_id"]), topic_key, file_id, caption, reply_markup
+                )
+            return False
         if not target:
             logger.warning("Group Ops is not configured; dropped photo event for %s", topic_key)
             return False
