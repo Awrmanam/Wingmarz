@@ -77,62 +77,15 @@ async def public_buy_reseller(callback: CallbackQuery):
 
 
 @public_router.callback_query(F.data.startswith("public_order_"))
-async def public_order(callback: CallbackQuery):
-    plan_id = int(callback.data.split("_")[-1])
-    plans = await db.get_plans(only_active=True)
-    plan = next((p for p in plans if p.id == plan_id), None)
-    if not plan:
-        await callback.answer("پلن یافت نشد.", show_alert=True)
-        return
-    order_id = await db.add_order(callback.from_user.id, plan_id, plan.price, plan.name)
-    if not order_id:
-        await callback.answer("خطا در ثبت سفارش.", show_alert=True)
-        return
+async def public_order(callback: CallbackQuery, state: FSMContext):
+    """Legacy button delegate; never display unverified bank cards here."""
     try:
-        if await group_ops_service.claim_event(f"order:{order_id}:created"):
-            await group_ops_service.send_text(
-                callback.bot,
-                "orders",
-                "🛒 <b>سفارش جدید</b>\n\n"
-                f"🧾 سفارش: <code>#{order_id}</code>\n"
-                f"👤 User ID: <code>{callback.from_user.id}</code>\n"
-                f"🔗 Username: {('@' + escape(callback.from_user.username)) if callback.from_user.username else '—'}\n"
-                f"📦 پلن: <b>{escape(plan.name)}</b>\n"
-                f"💵 مبلغ: <b>{int(plan.price):,}</b> تومان",
-            )
-    except Exception:
-        pass
-    price_txt = f"{plan.price:,}"
-    current_order = await db.get_order_by_id(order_id)
-    kyc_needed = await order_kyc_gate.requires_kyc(current_order or {
-        "id": order_id, "user_id": callback.from_user.id, "order_type": "purchase"
-    })
-    # Show manual payment cards
-    cards = await db.get_cards(only_active=True)
-    lines = [
-        f"✅ سفارش ثبت شد.\n\nشناسه سفارش: {order_id}\nپلن: {plan.name}\nقیمت: {price_txt} تومان\n",
-        config.MESSAGES["public_payment_instructions"],
-        "",
-        (
-            "🪪 <b>توجه:</b> بعد از تأیید پرداخت، برای صدور پنل باید KYC را تکمیل کنید. "
-            "تا قبل از تأیید هویت هیچ پنلی صادر نمی‌شود و در صورت رد KYC، سفارش وارد صف استرداد می‌شود."
-            if kyc_needed else
-            "✅ هویت شما قبلاً تأیید شده و بعد از تأیید پرداخت، سفارش مستقیم وارد مرحله صدور می‌شود."
-        ),
-        "",
-        "کارت‌های فعال:",
-    ]
-    if not cards:
-        lines.append("— فعلاً کارتی ثبت نشده. لطفاً با پشتیبانی تماس بگیرید.")
-    else:
-        for c in cards:
-            lines.append(f"• {c.get('bank_name','بانک')} | {c.get('card_number','---- ---- ---- ----')} | {c.get('holder_name','')} ")
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=config.BUTTONS["mark_paid"], callback_data=f"public_mark_paid_{order_id}")],
-        [InlineKeyboardButton(text="🔙 بازگشت", callback_data="public_back_main")]
-    ])
-    await callback.message.edit_text("\n".join(lines), reply_markup=kb)
-    await callback.answer()
+        plan_id = int((callback.data or "").split("_")[-1])
+    except (ValueError, AttributeError):
+        await callback.answer("پلن نامعتبر", show_alert=True)
+        return
+    from handlers.operations import _checkout_prompt
+    await _checkout_prompt(callback, "p", plan_id, state)
 
 
 @public_router.callback_query(F.data == "public_back_main")
@@ -186,6 +139,14 @@ async def public_mark_paid(callback: CallbackQuery, state: FSMContext):
     if not order or order.get("user_id") != callback.from_user.id or order.get("status") != "pending":
         await callback.answer("سفارش یافت نشد.", show_alert=True)
         return
+    if await order_kyc_gate.requires_kyc(order):
+        from purchase_kyc_flow import require_checkout_kyc
+        if await require_checkout_kyc(
+            callback.message, telegram_user_id=int(callback.from_user.id),
+            kind="fixed", reference_id=order_id, edit=True,
+        ):
+            await callback.answer()
+            return
     await state.update_data(order_id=order_id)
     await state.set_state(PublicPaymentStates.waiting_for_receipt)
     await callback.message.edit_text(config.MESSAGES["public_send_receipt"], reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 بازگشت", callback_data="public_back_main")]]))
