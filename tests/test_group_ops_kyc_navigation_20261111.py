@@ -25,7 +25,9 @@ def callback(*, chat_type="private", user_id=42, bot=None):
 
 def test_voluntary_kyc_available_before_any_purchase(monkeypatch):
     approved = AsyncMock(return_value=False)
-    monkeypatch.setattr(kyc.kyc_service, "is_approved", approved)
+    monkeypatch.setattr(kyc.trust_service, "is_identity_approved", approved)
+    monkeypatch.setattr(kyc.kyc_service, "status", AsyncMock(return_value="not_submitted"))
+    monkeypatch.setattr(kyc.style_engine, "render_emoji", AsyncMock(return_value="🪪"))
     cb = callback()
     state = SimpleNamespace(clear=AsyncMock(), set_state=AsyncMock())
 
@@ -40,7 +42,7 @@ def test_voluntary_kyc_available_before_any_purchase(monkeypatch):
 
 def test_kyc_document_request_is_private_only(monkeypatch):
     approved = AsyncMock(return_value=False)
-    monkeypatch.setattr(kyc.kyc_service, "is_approved", approved)
+    monkeypatch.setattr(kyc.trust_service, "is_identity_approved", approved)
     cb = callback(chat_type="supergroup")
     state = SimpleNamespace(clear=AsyncMock(), set_state=AsyncMock())
 
@@ -53,7 +55,7 @@ def test_kyc_document_request_is_private_only(monkeypatch):
 
 
 def test_approved_profile_cannot_restart_kyc_through_user_interface(monkeypatch):
-    monkeypatch.setattr(kyc.kyc_service, "is_approved", AsyncMock(return_value=True))
+    monkeypatch.setattr(kyc.trust_service, "is_identity_approved", AsyncMock(return_value=True))
     cb = callback()
     state = SimpleNamespace(clear=AsyncMock(), set_state=AsyncMock())
 
