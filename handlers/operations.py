@@ -797,6 +797,9 @@ async def render_checkout_payment(message, order: dict, *, source: str = "p") ->
         "",
         "🏦 <b>کارت‌های مقصد پرداخت</b>",
     ]
+    from purchase_kyc_flow import approved_payment_card_note
+    lines.insert(-1, await approved_payment_card_note(user_id))
+    lines.insert(-1, "")
     if not cards:
         lines.append("⚠️ فعلاً کارت پرداختی فعالی موجود نیست. از پشتیبانی راهنمایی بگیر.")
     else:
