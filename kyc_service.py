@@ -54,6 +54,17 @@ class KycService:
                     ON kyc_profiles(status);
                 """
             )
+            # Additive migration: previously approved document profiles remain
+            # level 2; no existing KYC, order or payment record is reset.
+            async with conn.execute("PRAGMA table_info(kyc_profiles)") as cur:
+                columns = {str(row[1]) for row in await cur.fetchall()}
+            for column, sql in (
+                ("verification_level", "INTEGER NOT NULL DEFAULT 2"),
+                ("card_first4", "TEXT"),
+                ("card_last4", "TEXT"),
+            ):
+                if column not in columns:
+                    await conn.execute(f"ALTER TABLE kyc_profiles ADD COLUMN {column} {sql}")
             await conn.commit()
 
     async def get_profile(self, user_id: int) -> dict[str, Any] | None:
@@ -80,6 +91,10 @@ class KycService:
         full_name: str,
         document_file_id: str,
         document_file_unique_id: str | None = None,
+        *,
+        verification_level: int = 2,
+        card_first4: str | None = None,
+        card_last4: str | None = None,
     ) -> None:
         full_name = " ".join(str(full_name or "").split()).strip()
         file_id = str(document_file_id or "").strip()
@@ -87,15 +102,28 @@ class KycService:
             raise ValueError("invalid full name")
         if not file_id:
             raise ValueError("document image is required")
+        if int(verification_level) not in {1, 2}:
+            raise ValueError("invalid identity verification level")
+        if int(verification_level) == 1:
+            if not (
+                card_first4 and card_last4
+                and len(card_first4) == 4 and len(card_last4) == 4
+                and card_first4.isascii() and card_last4.isascii()
+                and card_first4.isdigit() and card_last4.isdigit()
+            ):
+                raise ValueError("card verification requires exactly first and last four digits")
+        else:
+            card_first4, card_last4 = None, None
         await self.ensure_schema()
         async with aiosqlite.connect(self.db_path) as conn:
             await conn.execute(
                 """
                 INSERT INTO kyc_profiles(
                     user_id,full_name,document_file_id,document_file_unique_id,
-                    status,rejection_reason,submitted_at,reviewed_at,reviewed_by,updated_at
+                    status,rejection_reason,submitted_at,reviewed_at,reviewed_by,updated_at,
+                    verification_level,card_first4,card_last4
                 )
-                VALUES(?,?,?,?, 'pending', NULL, CURRENT_TIMESTAMP, NULL, NULL, CURRENT_TIMESTAMP)
+                VALUES(?,?,?,?, 'pending', NULL, CURRENT_TIMESTAMP, NULL, NULL, CURRENT_TIMESTAMP,?,?,?)
                 ON CONFLICT(user_id) DO UPDATE SET
                     full_name=excluded.full_name,
                     document_file_id=excluded.document_file_id,
@@ -105,13 +133,19 @@ class KycService:
                     submitted_at=CURRENT_TIMESTAMP,
                     reviewed_at=NULL,
                     reviewed_by=NULL,
-                    updated_at=CURRENT_TIMESTAMP
+                    updated_at=CURRENT_TIMESTAMP,
+                    verification_level=excluded.verification_level,
+                    card_first4=excluded.card_first4,
+                    card_last4=excluded.card_last4
                 """,
                 (
                     int(user_id),
                     full_name,
                     file_id,
                     str(document_file_unique_id or "").strip() or None,
+                    int(verification_level),
+                    card_first4,
+                    card_last4,
                 ),
             )
             await conn.commit()
