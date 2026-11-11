@@ -265,3 +265,14 @@ def test_expired_reseller_home_remains_available_for_renewal(monkeypatch):
     monkeypatch.setattr(home_navigation.trust_service, "is_identity_approved", AsyncMock(return_value=False))
     admin = SimpleNamespace(id=18, user_id=42, is_active=False, admin_name="Expired Panel")
     assert run(home_navigation._needs_kyc_onboarding(42, [admin])) is False
+
+
+def test_backup_scheduler_refuses_unrecoverable_password(monkeypatch):
+    from scheduler import MonitoringScheduler
+    scheduler = MonitoringScheduler(bot=None)
+    monkeypatch.setattr(config, "BACKUP_ZIP_PASSWORD", "")
+    assert scheduler.schedule_backup(1) is False
+    assert scheduler.scheduler.get_job(scheduler.backup_job_id) is None
+    monkeypatch.setattr(config, "BACKUP_ZIP_PASSWORD", "a-strong-fixed-password-123456")
+    assert scheduler.schedule_backup(1) is True
+    assert scheduler.scheduler.get_job(scheduler.backup_job_id) is not None
