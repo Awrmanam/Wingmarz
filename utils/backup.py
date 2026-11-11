@@ -189,8 +189,12 @@ def _create_backup_sync() -> BackupArtifact:
     created_at = datetime.now(timezone.utc)
     timestamp = created_at.strftime("%Y%m%d-%H%M%S-%f")
     destination = output_dir / f"wingmarz-backup-{timestamp}.zip"
-    configured_password = str(getattr(config, "BACKUP_ZIP_PASSWORD", "") or "").strip()
-    password = configured_password or secrets.token_urlsafe(18)
+    password = str(getattr(config, "BACKUP_ZIP_PASSWORD", "") or "").strip()
+    if len(password) < 16:
+        raise RuntimeError(
+            "Set BACKUP_ZIP_PASSWORD to a strong stable password (16+ characters) "
+            "in .env before enabling encrypted offsite backups"
+        )
 
     with tempfile.TemporaryDirectory(prefix="wingmarz-backup-") as temporary:
         staging = Path(temporary)
