@@ -12,7 +12,7 @@ from group_ops_service import group_ops_service
 from rebecca_api import RebeccaAPIError, rebecca_api
 
 
-PERCENT_THRESHOLDS = (70, 80, 90, 95, 100)
+PERCENT_THRESHOLDS = (80, 90, 99, 100)
 TIME_THRESHOLDS = (
     (7 * 86400, "۷ روز"),
     (3 * 86400, "۳ روز"),
@@ -107,16 +107,52 @@ async def _maybe_time_alert(bot, admin, remaining: float, body: str) -> None:
         await group_ops_service.mark_alert_state(int(admin.id), "time", remaining, previous_rank)
 
 
+async def _maybe_status_alert(bot, admin, remote_status: str) -> None:
+    """Notify on each distinct Rebecca deactivation/reactivation episode."""
+    status = str(remote_status).strip().lower()
+    if status not in {"active", "disabled"}:
+        return
+    state = await group_ops_service.get_alert_state(int(admin.id), "remote_status")
+    previous = int(state["last_rank"]) if state else 0
+    current = 1 if status == "disabled" else 0
+    if state is None and current == 0:
+        # Baseline healthy state; do not spam everyone on first scheduler tick.
+        await group_ops_service.mark_alert_state(int(admin.id), "remote_status", 0, 0)
+        return
+    if state is not None and current == previous:
+        return
+    if current:
+        sent = await _send_admin_alert(
+            bot, admin, "🔴 <b>پنل نمایندگی غیرفعال شد</b>",
+            "وضعیت Rebecca: <b>غیرفعال</b>\n"
+            "برای بررسی و تمدید، اطلاعات پنل را باز کنید.",
+        )
+    else:
+        sent = await _send_admin_alert(
+            bot, admin, "🟢 <b>پنل نمایندگی مجدداً فعال شد</b>",
+            "وضعیت Rebecca: <b>فعال</b>\n"
+            "وضعیت حجم و اعتبار خود را بررسی کنید.",
+        )
+    if sent:
+        await group_ops_service.mark_alert_state(int(admin.id), "remote_status", current, current)
+
+
 async def sync_rebecca_admin_alerts(bot) -> None:
     """Check Rebecca limits and send deduplicated alerts to user + Admins topic."""
     if config.PANEL_PROVIDER != "rebecca":
         return
-    admins = [a for a in await db.get_all_admins() if a.is_active and a.id and a.marzban_username]
+    admins = [a for a in await db.get_all_admins() if a.id and a.marzban_username]
     now = datetime.now(timezone.utc).timestamp()
     for admin in admins:
         try:
             remote = await rebecca_api.find_admin(str(admin.marzban_username))
             if not remote:
+                continue
+            remote_status = str(remote.get("status") or "").lower()
+            await _maybe_status_alert(bot, admin, remote_status)
+            # Suspended panels should receive one status event per episode,
+            # not repetitive threshold warnings at every poll.
+            if remote_status != "active":
                 continue
             usage = await rebecca_api.get_admin_usage(str(admin.marzban_username))
             data_limit = remote.get("data_limit")
@@ -129,7 +165,8 @@ async def sync_rebecca_admin_alerts(bot) -> None:
                     percent,
                     "📊 <b>هشدار حجم Admin</b>",
                     f"مصرف: <b>{_bytes(usage)} / {_bytes(data_limit)}</b>\n"
-                    f"درصد مصرف: <b>{percent:.1f}%</b>",
+                    f"درصد مصرف: <b>{percent:.1f}%</b>\n"
+                    f"حجم باقی‌مانده: <b>{_bytes(max(0, data_limit - usage))}</b>",
                 )
 
             users_limit = remote.get("users_limit")
