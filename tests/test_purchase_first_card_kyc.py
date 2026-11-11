@@ -281,3 +281,13 @@ def test_old_manual_trust_does_not_enable_payment_auto_approval(tmp_path):
         assert await svc.auto_approve_enabled(42) is False
         assert await svc.can_auto_approve(42, 10) is False
     run(scenario())
+
+
+def test_rebecca_reseller_back_button_remains_in_reseller_store(monkeypatch):
+    async def button(text, **kwargs):
+        return InlineKeyboardButton(text=text, callback_data=kwargs["callback_data"])
+    monkeypatch.setattr(checkout.style_engine, "styled_button", button)
+    keyboard = run(checkout._onboarding_keyboard(pending=False, source="a"))
+    actions = [b.callback_data for row in keyboard.inline_keyboard for b in row]
+    assert "admin_buy_reseller" in actions
+    assert "public_buy_reseller" not in actions
