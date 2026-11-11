@@ -776,8 +776,7 @@ class PaygService:
             # Only the billing engine may reverse its own suspension. Never
             # undo a manual/operator disable just because funds are available.
             payg_owned = (
-                result.old_status == "suspended"
-                or str(getattr(admin, "deactivated_reason", "") or "") == "PAYG balance exhausted"
+                str(getattr(admin, "deactivated_reason", "") or "") == "PAYG balance exhausted"
             )
             if remote_status == "disabled" and payg_owned:
                 await rebecca_api.enable_admin(admin.marzban_username)
@@ -785,9 +784,8 @@ class PaygService:
                 if not verified or str(verified.get("status") or "").lower() != "active":
                     raise PaygError("Rebecca did not confirm PAYG reactivation")
             if payg_owned and not bool(admin.is_active):
-                if remote_status == "active" or payg_owned:
-                    if not await db.reactivate_admin(int(admin.id)):
-                        raise PaygError("Local PAYG reactivation could not be persisted")
+                if not await db.reactivate_admin(int(admin.id)):
+                    raise PaygError("Local PAYG reactivation could not be persisted")
         return result
 
     async def sync_all_accounts(self) -> list[BillingResult]:
