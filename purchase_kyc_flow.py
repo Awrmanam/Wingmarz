@@ -116,6 +116,25 @@ async def _onboarding_keyboard(*, pending: bool) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+async def approved_payment_card_note(telegram_user_id: int) -> str:
+    """Show the single manually reviewed sender-card fingerprint, never a PAN."""
+    profile = await kyc_service.get_profile(int(telegram_user_id))
+    if (
+        profile and str(profile.get("status") or "") == "approved"
+        and profile.get("card_first4") and profile.get("card_last4")
+    ):
+        first4 = escape(str(profile["card_first4"]))
+        last4 = escape(str(profile["card_last4"]))
+        return (
+            f"🪪 کارت مبدأ ثبت‌شده شما: <code>{first4} •••• •••• {last4}</code>\n"
+            "لطفاً از همین کارت پرداخت کن؛ مدیر مشخصات کارت مبدأ رسید رو به‌صورت دستی تطبیق می‌ده."
+        )
+    return (
+        "✅ دسترسی به پرداخت برای حسابت تأیید شده است.\n"
+        "لطفاً از کارت بانکی متعلق به خودت واریز کن."
+    )
+
+
 async def require_checkout_kyc(
     message, *, telegram_user_id: int, kind: str, reference_id: int,
     source: str = "p", edit: bool = True,
