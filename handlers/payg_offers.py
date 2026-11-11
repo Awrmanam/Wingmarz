@@ -436,6 +436,14 @@ async def _send_payment(message: Message, topup_id: int, *, edit: bool) -> None:
             await message.answer("❌ درخواست شارژ پیدا نشد.")
         return
     service = await get_service_by_rebecca_id(int(context["service_id"]))
+    from purchase_kyc_flow import require_checkout_kyc
+    if str(topup.get("purpose") or "") == "initial_service":
+        if await require_checkout_kyc(
+            message, telegram_user_id=int(topup["user_id"]),
+            kind="paygsvc", reference_id=int(topup_id),
+            source=str(context.get("source") or "p"), edit=edit,
+        ):
+            return
     cards = await db.get_cards(only_active=True)
     kyc_needed = (
         str(topup.get("purpose") or "") == "initial_service"
