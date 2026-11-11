@@ -1,0 +1,31 @@
+name: Telegram ID Start Telemetry and Full Regression
+
+on:
+  push:
+    branches:
+      - fix/telegram-id-once-start-20261111
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.11']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pytest
+      - name: Compile Python source
+        run: python -m compileall -q bot.py handlers group_ops_service.py group_ops_middleware.py rebecca_identity_link.py
+      - name: Full test suite
+        run: timeout 300s python -m pytest -q
+      - name: Check patch formatting
+        run: git diff --check
