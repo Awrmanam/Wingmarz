@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from html import escape
+import re
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from trust_service import trust_service
+from style_engine import style_engine
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 import config
@@ -23,7 +26,24 @@ kyc_router = Router(name="kyc")
 
 class KycStates(StatesGroup):
     waiting_full_name = State()
+    waiting_card_digits = State()
     waiting_document = State()
+
+
+class ManualTrustStates(StatesGroup):
+    telegram_user_id = State()
+    revoke_telegram_user_id = State()
+
+
+def _card_digits(text: str) -> tuple[str, str] | None:
+    """Accept only eight displayed digits, never a complete 16-digit PAN."""
+    source = str(text or "").translate(str.maketrans(
+        "۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"
+    ))
+    stripped = re.sub(r"[\\s\\-]", "", source)
+    if len(stripped) != 8 or not stripped.isascii() or not stripped.isdigit():
+        return None
+    return stripped[:4], stripped[-4:]
 
 
 def _user_status_text(profile: dict | None) -> str:
@@ -116,6 +136,12 @@ async def kyc_status(callback: CallbackQuery):
     lines = [kyc_intro_text(profile, callback.from_user.id)]
     if profile and profile.get("full_name"):
         lines.append(f"نام ثبت‌شده: <b>{escape(str(profile['full_name']))}</b>")
+    if profile and profile.get("card_first4") and profile.get("card_last4"):
+        lines.append(
+            f"💳 کارت ثبت‌شده: <code>{escape(str(profile['card_first4']))} •••• •••• {escape(str(profile['card_last4']))}</code>"
+        )
+    if await trust_service.is_manually_trusted(callback.from_user.id):
+        lines.append("✅ دسترسی شما قبلاً توسط مدیر تأیید شده؛ نیازی به ارسال مدارک نیست.")
     if profile and profile.get("status") == "rejected":
         lines.append(f"دلیل رد: {escape(str(profile.get('rejection_reason') or 'مدرک قابل تأیید نبود.'))}")
     await callback.message.edit_text(
@@ -125,7 +151,7 @@ async def kyc_status(callback: CallbackQuery):
     await callback.answer()
 
 
-@kyc_router.callback_query(F.data == "kyc:start")
+@kyc_router.callback_query(F.data.in_({"kyc:start", "kyc:level:2"}))
 async def kyc_start(callback: CallbackQuery, state: FSMContext):
     # Explicit voluntary KYC is available before purchasing as well as after
     # payment. Fulfillment remains gated by order_kyc_gate until approval.
@@ -133,21 +159,24 @@ async def kyc_start(callback: CallbackQuery, state: FSMContext):
     if str(getattr(chat_type, "value", chat_type)) != "private":
         await callback.answer("مدارک هویتی را فقط در گفتگوی خصوصی ربات ارسال کنید.", show_alert=True)
         return
-    if await kyc_service.is_approved(callback.from_user.id):
-        await callback.answer("احراز هویت شما قبلاً تأیید شده است.", show_alert=True)
+    if await trust_service.is_identity_approved(callback.from_user.id):
+        await callback.answer("حسابت قبلاً تأیید شده؛ نیازی به تکرار نیست. ✅", show_alert=True)
         return
     if await kyc_service.status(callback.from_user.id) == "pending":
         await callback.answer("درخواست شما در صف بررسی است. منتظر پاسخ مدیر باشید.", show_alert=True)
         return
+    level = 2 if str(callback.data or "") == "kyc:level:2" else 1
     await state.clear()
+    await state.update_data(kyc_level=level)
     await state.set_state(KycStates.waiting_full_name)
+    header = await style_engine.render_emoji("kyc", fallback="🪪")
     await callback.message.edit_text(
-        "🪪 <b>احراز هویت · مرحله ۱ از ۳</b>\n\n"
-        "👤 <b>نام و نام خانوادگی</b>\n"
-        "نام واقعی مطابق مدرک هویتی خود را در یک پیام بفرستید.\n\n"
-        "مثال: علی رضایی\n\n"
-        "🔒 نام و تصویر فقط برای تأیید هویت توسط مدیران مجاز بررسی می‌شود.\n"
-        "برای انصراف، دکمه زیر را انتخاب کنید.",
+        f"{header} <b>تأیید حساب · مرحله ۱ از ۳</b>\n\n"
+        "خوش اومدی! فقط یک‌بار اطلاعاتت رو بررسی می‌کنیم تا خریدهای بعدی راحت‌تر باشن. 🌿\n\n"
+        "👤 <b>نام و نام خانوادگی خودت رو بفرست</b>\n"
+        "لطفاً مطابق کارت بانکی یا مدرک هویتیت بنویس.\n"
+        "نمونه: علی رضایی\n\n"
+        "🔒 اطلاعات فقط برای بررسی مدیر استفاده می‌شن. می‌تونی هر زمان انصراف بدی.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✖️ انصراف از احراز هویت", callback_data="kyc:cancel")]
         ]),
@@ -175,17 +204,52 @@ async def kyc_full_name(message: Message, state: FSMContext):
         )
         return
     await state.update_data(kyc_full_name=full_name)
+    data = await state.get_data()
+    level = int(data.get("kyc_level") or 1)
+    if level == 1:
+        await state.set_state(KycStates.waiting_card_digits)
+        await message.answer(
+            "💳 <b>مرحله ۲ از ۳ · کارت بانکی خودت</b>\n\n"
+            "ممنون! حالا فقط <b>۴ رقم اول و ۴ رقم آخر</b> کارت بانکی که ازش پرداخت می‌کنی رو بفرست.\n"
+            "مثلاً: <code>6037 1234</code>\n\n"
+            "⚠️ لطفاً شماره کامل کارت، رمز، CVV2 یا تاریخ انقضا نفرست.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="↩️ انصراف", callback_data="kyc:cancel")
+            ]]),
+        )
+    else:
+        await state.set_state(KycStates.waiting_document)
+        await message.answer(
+            "🔐 <b>مرحله ۲ از ۳ · تأیید پیشرفته</b>\n\n"
+            "یک تصویر خوانا از مدرک هویتی متعلق به خودت در همین چت خصوصی بفرست.\n"
+            "برای جلوگیری از افشای اطلاعات، مدارک اضافی نفرست.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="↩️ انصراف", callback_data="kyc:cancel")
+            ]]),
+        )
+
+
+@kyc_router.message(KycStates.waiting_card_digits, F.text)
+async def kyc_card_digits(message: Message, state: FSMContext):
+    digits = _card_digits(message.text or "")
+    if not digits:
+        await message.answer(
+            "⚠️ فقط هشت رقم لازمه: <b>۴ رقم اول و ۴ رقم آخر</b>.\n"
+            "مثال: <code>6037 1234</code>\n"
+            "شماره کامل ۱۶رقمی رو ارسال نکن."
+        )
+        return
+    await state.update_data(kyc_first4=digits[0], kyc_last4=digits[1])
     await state.set_state(KycStates.waiting_document)
     await message.answer(
-        "🪪 <b>احراز هویت · مرحله ۲ از ۳</b>\n\n"
-        "📷 <b>ارسال تصویر مدرک</b>\n"
-        "یک عکس واضح از مدرک هویتی متعلق به خودتان بفرستید.\n\n"
-        "• تصویر خوانا و بدون برش بخش‌های اصلی باشد.\n"
-        "• آن را در همین چت خصوصی به‌صورت <b>Photo</b> ارسال کنید.\n"
-        "• از ارسال عکس دیگران یا مدارک اضافی خودداری کنید.\n\n"
-        "پس از ارسال، درخواست برای بررسی مدیر ثبت می‌شود.",
+        "📷 <b>مرحله ۳ از ۳ · تصویر تأیید کارت</b>\n\n"
+        "عالیه! یک عکس از <b>همون کارت متعلق به خودت</b> بفرست، اما قبلش حتماً "
+        "<b>۸ رقم وسط شماره کارت، CVV2 و تاریخ انقضا رو کاملاً بپوشون</b>.\n\n"
+        f"فقط این الگو باید مشخص بمونه: <code>{digits[0]} •••• •••• {digits[1]}</code>\n"
+        "نام صاحب کارت هم اگر روی کارت درج شده، خوانا باشه.\n\n"
+        "تصویر صرفاً برای بررسی دستی به مدیر نمایش داده می‌شه و به‌صورت فایل در سرور ذخیره نمی‌شه.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="✖️ انصراف", callback_data="kyc:cancel")
+            InlineKeyboardButton(text="↩️ انصراف", callback_data="kyc:cancel")
         ]]),
     )
 
@@ -200,18 +264,22 @@ async def kyc_document(message: Message, state: FSMContext):
         return
     data = await state.get_data()
     full_name = str(data.get("kyc_full_name") or "").strip()
+    level = int(data.get("kyc_level") or 1)
     photo = message.photo[-1]
     await kyc_service.submit(
         message.from_user.id,
         full_name,
         photo.file_id,
         getattr(photo, "file_unique_id", None),
+        verification_level=level,
+        card_first4=str(data.get("kyc_first4") or "") if level == 1 else None,
+        card_last4=str(data.get("kyc_last4") or "") if level == 1 else None,
     )
     await state.clear()
 
     await message.answer(
-        "✅ <b>احراز هویت · مرحله ۳ از ۳</b>\n\n"
-        "🟡 <b>مدرک دریافت شد؛ منتظر بررسی مدیر</b>\n"
+        "✅ <b>درخواستت ثبت شد!</b>\n\n"
+        "🟡 <b>در انتظار بررسی دستی مدیر</b>\n"
         f"🆔 Telegram ID: <code>{int(message.from_user.id)}</code>\n\n"
         "نتیجه تأیید یا رد درخواست در همین گفتگو اطلاع‌رسانی می‌شود.\n"
         "تا آن زمان لازم نیست دوباره مدرک ارسال کنید.",
@@ -225,10 +293,12 @@ async def kyc_document(message: Message, state: FSMContext):
         InlineKeyboardButton(text="❌ رد KYC", callback_data=f"kycreview:reject:{message.from_user.id}"),
     ]])
     caption = (
-        "🪪 <b>KYC جدید</b>\n"
-        f"Telegram ID: <code>{message.from_user.id}</code>\n"
-        f"Username: {('@' + escape(message.from_user.username)) if message.from_user.username else '—'}\n"
-        f"نام: <b>{escape(full_name)}</b>"
+        f"🪪 <b>درخواست تأیید {'کارت بانکی' if level == 1 else 'هویت پیشرفته'}</b>\n"
+        f"🆔 Telegram ID: <code>{message.from_user.id}</code>\n"
+        f"🔗 یوزرنیم: {('@' + escape(message.from_user.username)) if message.from_user.username else '—'}\n"
+        f"👤 نام: <b>{escape(full_name)}</b>\n"
+        + (f"💳 کارت: <code>{escape(str(data.get('kyc_first4')))} •••• •••• {escape(str(data.get('kyc_last4')))}</code>\n" if level == 1 else "")
+        + "⚠️ برای کارت، مطمئن شوید ارقام وسط، CVV2 و انقضا پوشیده‌اند."
     )
     try:
         await group_ops_service.send_photo(
