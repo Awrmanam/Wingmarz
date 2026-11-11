@@ -102,28 +102,63 @@ class _FakeBot:
         self.messages.append(kwargs)
 
 
-def test_delivery_places_recovery_credentials_directly_below_archive(tmp_path, monkeypatch):
+def test_backup_never_exposes_any_secret_in_telegram(tmp_path, monkeypatch):
     archive = tmp_path / "backup.zip"
-    archive.write_bytes(b"test")
+    archive.write_bytes(b"encrypted-fixture")
     artifact = BackupArtifact(
         path=archive,
-        zip_password="zip<&password",
+        zip_password="long-zip-password<&confidential",
         database_password=None,
         database_engine="SQLite",
         created_at=datetime.now(timezone.utc),
         size_bytes=archive.stat().st_size,
     )
-    monkeypatch.setattr(config, "BOT_TOKEN", "bot-token")
+    monkeypatch.setattr(config, "SUDO_ADMINS", [123])
+    monkeypatch.setattr(config, "BOT_TOKEN", "bot-token-secret")
     monkeypatch.setattr(config, "MARZBAN_USERNAME", "admin")
-    monkeypatch.setattr(config, "MARZBAN_PASSWORD", "panel-password")
-    monkeypatch.setattr(config, "REBECCA_BEARER_TOKEN", "")
-    bot = _FakeBot()
+    monkeypatch.setattr(config, "MARZBAN_PASSWORD", "panel-password-secret")
+    monkeypatch.setattr(config, "REBECCA_BEARER_TOKEN", "rebecca-token-secret")
 
+    bot = _FakeBot()
     asyncio.run(send_backup_to_chat(bot, 123, artifact, automatic=True))
 
     assert bot.documents[0]["chat_id"] == 123
-    assert bot.messages[0]["reply_to_message_id"] == 77
-    assert "zip&lt;&amp;password" in bot.messages[0]["text"]
-    assert "ندارد (SQLite)" in bot.messages[0]["text"]
-    assert "bot-token" in bot.messages[0]["text"]
-    assert "panel-password" in bot.messages[0]["text"]
+    assert not bot.messages
+    caption = bot.documents[0]["caption"]
+    for secret in (
+        artifact.zip_password,
+        "bot-token-secret",
+        "panel-password-secret",
+        "rebecca-token-secret",
+    ):
+        assert secret not in caption
+    assert "رمزگذاری‌شده" in caption
+
+
+def test_backup_rejects_non_owner_and_group_recipients(tmp_path, monkeypatch):
+    archive = tmp_path / "backup.zip"
+    archive.write_bytes(b"fixture")
+    artifact = BackupArtifact(
+        path=archive, zip_password="long-password-123456",
+        database_password=None, database_engine="SQLite",
+        created_at=datetime.now(timezone.utc), size_bytes=archive.stat().st_size,
+    )
+    monkeypatch.setattr(config, "SUDO_ADMINS", [123])
+    bot = _FakeBot()
+
+    for destination in (-1001234567890, 999):
+        with pytest.raises(PermissionError):
+            asyncio.run(send_backup_to_chat(bot, destination, artifact, automatic=True))
+    assert not bot.documents
+
+
+def test_backup_requires_recoverable_strong_password(tmp_path, monkeypatch):
+    database = tmp_path / "data" / "bot_database.db"
+    _create_database(database, "sample")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(config, "DATABASE_PATH", str(database))
+    monkeypatch.setattr(config, "BACKUP_DIR", str(tmp_path / "backups"))
+    monkeypatch.setattr(config, "BACKUP_ZIP_PASSWORD", "")
+
+    with pytest.raises(RuntimeError, match="BACKUP_ZIP_PASSWORD"):
+        asyncio.run(create_backup_zip())
