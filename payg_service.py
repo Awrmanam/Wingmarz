@@ -764,12 +764,17 @@ class PaygService:
             raise PaygError("PAYG admin status cannot be verified")
 
         if result.new_status == "suspended":
+            disabled_by_payg = False
             if remote_status != "disabled":
                 await rebecca_api.disable_admin(admin.marzban_username, "PAYG balance exhausted")
                 verified = await rebecca_api.find_admin(admin.marzban_username)
                 if not verified or str(verified.get("status") or "").lower() != "disabled":
                     raise PaygError("Rebecca did not confirm PAYG suspension")
-            if bool(admin.is_active):
+                disabled_by_payg = True
+            if bool(admin.is_active) and (
+                disabled_by_payg
+                or str(getattr(admin, "deactivated_reason", "") or "") == "PAYG balance exhausted"
+            ):
                 if not await db.deactivate_admin(int(admin.id), "PAYG balance exhausted"):
                     raise PaygError("Local PAYG suspension could not be persisted")
         elif result.new_status == "active":
@@ -778,6 +783,10 @@ class PaygService:
             payg_owned = (
                 str(getattr(admin, "deactivated_reason", "") or "") == "PAYG balance exhausted"
             )
+            if remote_status == "disabled" and not payg_owned:
+                # Do not tell the user the panel has been re-enabled when
+                # an operator explicitly disabled it outside PAYG.
+                raise PaygError("Rebecca panel is manually disabled; PAYG will not override it")
             if remote_status == "disabled" and payg_owned:
                 await rebecca_api.enable_admin(admin.marzban_username)
                 verified = await rebecca_api.find_admin(admin.marzban_username)
