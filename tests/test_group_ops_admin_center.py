@@ -292,6 +292,7 @@ def test_group_ops_button_first_keyboards_are_valid():
         "gops:connect",
         "gops:repair",
         "gops:status",
+        "gops:test",
         "back_to_main",
     ]
     assert "gops:admins:0" not in callbacks
@@ -392,7 +393,6 @@ def test_canonical_operational_dashboard_is_clean_and_nonduplicated(monkeypatch)
         if item.callback_data
     ]
     assert callbacks == [
-        "gops:admins:0",
         "cc:orders:0",
         "ops:hub:panels",
         "ops:hub:sales",
