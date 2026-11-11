@@ -115,8 +115,9 @@ def kyc_entry_keyboard(profile: dict | None, *, has_admin: bool = False) -> Inli
 
 async def _status_keyboard(user_id: int) -> InlineKeyboardMarkup:
     profile = await kyc_service.get_profile(user_id)
+    manually_trusted = await trust_service.is_manually_trusted(user_id)
     rows = []
-    if not profile or profile.get("status") in {None, "rejected"}:
+    if not manually_trusted and (not profile or profile.get("status") in {None, "rejected"}):
         rows.append([InlineKeyboardButton(
             text="🪪 شروع/ارسال مجدد درخواست", callback_data="kyc:start"
         )])
@@ -321,10 +322,15 @@ async def kyc_document(message: Message, state: FSMContext):
 async def _notify_review_result(callback: CallbackQuery, user_id: int, approved: bool) -> None:
     try:
         if approved:
+            from purchase_kyc_flow import resume_keyboard
+            markup = await resume_keyboard(user_id)
             await callback.bot.send_message(
                 user_id,
-                "✅ <b>احراز هویت شما تأیید شد.</b>\n"
-                "از /start وارد حساب خود شوید.",
+                "✅ <b>حسابت تأیید شد!</b>\n\n"
+                "ممنون که مراحل رو تکمیل کردی. 🌿\n"
+                "از این به بعد برای خریدهای معمولی نیازی به تکرار این بررسی نداری.\n"
+                "اگر سفارشی منتظر پرداخت داری، از دکمه زیر همون سفارش رو ادامه بده.",
+                reply_markup=markup,
             )
         else:
             await callback.bot.send_message(
@@ -542,14 +548,86 @@ async def kyc_pending_review(callback: CallbackQuery):
         callback.from_user.id,
         profile["document_file_id"],
         caption=(
-            f"🪪 <b>بررسی KYC</b>\n"
-            f"Telegram ID: <code>{user_id}</code>\n"
-            f"نام: <b>{escape(str(profile.get('full_name') or '-'))}</b>\n"
-            f"وضعیت: <b>{_user_status_text(profile)}</b>"
+            f"🪪 <b>بررسی {'کارت بانکی' if int(profile.get('verification_level') or 2) == 1 else 'مدرک هویتی'}</b>\n"
+            f"🆔 Telegram ID: <code>{user_id}</code>\n"
+            f"👤 نام: <b>{escape(str(profile.get('full_name') or '-'))}</b>\n"
+            + (
+                f"💳 کارت: <code>{escape(str(profile.get('card_first4')))} •••• •••• {escape(str(profile.get('card_last4')))}</code>\n"
+                if profile.get("card_first4") and profile.get("card_last4") else ""
+            )
+            + f"📌 وضعیت: <b>{_user_status_text(profile)}</b>\n"
+            "⚠️ در عکس کارت، ۸ رقم وسط، CVV2 و تاریخ انقضا باید پوشیده باشند."
         ),
         reply_markup=kb,
     )
     await callback.answer()
+
+
+@kyc_router.callback_query(F.data.in_({"kycadmin:manual", "kycadmin:manualrevoke"}))
+async def manual_trust_begin(callback: CallbackQuery, state: FSMContext):
+    """Only owner accounts can authorize a past buyer by numeric Telegram ID."""
+    if int(callback.from_user.id) not in config.SUDO_ADMINS:
+        await callback.answer("این بخش فقط برای مالک ربات است.", show_alert=True)
+        return
+    revoke = str(callback.data) == "kycadmin:manualrevoke"
+    await state.clear()
+    await state.set_state(
+        ManualTrustStates.revoke_telegram_user_id if revoke else ManualTrustStates.telegram_user_id
+    )
+    await callback.message.edit_text(
+        "↩️ <b>لغو تأیید دستی کاربر</b>\n\n"
+        "آیدی عددی تلگرام کاربری که باید دوباره مراحل عادی را طی کند بفرست."
+        if revoke else
+        "✅ <b>تأیید مشتری قدیمی</b>\n\n"
+        "آیدی عددی تلگرام مشتری قابل‌اعتماد را ارسال کن.\n"
+        "او بدون ارسال مجدد عکس کارت به مرحله پرداخت می‌رسد؛ "
+        "<b>بررسی و تأیید رسید مالی همچنان اجباری است.</b>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="↩️ بازگشت", callback_data="ops:hub:customers")
+        ]]),
+    )
+    await callback.answer()
+
+
+@kyc_router.message(ManualTrustStates.telegram_user_id, F.text)
+@kyc_router.message(ManualTrustStates.revoke_telegram_user_id, F.text)
+async def manual_trust_save(message: Message, state: FSMContext):
+    if int(message.from_user.id) not in config.SUDO_ADMINS:
+        return
+    raw = str(message.text or "").strip()
+    if not raw.isascii() or not raw.isdigit() or int(raw) <= 0:
+        await message.answer("⚠️ آیدی عددی تلگرام را با ارقام انگلیسی و بدون علامت بفرست.")
+        return
+    user_id = int(raw)
+    revoke = await state.get_state() == ManualTrustStates.revoke_telegram_user_id.state
+    await trust_service.set_manual_trusted(user_id, not revoke, int(message.from_user.id))
+    await group_ops_service.audit(
+        actor_id=int(message.from_user.id),
+        action="kyc.manual_trust.revoke" if revoke else "kyc.manual_trust.approve",
+        subject_type="telegram_user",
+        subject_id=user_id,
+        new_value={"manual_trusted": not revoke},
+    )
+    await state.clear()
+    await message.answer(
+        f"{'↩️ تأیید دستی برداشته شد' if revoke else '✅ مشتری قدیمی تأیید شد'}\n"
+        f"🆔 Telegram ID: <code>{user_id}</code>\n"
+        "وضعیت KYC فقط برای همین شناسه عددی تغییر کرد. "
+        "قوانین بررسی پرداخت همچنان برقرار است."
+    )
+    if not revoke:
+        try:
+            from purchase_kyc_flow import resume_keyboard
+            await message.bot.send_message(
+                user_id,
+                "✅ <b>حسابت توسط مدیریت تأیید شد!</b>\n"
+                "از این به بعد مراحل بررسی اولیه رو تکرار نمی‌کنی.\n"
+                "اگر خرید ناتمامی داری، از دکمه زیر ادامه بده.",
+                reply_markup=await resume_keyboard(user_id),
+            )
+        except Exception:
+            # A Telegram bot cannot PM an account that never started it.
+            pass
 
 
 @kyc_router.callback_query(F.data.startswith("kycadmin:toggle:"))
