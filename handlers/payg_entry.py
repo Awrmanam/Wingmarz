@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta
 
 from aiogram import Bot, F, Router
 from aiogram.filters import Command
@@ -13,6 +14,8 @@ import config
 from panel_providers import get_panel_provider
 from payg_service import payg_service
 from payg_usage_alerts import payg_usage_alert_service
+from payg_notification_service import payg_notification_service
+from group_ops_service import group_ops_service
 
 
 logger = logging.getLogger(__name__)
@@ -141,44 +144,93 @@ async def _send_usage_alerts(bot: Bot, account_id: int) -> None:
 
 
 async def _billing_tick(bot: Bot) -> None:
+    """Reconcile Rebecca first; then issue exactly-once-per-level notifications."""
     results = await payg_service.sync_all_accounts()
+    seen_users: set[int] = set()
     for result in results:
         try:
             await _send_usage_alerts(bot, result.account_id)
         except Exception:
             logger.exception("Failed to send PAYG usage alert for account %s", result.account_id)
 
-        if result.old_status == result.new_status:
-            continue
+        # This runs for every successful reconciliation, including a panel
+        # which was already suspended before this worker was restarted.
         try:
-            if result.new_status == "suspended":
-                await bot.send_message(
-                    result.user_id,
-                    "🔴 <b>اعتبار PAYG شما تمام شد.</b>\n\n"
-                    f"بدهی مصرف ثبت‌شده: <b>{result.outstanding_toman:,} تومان</b>\n"
-                    "پنل موقتاً غیرفعال شده است. از مسیر خرید → سرویس → PAYG اعتبار را افزایش دهید.",
+            if await payg_notification_service.should_notify_status(
+                result.account_id, result.new_status
+            ):
+                if result.new_status == "suspended":
+                    user_text = (
+                        "🔴 <b>سرویس PAYG غیرفعال شد</b>\n\n"
+                        f"🆔 شناسه حساب: <code>{result.account_id}</code>\n"
+                        f"🧾 بدهی ثبت‌شده: <b>{result.outstanding_toman:,}</b> تومان\n"
+                        f"💰 موجودی فعلی: <b>{result.balance_toman:,}</b> تومان\n\n"
+                        "مصرف از Rebecca محاسبه و پنل در Rebecca غیرفعال شده است. "
+                        "برای فعال‌سازی دوباره از بخش PAYG موجودی را افزایش دهید."
+                    )
+                else:
+                    user_text = (
+                        "🟢 <b>سرویس PAYG دوباره فعال شد</b>\n\n"
+                        f"🆔 شناسه حساب: <code>{result.account_id}</code>\n"
+                        f"💰 موجودی: <b>{result.balance_toman:,}</b> تومان\n\n"
+                        "وضعیت پنل در Rebecca تأیید شد."
+                    )
+                await bot.send_message(int(result.user_id), user_text)
+                await payg_notification_service.mark_status_notified(
+                    result.account_id, result.new_status
                 )
-            elif result.old_status == "suspended" and result.new_status == "active":
-                await bot.send_message(
-                    result.user_id,
-                    "🟢 <b>پنل PAYG شما مجدداً فعال شد.</b>\n\n"
-                    f"موجودی فعلی: <b>{result.balance_toman:,} تومان</b>",
+                await group_ops_service.send_text(
+                    bot, "payments",
+                    (
+                        f"{'🔴 تعلیق' if result.new_status == 'suspended' else '🟢 فعال‌سازی مجدد'}"
+                        f" PAYG · حساب <code>#{result.account_id}</code>\n"
+                        f"🆔 Telegram ID: <code>{int(result.user_id)}</code>\n"
+                        f"💰 موجودی: <b>{result.balance_toman:,}</b> تومان"
+                    ),
                 )
         except Exception:
-            logger.exception("Failed to notify PAYG user %s", result.user_id)
+            # A failed private send remains pending and is retried next tick.
+            logger.exception("PAYG status notification failed for account %s", result.account_id)
+
+        user_id = int(result.user_id)
+        if user_id in seen_users:
+            continue
+        seen_users.add(user_id)
+        try:
+            balance = await payg_service.get_balance(user_id)
+            threshold = await payg_notification_service.due_wallet_threshold(user_id, balance)
+            if threshold is None:
+                continue
+            await bot.send_message(
+                user_id,
+                "⚠️ <b>هشدار کمبود موجودی PAYG</b>\n\n"
+                f"💰 موجودی کیف پول: <b>{balance:,}</b> تومان\n"
+                f"📉 آستانه هشدار: <b>{threshold:,}</b> تومان\n\n"
+                "برای جلوگیری از توقف سرویس، کیف پول خود را شارژ کنید. "
+                "هزینه مصرفی براساس ترافیک واقعی Rebecca محاسبه می‌شود.",
+            )
+            await payg_notification_service.mark_wallet_notified(user_id, balance)
+        except Exception:
+            logger.exception("PAYG wallet notification failed for Telegram ID %s", user_id)
 
 
 async def _start_payg_scheduler(bot: Bot) -> None:
     global _payg_scheduler
     await payg_service.ensure_schema()
     await payg_usage_alert_service.ensure_schema()
+    await payg_notification_service.ensure_schema()
     if _payg_scheduler and _payg_scheduler.running:
         return
-    interval = max(60, min(int(getattr(config, "MONITORING_INTERVAL", 600)), 300))
+    # Billing owns this single job; never duplicate it in MonitoringScheduler.
+    # A one-minute ceiling minimizes overspending between usage snapshots.
+    interval = max(30, min(int(getattr(config, "MONITORING_INTERVAL", 600)), 60))
     scheduler = AsyncIOScheduler()
     scheduler.add_job(
         _billing_tick,
-        trigger=IntervalTrigger(seconds=interval),
+        trigger=IntervalTrigger(
+            seconds=interval,
+            start_date=datetime.now() + timedelta(seconds=10),
+        ),
         args=[bot],
         id="payg_billing",
         name="PAYG Wallet Billing",
