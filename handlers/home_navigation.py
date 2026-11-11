@@ -82,6 +82,10 @@ async def _needs_kyc_onboarding(user_id: int, admins) -> bool:
     if await trust_service.is_identity_approved(int(user_id)):
         return False
     active = [admin for admin in admins if getattr(admin, "is_active", False)]
+    if admins and not active:
+        # Expired/disabled resellers must still see their renewal controls.
+        # KYC remains enforced when protected panel actions are attempted.
+        return False
     if not active:
         # Unverified shoppers should see KYC onboarding before the storefront,
         # but can browse plans without surrendering personal documents.
