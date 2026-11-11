@@ -364,7 +364,9 @@ class MonitoringScheduler:
             max_instances=1,
         )
         if config.PANEL_PROVIDER == "rebecca":
-            interval = max(60, int(config.MONITORING_INTERVAL))
+            # Sample live Rebecca quotas/expiry frequently enough for 99%
+            # warnings; this is independent of the single PAYG billing job.
+            interval = max(30, min(int(config.MONITORING_INTERVAL), 60))
             self.scheduler.add_job(
                 self.sync_group_ops_admin_alerts,
                 trigger=IntervalTrigger(
