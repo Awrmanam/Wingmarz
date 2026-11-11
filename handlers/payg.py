@@ -153,6 +153,8 @@ async def _render_payment(message: Message, topup_id: int, source: str = "p", *,
             "✅ این شارژ پس از تأیید پرداخت طبق روال عادی اعمال می‌شود."
         ),
     ]
+    from purchase_kyc_flow import approved_payment_card_note
+    lines.extend(("", await approved_payment_card_note(int(topup["user_id"])), ""))
     if cards:
         for card in cards:
             lines.append(
