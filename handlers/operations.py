@@ -79,6 +79,8 @@ HUB_MENUS = {
         "items": (
             ("cc:users:0", "لیست کاربران", "users", "👤"),
             ("kycadmin:pending", "KYCهای در انتظار", "admin", "🪪"),
+            ("kycadmin:manual", "تأیید مشتری قدیمی با آیدی عددی", "admin", "✅"),
+            ("kycadmin:manualrevoke", "لغو تأیید دستی کاربر", "admin", "↩️"),
             ("cc:tickets:0", "تیکت‌های پشتیبانی", "support", "🎫"),
             ("cc:botadmins", "ادمین‌های ربات", "admin", "🧑‍💼"),
             ("forced_join_manage", "عضویت اجباری", "settings", "📢"),
