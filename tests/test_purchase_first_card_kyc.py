@@ -213,3 +213,71 @@ def test_manual_trust_sudo_only_and_numeric_id(monkeypatch):
     message.from_user.id = 123
     run(kyc.manual_trust_save(message, state))
     save.assert_not_awaited()
+
+
+def test_checkout_resume_rejects_other_users_order(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DATABASE_PATH", str(tmp_path / "resume.db"))
+    monkeypatch.setattr(checkout.trust_service, "is_identity_approved", AsyncMock(return_value=True))
+    monkeypatch.setattr(checkout.db, "get_order_by_id", AsyncMock(
+        return_value={"id": 19, "user_id": 999, "status": "pending"}
+    ))
+    renderer = AsyncMock()
+    monkeypatch.setattr(operations, "render_checkout_payment", renderer)
+    cb = SimpleNamespace(
+        from_user=SimpleNamespace(id=42),
+        message=_message(), answer=AsyncMock(),
+    )
+
+    async def scenario():
+        await checkout.register_checkout(42, "fixed", 19, "p")
+        await checkout.checkout_resume(cb)
+
+    run(scenario())
+    renderer.assert_not_awaited()
+    assert cb.answer.await_args.kwargs["show_alert"] is True
+
+
+def test_checkout_resume_returns_to_same_paid_record_without_new_order(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DATABASE_PATH", str(tmp_path / "resume.db"))
+    monkeypatch.setattr(checkout.trust_service, "is_identity_approved", AsyncMock(return_value=True))
+    order = {
+        "id": 19, "user_id": 42, "status": "pending",
+        "price_snapshot": 12000, "plan_name_snapshot": "Gaming",
+    }
+    monkeypatch.setattr(checkout.db, "get_order_by_id", AsyncMock(return_value=order))
+    renderer = AsyncMock()
+    monkeypatch.setattr(operations, "render_checkout_payment", renderer)
+    cb = SimpleNamespace(
+        from_user=SimpleNamespace(id=42),
+        message=_message(), answer=AsyncMock(),
+    )
+
+    async def scenario():
+        await checkout.register_checkout(42, "fixed", 19, "p")
+        await checkout.checkout_resume(cb)
+
+    run(scenario())
+    renderer.assert_awaited_once_with(cb.message, order, source="p")
+    cb.answer.assert_awaited_once()
+
+
+def test_approved_kyc_notice_includes_one_click_payment_resume(monkeypatch):
+    keyboard = object()
+    monkeypatch.setattr(checkout, "resume_keyboard", AsyncMock(return_value=keyboard))
+    bot = SimpleNamespace(send_message=AsyncMock())
+    callback = SimpleNamespace(bot=bot)
+    run(kyc._notify_review_result(callback, 42, True))
+    bot.send_message.assert_awaited_once()
+    assert bot.send_message.await_args.args[0] == 42
+    assert bot.send_message.await_args.kwargs["reply_markup"] is keyboard
+    assert "تأیید شد" in bot.send_message.await_args.args[1]
+
+
+def test_old_manual_trust_does_not_enable_payment_auto_approval(tmp_path):
+    svc = TrustService(str(tmp_path / "trust.db"))
+    async def scenario():
+        await svc.set_manual_trusted(42, True, 999)
+        assert await svc.is_identity_approved(42) is True
+        assert await svc.auto_approve_enabled(42) is False
+        assert await svc.can_auto_approve(42, 10) is False
+    run(scenario())
