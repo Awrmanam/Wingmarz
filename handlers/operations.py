@@ -757,37 +757,68 @@ async def _create_checkout_order(callback: CallbackQuery | _MessageCheckoutAdapt
         await callback.answer()
         return
 
+    await render_checkout_payment(callback.message, await db.get_order_by_id(order_id), source=source)
+    await callback.answer()
+
+
+async def render_checkout_payment(message, order: dict, *, source: str = "p") -> None:
+    """The only fixed-plan bank-card renderer, guarded before card lookup."""
+    from purchase_kyc_flow import require_checkout_kyc
+
+    if not order or str(order.get("status") or "") != "pending":
+        await message.edit_text("⚠️ این سفارش دیگر در انتظار پرداخت نیست.")
+        return
+    order_id = int(order["id"])
+    user_id = int(order["user_id"])
+    if await order_kyc_gate.requires_kyc(order):
+        if await require_checkout_kyc(
+            message,
+            telegram_user_id=user_id,
+            kind="fixed",
+            reference_id=order_id,
+            source=source,
+            edit=True,
+        ):
+            return
+
     cards = await db.get_cards(only_active=True)
+    plan_name = escape(str(order.get("plan_name_snapshot") or "پنل نمایندگی"))
+    amount = int(order.get("price_snapshot") or 0)
     lines = [
-        f"✅ سفارش ثبت شد.\n\nپلن: {escape(plan.name)}{discount_lines}\nقیمت نهایی: <b>{final_price:,} تومان</b>\n",
-        config.MESSAGES["public_payment_instructions"],
+        "💳 <b>وقت پرداخت رسیده!</b>",
         "",
-        (
-            "🪪 <b>قبل از صدور:</b> بعد از تأیید پرداخت باید احراز هویت را تکمیل کنید. "
-            "پرداخت شما محفوظ می‌ماند و تا تأیید KYC هیچ پنلی صادر نمی‌شود. "
-            "در صورت رد یا تکمیل‌نشدن KYC، سفارش وارد صف استرداد می‌شود."
-            if kyc_needed else
-            "✅ هویت شما قبلاً تأیید شده؛ بعد از تأیید پرداخت، سفارش وارد مرحله صدور می‌شود."
-        ),
+        f"🧾 سفارش: <code>#{order_id}</code>",
+        f"📦 پلن: <b>{plan_name}</b>",
+        f"💰 مبلغ: <b>{amount:,}</b> تومان",
         "",
-        "کارت‌های فعال:",
+        "✅ حسابت تأیید شده؛ حالا می‌تونی مبلغ رو به یکی از کارت‌های زیر واریز کنی.",
+        "",
+        "🏦 <b>کارت‌های مقصد پرداخت</b>",
     ]
     if not cards:
-        lines.append("— فعلاً کارتی ثبت نشده. لطفاً با پشتیبانی تماس بگیرید.")
+        lines.append("⚠️ فعلاً کارت پرداختی فعالی موجود نیست. از پشتیبانی راهنمایی بگیر.")
     else:
         for card in cards:
             lines.append(
-                f"• {escape(str(card.get('bank_name','بانک')))} | "
-                f"<code>{escape(str(card.get('card_number','---- ---- ---- ----')))}</code> | "
-                f"{escape(str(card.get('holder_name','')))}"
+                f"• {escape(str(card.get('bank_name') or 'بانک'))} · "
+                f"<code>{escape(str(card.get('card_number') or '-'))}</code>\n"
+                f"  {escape(str(card.get('holder_name') or ''))}"
             )
+        lines.extend((
+            "",
+            "🧾 بعد از واریز، روی «پرداخت کردم» بزن و عکس رسید رو بفرست.",
+            "🔒 پرداخت و احراز هویت هرکدوم جداگانه بررسی می‌شن.",
+        ))
+
     back_cb = "back_to_admin_main" if source == "a" else "public_back_main"
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [await _button(config.BUTTONS["mark_paid"], f"public_mark_paid_{order_id}", fallback="✅")],
-        [await _button("بازگشت", back_cb, icon_key="back", fallback="⬅️")],
-    ])
-    await callback.message.edit_text("\n".join(lines), reply_markup=kb)
-    await callback.answer()
+    rows = []
+    if cards:
+        rows.append([await _button("پرداخت کردم · ارسال رسید", f"public_mark_paid_{order_id}", icon_key="success", fallback="✅")])
+    rows.append([await _button("بازگشت", back_cb, icon_key="back", fallback="↩️")])
+    await message.edit_text(
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
 
 
 # ---------------------------- Trial configs ----------------------------
