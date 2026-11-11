@@ -106,3 +106,31 @@ def test_group_delivery_probe_uses_nine_distinct_threads(tmp_path, monkeypatch):
     assert all(message["chat_id"] == -100555 for message in bot.sent)
     assert "9/9" in cb.message.edit_text.await_args.args[0]
     cb.answer.assert_awaited_once()
+
+
+def test_photo_review_back_opens_list_without_editing_media(monkeypatch):
+    monkeypatch.setattr(kyc.config, "SUDO_ADMINS", [42])
+    monkeypatch.setattr(kyc.kyc_service, "list_pending", AsyncMock(return_value=[]))
+    cb = callback()
+    cb.message.photo = [object()]
+    cb.message.answer = AsyncMock()
+
+    run(kyc.kyc_pending(cb))
+
+    cb.message.answer.assert_awaited_once()
+    assert "KYCهای در انتظار" in cb.message.answer.await_args.args[0]
+    cb.message.edit_text.assert_not_awaited()
+    cb.answer.assert_awaited_once()
+
+
+def test_text_kyc_pending_navigation_edits_in_place(monkeypatch):
+    monkeypatch.setattr(kyc.config, "SUDO_ADMINS", [42])
+    monkeypatch.setattr(kyc.kyc_service, "list_pending", AsyncMock(return_value=[]))
+    cb = callback()
+    cb.message.photo = None
+    cb.message.answer = AsyncMock()
+
+    run(kyc.kyc_pending(cb))
+
+    cb.message.edit_text.assert_awaited_once()
+    cb.message.answer.assert_not_awaited()
