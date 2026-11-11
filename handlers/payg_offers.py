@@ -535,6 +535,15 @@ async def service_payg_markpaid(callback: CallbackQuery, state: FSMContext):
     ):
         await callback.answer("این درخواست قابل پرداخت نیست.", show_alert=True)
         return
+    if str(topup.get("purpose") or "") == "initial_service":
+        from purchase_kyc_flow import require_checkout_kyc
+        if await require_checkout_kyc(
+            callback.message, telegram_user_id=int(callback.from_user.id),
+            kind="paygsvc", reference_id=topup_id,
+            source=str(context.get("source") or "p"), edit=True,
+        ):
+            await callback.answer()
+            return
     await state.clear()
     await state.update_data(payg_service_topup_id=topup_id)
     await state.set_state(ServicePaygUserStates.receipt)
