@@ -85,7 +85,7 @@ async def resume_keyboard(telegram_user_id: int) -> InlineKeyboardMarkup | None:
     return InlineKeyboardMarkup(inline_keyboard=[[button]])
 
 
-async def _onboarding_keyboard(*, pending: bool) -> InlineKeyboardMarkup:
+async def _onboarding_keyboard(*, pending: bool, source: str = "p") -> InlineKeyboardMarkup:
     rows = []
     if pending:
         rows.append([
@@ -109,7 +109,8 @@ async def _onboarding_keyboard(*, pending: bool) -> InlineKeyboardMarkup:
         ])
     rows.append([
         await style_engine.styled_button(
-            "بازگشت به فروشگاه", callback_data="public_buy_reseller",
+            "بازگشت به فروشگاه",
+            callback_data="admin_buy_reseller" if source == "a" else "public_buy_reseller",
             icon_key="back", fallback="↩️",
         )
     ])
@@ -169,7 +170,7 @@ async def require_checkout_kyc(
             "درخواستت در صف بررسی است. همین سفارش محفوظ می‌ماند و پس از "
             "تأیید می‌توانی پرداخت را ادامه بدهی. نیازی به ارسال دوباره نیست. 🌿"
         )
-    kb = await _onboarding_keyboard(pending=pending)
+    kb = await _onboarding_keyboard(pending=pending, source=source)
     if edit:
         await message.edit_text(msg, reply_markup=kb)
     else:
