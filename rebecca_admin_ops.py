@@ -5,6 +5,7 @@ from html import escape
 from typing import Any
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+import aiosqlite
 
 import config
 from database import db
@@ -137,11 +138,25 @@ async def _maybe_status_alert(bot, admin, remote_status: str) -> None:
         await group_ops_service.mark_alert_state(int(admin.id), "remote_status", current, current)
 
 
+async def _payg_admin_ids() -> set[int]:
+    """PAYG owns its own activation notifications; avoid duplicate alerts."""
+    try:
+        async with aiosqlite.connect(config.DATABASE_PATH) as conn:
+            async with conn.execute("SELECT admin_id FROM payg_accounts WHERE status!='migrated'") as cur:
+                return {int(row[0]) for row in await cur.fetchall()}
+    except aiosqlite.OperationalError:
+        return set()
+
+
 async def sync_rebecca_admin_alerts(bot) -> None:
     """Check Rebecca limits and send deduplicated alerts to user + Admins topic."""
     if config.PANEL_PROVIDER != "rebecca":
         return
-    admins = [a for a in await db.get_all_admins() if a.id and a.marzban_username]
+    payg_ids = await _payg_admin_ids()
+    admins = [
+        a for a in await db.get_all_admins()
+        if a.id and a.marzban_username and int(a.id) not in payg_ids
+    ]
     now = datetime.now(timezone.utc).timestamp()
     for admin in admins:
         try:
