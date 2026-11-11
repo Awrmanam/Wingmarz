@@ -206,3 +206,55 @@ def test_payg_retries_remote_suspension_when_first_attempt_fails(tmp_path, monke
         fake_db.deactivate_admin.assert_awaited_once()
 
     run(scenario())
+
+
+def test_payg_does_not_reactivate_manually_disabled_rebecca_admin(tmp_path, monkeypatch):
+    path = str(tmp_path / "manual-hold.db")
+    svc = PaygService(path)
+    admin = SimpleNamespace(
+        id=99, user_id=42, marzban_username="owner_hold",
+        is_active=False, deactivated_reason="Disabled by owner"
+    )
+    fake_db = SimpleNamespace(
+        get_admin_by_id=AsyncMock(return_value=admin),
+        deactivate_admin=AsyncMock(return_value=True),
+        reactivate_admin=AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(payg_module, "db", fake_db)
+    monkeypatch.setattr(payg_module.rebecca_api, "get_admin_usage", AsyncMock(return_value=0))
+    monkeypatch.setattr(payg_module.rebecca_api, "find_admin", AsyncMock(return_value={"status": "disabled"}))
+    enable = AsyncMock()
+    monkeypatch.setattr(payg_module.rebecca_api, "enable_admin", enable)
+
+    async def scenario():
+        await svc.credit_wallet(42, 1000, kind="seed")
+        async with aiosqlite.connect(path) as conn:
+            await conn.execute(
+                "INSERT INTO payg_accounts(user_id,admin_id,provider,status,price_per_gb_toman) "
+                "VALUES(42,99,'rebecca','suspended',10000)"
+            )
+            await conn.commit()
+        with pytest.raises(payg_module.PaygError, match="manually disabled"):
+            await svc.sync_account(1)
+        enable.assert_not_awaited()
+        fake_db.reactivate_admin.assert_not_awaited()
+
+    run(scenario())
+
+
+def test_payg_notification_failure_is_retryable(tmp_path):
+    svc = PaygNotificationService(str(tmp_path / "retry.db"))
+
+    async def scenario():
+        assert await svc.due_wallet_threshold(42, 95) == 100
+        # No mark -> transient Telegram failure, still pending.
+        assert await svc.due_wallet_threshold(42, 95) == 100
+        await svc.mark_wallet_notified(42, 95)
+        assert await svc.due_wallet_threshold(42, 95) is None
+
+        assert await svc.should_notify_status(71, "suspended") is True
+        assert await svc.should_notify_status(71, "suspended") is True
+        await svc.mark_status_notified(71, "suspended")
+        assert await svc.should_notify_status(71, "suspended") is False
+
+    run(scenario())
