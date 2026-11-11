@@ -40,7 +40,7 @@ def _card_digits(text: str) -> tuple[str, str] | None:
     source = str(text or "").translate(str.maketrans(
         "۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"
     ))
-    stripped = re.sub(r"[\\s\\-]", "", source)
+    stripped = re.sub(r"[\s-]", "", source)
     if len(stripped) != 8 or not stripped.isascii() or not stripped.isdigit():
         return None
     return stripped[:4], stripped[-4:]
