@@ -464,6 +464,8 @@ async def _send_payment(message: Message, topup_id: int, *, edit: bool) -> None:
             "✅ هویت شما تأیید شده و پس از تأیید پرداخت، شارژ/فعال‌سازی ادامه پیدا می‌کند."
         ),
     ]
+    from purchase_kyc_flow import approved_payment_card_note
+    lines.extend(("", await approved_payment_card_note(int(topup["user_id"])), ""))
     if cards:
         for card in cards:
             lines.append(
