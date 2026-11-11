@@ -58,4 +58,4 @@ def test_home_renderer_no_longer_uses_legacy_direct_keyboard_builders():
     assert "get_public_main_keyboard" not in source
     assert "await reseller_home_keyboard()" in source
     assert "await public_home_keyboard()" in source
-    assert "CommandStart(), PublicHome()" in source
+    assert "@home_navigation_router.message(CommandStart())" in source
