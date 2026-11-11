@@ -35,7 +35,7 @@ def test_voluntary_kyc_available_before_any_purchase(monkeypatch):
     state.clear.assert_awaited_once()
     state.set_state.assert_awaited_once_with(kyc.KycStates.waiting_full_name)
     cb.message.edit_text.assert_awaited_once()
-    assert "اختیاری" in cb.message.edit_text.await_args.args[0]
+    assert "مرحله ۱ از ۳" in cb.message.edit_text.await_args.args[0]
 
 
 def test_kyc_document_request_is_private_only(monkeypatch):
