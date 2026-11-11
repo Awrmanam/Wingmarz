@@ -23,7 +23,6 @@ def test_control_center_has_clean_task_sections(tmp_path, monkeypatch):
     callbacks = [button.callback_data for row in keyboard.inline_keyboard for button in row]
 
     expected_labels = [
-        "مدیریت ادمین‌ها",
         "سفارش‌های در انتظار",
         "پنل‌ها و ادمین‌ها",
         "فروش و سفارش‌ها",
@@ -36,7 +35,6 @@ def test_control_center_has_clean_task_sections(tmp_path, monkeypatch):
         assert any(label in value for value in labels)
 
     assert callbacks == [
-        "gops:admins:0",
         "cc:orders:0",
         "ops:hub:panels",
         "ops:hub:sales",
