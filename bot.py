@@ -28,14 +28,14 @@ from group_ops_service import group_ops_service
 from forced_join_service import ForcedJoinState, check_membership
 
 
-# Configure logging
+# The production systemd unit captures stdout/stderr in journald.
+# Never open the tracked 'bot.log' at import time: Git updates can recreate
+# that file as root while Wingmarz runs as an unprivileged service user,
+# causing PermissionError before the bot starts polling.
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('bot.log'),
-        logging.StreamHandler(sys.stdout)
-    ]
+    handlers=[logging.StreamHandler(sys.stdout)],
 )
 
 logger = logging.getLogger(__name__)
