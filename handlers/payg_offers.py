@@ -437,13 +437,12 @@ async def _send_payment(message: Message, topup_id: int, *, edit: bool) -> None:
         return
     service = await get_service_by_rebecca_id(int(context["service_id"]))
     from purchase_kyc_flow import require_checkout_kyc
-    if str(topup.get("purpose") or "") == "initial_service":
-        if await require_checkout_kyc(
-            message, telegram_user_id=int(topup["user_id"]),
-            kind="paygsvc", reference_id=int(topup_id),
-            source=str(context.get("source") or "p"), edit=edit,
-        ):
-            return
+    if await require_checkout_kyc(
+        message, telegram_user_id=int(topup["user_id"]),
+        kind="paygsvc", reference_id=int(topup_id),
+        source=str(context.get("source") or "p"), edit=edit,
+    ):
+        return
     cards = await db.get_cards(only_active=True)
     kyc_needed = (
         str(topup.get("purpose") or "") == "initial_service"
@@ -537,15 +536,14 @@ async def service_payg_markpaid(callback: CallbackQuery, state: FSMContext):
     ):
         await callback.answer("این درخواست قابل پرداخت نیست.", show_alert=True)
         return
-    if str(topup.get("purpose") or "") == "initial_service":
-        from purchase_kyc_flow import require_checkout_kyc
-        if await require_checkout_kyc(
-            callback.message, telegram_user_id=int(callback.from_user.id),
-            kind="paygsvc", reference_id=topup_id,
-            source=str(context.get("source") or "p"), edit=True,
-        ):
-            await callback.answer()
-            return
+    from purchase_kyc_flow import require_checkout_kyc
+    if await require_checkout_kyc(
+        callback.message, telegram_user_id=int(callback.from_user.id),
+        kind="paygsvc", reference_id=topup_id,
+        source=str(context.get("source") or "p"), edit=True,
+    ):
+        await callback.answer()
+        return
     await state.clear()
     await state.update_data(payg_service_topup_id=topup_id)
     await state.set_state(ServicePaygUserStates.receipt)
