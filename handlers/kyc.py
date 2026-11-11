@@ -46,10 +46,16 @@ async def _home_callback(user_id: int) -> str:
 
 
 async def _status_keyboard(user_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🪪 شروع/ارسال مجدد KYC", callback_data="kyc:start")],
-        [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data=await _home_callback(user_id))],
-    ])
+    profile = await kyc_service.get_profile(user_id)
+    rows = []
+    if not profile or profile.get("status") != "approved":
+        rows.append([InlineKeyboardButton(
+            text="🪪 شروع/اصلاح درخواست KYC", callback_data="kyc:start"
+        )])
+    rows.append([InlineKeyboardButton(
+        text=config.BUTTONS["back"], callback_data=await _home_callback(user_id)
+    )])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 @kyc_router.callback_query(F.data == "kyc:status")
@@ -73,22 +79,23 @@ async def kyc_status(callback: CallbackQuery):
 
 @kyc_router.callback_query(F.data == "kyc:start")
 async def kyc_start(callback: CallbackQuery, state: FSMContext):
-    if callback.from_user.id not in config.SUDO_ADMINS:
-        admins = await db.get_admins_for_user(callback.from_user.id)
-        has_paid_order = await order_kyc_gate.has_waiting_order(callback.from_user.id)
-        has_paid_payg = await payg_kyc_gate.has_waiting(callback.from_user.id)
-        if not admins and not has_paid_order and not has_paid_payg:
-            await callback.answer(
-                "برای این حساب پنل یا سفارش پرداخت‌شده منتظر KYC وجود ندارد.",
-                show_alert=True,
-            )
-            return
+    # Explicit voluntary KYC is available before purchasing as well as after
+    # payment. Fulfillment remains gated by order_kyc_gate until approval.
+    chat_type = getattr(getattr(callback.message, "chat", None), "type", "private")
+    if str(getattr(chat_type, "value", chat_type)) != "private":
+        await callback.answer("مدارک هویتی را فقط در گفتگوی خصوصی ربات ارسال کنید.", show_alert=True)
+        return
+    if await kyc_service.is_approved(callback.from_user.id):
+        await callback.answer("احراز هویت شما قبلاً تأیید شده است.", show_alert=True)
+        return
     await state.clear()
     await state.set_state(KycStates.waiting_full_name)
     await callback.message.edit_text(
         "🪪 <b>احراز هویت</b>\n\n"
         "نام و نام خانوادگی کامل صاحب پنل را ارسال کنید.\n\n"
-        "برای حفظ حریم خصوصی، شماره مدرک به‌صورت جداگانه از شما دریافت نمی‌شود.",
+        "ارسال مدارک اختیاری است تا زمانی که سفارش نیازمند احراز هویت داشته باشید.\n"
+        "تصویر برای بررسی به مدیران مجاز ربات ارسال می‌شود؛ فقط شناسه فایل تلگرام در دیتابیس ذخیره می‌شود.\n"
+        "برای لغو، دکمه زیر را بزنید.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text=config.BUTTONS["cancel"], callback_data="kyc:cancel")]
         ]),
@@ -363,7 +370,7 @@ async def kyc_pending(callback: CallbackQuery):
                 callback_data=f"kycadmin:review:{item['user_id']}",
             )
         ])
-    rows.append([InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="sudo_manage_admins")])
+    rows.append([InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="ops:hub:customers")])
     await callback.message.edit_text(
         f"🪪 <b>KYCهای در انتظار</b>\n\nتعداد: <b>{len(pending)}</b>",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
@@ -418,7 +425,7 @@ async def kyc_admin_toggle(callback: CallbackQuery):
         f"✅ سیاست KYC پنل تغییر کرد.\n\nوضعیت جدید: <b>{new_text}</b>",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔙 بازگشت به پنل", callback_data=f"manage_panel_{admin_id}")],
-            [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="sudo_manage_admins")],
+            [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="ops:hub:panels")],
         ]),
     )
     await callback.answer()
