@@ -242,8 +242,10 @@ def test_canonical_checkout_warns_about_kyc_before_payment():
     start = source.index("async def _create_checkout_order")
     end = source.index("# ---------------------------- Trial configs", start)
     checkout = source[start:end]
-    assert "بعد از تأیید پرداخت باید احراز هویت را تکمیل کنید" in checkout
+    assert "render_checkout_payment" in checkout
     assert "order_kyc_gate.requires_kyc" in checkout
+    assert "require_checkout_kyc" in checkout
+    assert checkout.index("require_checkout_kyc") < checkout.index("db.get_cards")
 
 
 

@@ -6,6 +6,7 @@ from typing import Any
 
 from group_ops_service import group_ops_service
 from trust_service import trust_service
+from kyc_service import kyc_service
 
 
 logger = logging.getLogger(__name__)
@@ -14,6 +15,27 @@ logger = logging.getLogger(__name__)
 def _username(user: Any) -> str:
     value = getattr(user, "username", None)
     return f"@{escape(str(value))}" if value else "—"
+
+
+async def _approved_card_review_note(user_id: int) -> str:
+    try:
+        profile = await kyc_service.get_profile(int(user_id))
+    except Exception as exc:
+        logger.warning("Card-review note unavailable for Telegram ID %s: %s", user_id, type(exc).__name__)
+        return "💳 کارت مبدأ ثبت‌شده: نامشخص؛ بررسی دستی الزامی است\n"
+    if (
+        profile and profile.get("status") == "approved"
+        and profile.get("card_first4") and profile.get("card_last4")
+    ):
+        card = (
+            f"{escape(str(profile['card_first4']))} •••• •••• "
+            f"{escape(str(profile['card_last4']))}"
+        )
+        return (
+            f"💳 <b>کارت مبدأ ثبت‌شده:</b> <code>{card}</code>\n"
+            "⚠️ هنگام بررسی رسید، کارت مبدأ را تطبیق دهید؛ ۸ رقم به‌تنهایی اثبات مالکیت نیست.\n"
+        )
+    return "💳 کارت مبدأ ثبت‌شده: — (تأیید مدیریتی یا مدرک دیگر)\n"
 
 
 async def mirror_order_receipt(
@@ -38,6 +60,7 @@ async def mirror_order_receipt(
     bank_state = str((verification or {}).get("state") or "unverified")
     plan_name = escape(str(order.get("plan_name_snapshot") or label))
     amount = int(order.get("price_snapshot") or 0)
+    card_note = await _approved_card_review_note(user_id)
 
     caption = (
         f"🧾 <b>رسید {escape(label)} #{order_id}</b>\n\n"
@@ -46,7 +69,8 @@ async def mirror_order_receipt(
         f"💵 <b>{amount:,}</b> تومان\n"
         f"🪪 هویت: <b>{'تأیید' if trusted else 'تأییدنشده'}</b>\n"
         f"🤖 Auto Approve: <b>{'مجاز' if auto_enabled else 'خاموش'}</b>\n"
-        f"🏦 Bank Match: <b>{escape(bank_state)}</b>"
+        f"🏦 Bank Match: <b>{escape(bank_state)}</b>\n"
+        f"{card_note}"
     )
     photo_ok = await group_ops_service.send_photo(
         bot,
@@ -98,6 +122,7 @@ async def mirror_payg_receipt(
     trusted = await trust_service.is_identity_approved(user_id)
     auto_enabled = await trust_service.auto_approve_enabled(user_id)
     amount = int(topup.get("amount_toman") or 0)
+    card_note = await _approved_card_review_note(user_id)
 
     caption = (
         f"🧾 <b>رسید شارژ PAYG #{int(topup_id)}</b>\n\n"
@@ -105,7 +130,8 @@ async def mirror_payg_receipt(
         f"💵 <b>{amount:,}</b> تومان\n"
         f"نوع: {escape(str(topup.get('purpose') or 'wallet'))}\n"
         f"🪪 هویت: <b>{'تأیید' if trusted else 'تأییدنشده'}</b>\n"
-        f"🤖 Auto Approve: <b>{'مجاز' if auto_enabled else 'خاموش'}</b>"
+        f"🤖 Auto Approve: <b>{'مجاز' if auto_enabled else 'خاموش'}</b>\n"
+        f"{card_note}"
     )
     photo_ok = await group_ops_service.send_photo(
         bot,

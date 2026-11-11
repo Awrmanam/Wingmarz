@@ -436,6 +436,13 @@ async def _send_payment(message: Message, topup_id: int, *, edit: bool) -> None:
             await message.answer("❌ درخواست شارژ پیدا نشد.")
         return
     service = await get_service_by_rebecca_id(int(context["service_id"]))
+    from purchase_kyc_flow import require_checkout_kyc
+    if await require_checkout_kyc(
+        message, telegram_user_id=int(topup["user_id"]),
+        kind="paygsvc", reference_id=int(topup_id),
+        source=str(context.get("source") or "p"), edit=edit,
+    ):
+        return
     cards = await db.get_cards(only_active=True)
     kyc_needed = (
         str(topup.get("purpose") or "") == "initial_service"
@@ -456,6 +463,8 @@ async def _send_payment(message: Message, topup_id: int, *, edit: bool) -> None:
             "✅ هویت شما تأیید شده و پس از تأیید پرداخت، شارژ/فعال‌سازی ادامه پیدا می‌کند."
         ),
     ]
+    from purchase_kyc_flow import approved_payment_card_note
+    lines.extend(("", await approved_payment_card_note(int(topup["user_id"])), ""))
     if cards:
         for card in cards:
             lines.append(
@@ -526,6 +535,14 @@ async def service_payg_markpaid(callback: CallbackQuery, state: FSMContext):
         or topup["status"] != "pending"
     ):
         await callback.answer("این درخواست قابل پرداخت نیست.", show_alert=True)
+        return
+    from purchase_kyc_flow import require_checkout_kyc
+    if await require_checkout_kyc(
+        callback.message, telegram_user_id=int(callback.from_user.id),
+        kind="paygsvc", reference_id=topup_id,
+        source=str(context.get("source") or "p"), edit=True,
+    ):
+        await callback.answer()
         return
     await state.clear()
     await state.update_data(payg_service_topup_id=topup_id)

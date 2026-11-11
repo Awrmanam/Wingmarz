@@ -22,44 +22,40 @@ def _message():
     return SimpleNamespace(answer=AsyncMock(), edit_text=AsyncMock())
 
 
-def test_new_public_account_is_directed_to_kyc_on_start(monkeypatch):
+def test_new_public_account_sees_store_before_kyc(monkeypatch):
     monkeypatch.setattr(config, "SUDO_ADMINS", [999])
     monkeypatch.setattr(home_navigation.db, "get_admins_for_user", AsyncMock(return_value=[]))
-    monkeypatch.setattr(home_navigation.trust_service, "is_identity_approved", AsyncMock(return_value=False))
-    monkeypatch.setattr(home_navigation.kyc_service, "get_profile", AsyncMock(return_value=None))
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="Buy", callback_data="public_buy_reseller")
+    ]])
+    monkeypatch.setattr(home_navigation, "public_home_keyboard", AsyncMock(return_value=keyboard))
     msg = _message()
 
     run(home_navigation.render_home(msg, 42, edit=False))
 
-    text = msg.answer.await_args.args[0]
-    markup = msg.answer.await_args.kwargs["reply_markup"]
-    callbacks = [button.callback_data for row in markup.inline_keyboard for button in row]
-    assert "مرحله" not in text  # Short overview, then detailed numbered stages
-    assert "مراحل احراز هویت" in text
-    assert "<code>42</code>" in text
-    assert "kyc:start" in callbacks
-    assert "public_buy_reseller" in callbacks
+    home_navigation.public_home_keyboard.assert_awaited_once()
+    assert "احراز هویت" not in msg.answer.await_args.args[0]
+    assert msg.answer.await_args.kwargs["reply_markup"] is keyboard
 
 
-def test_kyc_is_required_for_unverified_existing_rebecca_admin(monkeypatch):
+def test_existing_rebecca_reseller_sees_home_before_checkout(monkeypatch):
     monkeypatch.setattr(config, "SUDO_ADMINS", [999])
     monkeypatch.setattr(home_navigation.db, "get_admins_for_user", AsyncMock(
         return_value=[SimpleNamespace(id=12, user_id=42, is_active=True)]
     ))
-    monkeypatch.setattr(home_navigation.trust_service, "is_identity_approved", AsyncMock(return_value=False))
-    monkeypatch.setattr(home_navigation.kyc_service, "is_required", AsyncMock(return_value=True))
-    monkeypatch.setattr(home_navigation.kyc_service, "get_profile", AsyncMock(return_value=None))
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="Renew", callback_data="admin_renew")
+    ]])
+    monkeypatch.setattr(home_navigation, "_admin_home_text", AsyncMock(return_value="welcome"))
+    monkeypatch.setattr(home_navigation, "reseller_home_keyboard", AsyncMock(return_value=keyboard))
     msg = _message()
 
     run(home_navigation.render_home(msg, 42, edit=False))
 
-    callbacks = [
-        button.callback_data
-        for row in msg.answer.await_args.kwargs["reply_markup"].inline_keyboard
-        for button in row
-    ]
-    assert callbacks[0] == "kyc:start"
-    assert "public_buy_reseller" not in callbacks
+    assert msg.answer.await_args.args[0] == "welcome"
+    assert msg.answer.await_args.kwargs["reply_markup"] is keyboard
 
 
 def test_rebecca_identity_is_refreshed_by_numeric_id_before_start_render(monkeypatch):

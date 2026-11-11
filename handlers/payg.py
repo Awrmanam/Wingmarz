@@ -118,10 +118,19 @@ async def render_payg_offer(message: Message, user_id: int, provider: str, sourc
     await message.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 
-async def _render_payment(message: Message, topup_id: int, source: str = "p") -> None:
+async def _render_payment(message: Message, topup_id: int, source: str = "p", *, edit: bool = True) -> None:
     topup = await payg_service.get_topup(topup_id)
     if not topup:
-        await message.edit_text("❌ درخواست شارژ پیدا نشد.")
+        if edit:
+            await message.edit_text("❌ درخواست شارژ پیدا نشد.")
+        else:
+            await message.answer("❌ درخواست شارژ پیدا نشد.")
+        return
+    from purchase_kyc_flow import require_checkout_kyc
+    if await require_checkout_kyc(
+        message, telegram_user_id=int(topup["user_id"]),
+        kind="payg", reference_id=int(topup_id), source=source, edit=edit,
+    ):
         return
     cards = await db.get_cards(only_active=True)
     kyc_needed = (
@@ -143,6 +152,8 @@ async def _render_payment(message: Message, topup_id: int, source: str = "p") ->
             "✅ این شارژ پس از تأیید پرداخت طبق روال عادی اعمال می‌شود."
         ),
     ]
+    from purchase_kyc_flow import approved_payment_card_note
+    lines.extend(("", await approved_payment_card_note(int(topup["user_id"])), ""))
     if cards:
         for card in cards:
             lines.append(
@@ -154,7 +165,10 @@ async def _render_payment(message: Message, topup_id: int, source: str = "p") ->
         lines.append("⚠️ فعلاً کارت پرداخت فعالی ثبت نشده است.")
     rows = [[InlineKeyboardButton(text="✅ پرداخت کردم؛ ارسال رسید", callback_data=f"payg:markpaid:{int(topup_id)}")]]
     rows.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data=_user_back(source))])
-    await message.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    if edit:
+        await message.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    else:
+        await message.answer("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 
 @payg_router.callback_query(F.data.startswith("payg:offer:"))
@@ -261,7 +275,7 @@ async def payg_amount_received(message: Message, state: FSMContext):
     )
     source = str(data.get("payg_source") or "p")
     await state.clear()
-    await _render_payment(message, topup_id, source)
+    await _render_payment(message, topup_id, source, edit=False)
 
 
 @payg_router.callback_query(F.data.startswith("payg:markpaid:"))
@@ -274,6 +288,13 @@ async def payg_mark_paid(callback: CallbackQuery, state: FSMContext):
     topup = await payg_service.get_topup(topup_id)
     if not topup or int(topup["user_id"]) != int(callback.from_user.id) or topup["status"] != "pending":
         await callback.answer("این درخواست قابل پرداخت نیست.", show_alert=True)
+        return
+    from purchase_kyc_flow import require_checkout_kyc
+    if await require_checkout_kyc(
+        callback.message, telegram_user_id=int(callback.from_user.id),
+        kind="payg", reference_id=topup_id, edit=True,
+    ):
+        await callback.answer()
         return
     await state.clear()
     await state.update_data(payg_topup_id=topup_id)
