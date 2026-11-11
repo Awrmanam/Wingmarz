@@ -420,7 +420,14 @@ class MonitoringScheduler:
 
                 artifact = await create_backup_zip()
                 failures = []
-                for chat_id in config.BACKUP_RECIPIENTS:
+                owner_ids = {int(x) for x in config.SUDO_ADMINS if int(x) > 0}
+                recipients = [
+                    int(chat_id) for chat_id in config.BACKUP_RECIPIENTS
+                    if int(chat_id) in owner_ids
+                ]
+                if not recipients:
+                    raise RuntimeError("No owner-only backup recipient is configured")
+                for chat_id in recipients:
                     try:
                         await send_backup_to_chat(
                             self.bot, chat_id, artifact, automatic=True
@@ -433,10 +440,10 @@ class MonitoringScheduler:
                 print(f"Encrypted backup delivered: {artifact.path.name}")
             except Exception as e:
                 print(f"Error creating/sending backup: {e}")
-                for chat_id in config.BACKUP_RECIPIENTS:
+                for chat_id in config.SUDO_ADMINS:
                     try:
                         await self.bot.send_message(
-                            chat_id,
+                            int(chat_id),
                             "❌ ساخت یا ارسال بکاپ خودکار ناموفق بود. لطفاً لاگ ربات را بررسی کنید.",
                         )
                     except Exception:
@@ -444,6 +451,9 @@ class MonitoringScheduler:
 
     def schedule_backup(self, hours: int | None = None):
         try:
+            if len(str(getattr(config, "BACKUP_ZIP_PASSWORD", "") or "").strip()) < 16:
+                print("Backup scheduling skipped: set a stable BACKUP_ZIP_PASSWORD (16+ chars)")
+                return False
             interval_hours = max(1, int(hours or config.BACKUP_INTERVAL_HOURS))
             job = self.scheduler.get_job(self.backup_job_id)
             if job:
