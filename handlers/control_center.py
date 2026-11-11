@@ -80,8 +80,13 @@ async def _order_count(conn: aiosqlite.Connection) -> int:
 
 async def _render_orders(message, page, category="pending"):
     orders, total, page, pages = await list_orders(category, page, PAGE_SIZE)
-    rows = [[await _button(title, f"cc:orders:{key}:0") for key, (title, _) in list(FILTERS.items())[i:i+2]]
-            for i in range(0, len(FILTERS), 2)]
+    rows = []
+    filter_items = list(FILTERS.items())
+    for i in range(0, len(filter_items), 2):
+        row = []
+        for key, (title, _) in filter_items[i:i + 2]:
+            row.append(await _button(title, f"cc:orders:{key}:0"))
+        rows.append(row)
     for order in orders:
         label = str(order.get("plan_name_snapshot") or "سفارش")[:25]
         status = STATUS_LABELS.get(order['status'], 'در حال بررسی')
