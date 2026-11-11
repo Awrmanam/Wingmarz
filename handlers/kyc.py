@@ -108,6 +108,10 @@ async def _status_keyboard(user_id: int) -> InlineKeyboardMarkup:
 
 @kyc_router.callback_query(F.data == "kyc:status")
 async def kyc_status(callback: CallbackQuery):
+    chat_type = getattr(getattr(callback.message, "chat", None), "type", "private")
+    if str(getattr(chat_type, "value", chat_type)) != "private":
+        await callback.answer("وضعیت احراز هویت فقط در گفتگوی خصوصی نمایش داده می‌شود.", show_alert=True)
+        return
     profile = await kyc_service.get_profile(callback.from_user.id)
     lines = [kyc_intro_text(profile, callback.from_user.id)]
     if profile and profile.get("full_name"):
