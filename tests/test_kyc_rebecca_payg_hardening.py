@@ -258,3 +258,10 @@ def test_payg_notification_failure_is_retryable(tmp_path):
         assert await svc.should_notify_status(71, "suspended") is False
 
     run(scenario())
+
+
+def test_expired_reseller_home_remains_available_for_renewal(monkeypatch):
+    monkeypatch.setattr(config, "SUDO_ADMINS", [999])
+    monkeypatch.setattr(home_navigation.trust_service, "is_identity_approved", AsyncMock(return_value=False))
+    admin = SimpleNamespace(id=18, user_id=42, is_active=False, admin_name="Expired Panel")
+    assert run(home_navigation._needs_kyc_onboarding(42, [admin])) is False
