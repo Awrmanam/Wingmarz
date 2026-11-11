@@ -8,6 +8,8 @@ from aiogram.types import CallbackQuery, Message
 import config
 from database import db
 from handlers.home_keyboards import public_home_keyboard, reseller_home_keyboard
+from kyc_service import kyc_service
+from trust_service import trust_service
 
 
 home_navigation_router = Router(name="home_navigation")
@@ -74,19 +76,48 @@ def _public_home_text() -> str:
     return text or str(config.MESSAGES.get("customer_home", "خوش آمدید."))
 
 
+async def _needs_kyc_onboarding(user_id: int, admins) -> bool:
+    if int(user_id) in config.SUDO_ADMINS:
+        return False
+    if await trust_service.is_identity_approved(int(user_id)):
+        return False
+    active = [admin for admin in admins if getattr(admin, "is_active", False)]
+    if admins and not active:
+        # Expired/disabled resellers must still see their renewal controls.
+        # KYC remains enforced when protected panel actions are attempted.
+        return False
+    if not active:
+        # Unverified shoppers should see KYC onboarding before the storefront,
+        # but can browse plans without surrendering personal documents.
+        return True
+    requirements = [await kyc_service.is_required(int(admin.id)) for admin in active]
+    return all(requirements)
+
+
 async def render_home(message: Message, user_id: int, *, edit: bool) -> None:
-    """Single role-aware home renderer with runtime-editable styled keyboards."""
+    """Canonical Telegram-ID-based home, with explicit KYC onboarding."""
     user_id = int(user_id)
     if user_id in config.SUDO_ADMINS:
         from handlers.operations import _edit_dashboard, _send_dashboard
-
         if edit:
             await _edit_dashboard(message)
         else:
             await _send_dashboard(message)
         return
 
-    if await has_admin_account(user_id):
+    admins = await db.get_admins_for_user(user_id)
+    if await _needs_kyc_onboarding(user_id, admins):
+        from handlers.kyc import kyc_entry_keyboard, kyc_intro_text
+        profile = await kyc_service.get_profile(user_id)
+        text = kyc_intro_text(profile, user_id)
+        markup = kyc_entry_keyboard(profile, has_admin=bool(admins))
+        if edit:
+            await message.edit_text(text, reply_markup=markup)
+        else:
+            await message.answer(text, reply_markup=markup)
+        return
+
+    if admins:
         text = await _admin_home_text(user_id)
         keyboard = await reseller_home_keyboard()
         if edit:
@@ -103,17 +134,27 @@ async def render_home(message: Message, user_id: int, *, edit: bool) -> None:
         await message.answer(text, reply_markup=keyboard)
 
 
-@home_navigation_router.message(CommandStart(), RegularAdminHome())
-async def regular_admin_start(message: Message, state: FSMContext):
+@home_navigation_router.message(CommandStart(), F.chat.type == "private")
+async def role_aware_start(message: Message, state: FSMContext):
+    """Single /start owner after sudo: sync Rebecca by numeric Telegram ID first."""
     await state.clear()
-    await render_home(message, message.from_user.id, edit=False)
-
-
-@home_navigation_router.message(CommandStart(), PublicHome())
-async def public_start(message: Message, state: FSMContext):
-    """Public /start uses the same canonical home renderer as every Back path."""
-    await state.clear()
-    await render_home(message, message.from_user.id, edit=False)
+    user_id = int(message.from_user.id)
+    if user_id not in config.SUDO_ADMINS and config.PANEL_PROVIDER == "rebecca":
+        try:
+            from rebecca_identity_link import sync_rebecca_admins_for_telegram
+            await sync_rebecca_admins_for_telegram(
+                user_id,
+                telegram_username=message.from_user.username,
+                first_name=message.from_user.first_name,
+                last_name=message.from_user.last_name,
+            )
+        except Exception:
+            # Transient Rebecca failures must not prevent the local home/KYC.
+            import logging
+            logging.getLogger(__name__).exception(
+                "Rebecca auto-link failed for Telegram ID %s", user_id
+            )
+    await render_home(message, user_id, edit=False)
 
 
 @home_navigation_router.callback_query(

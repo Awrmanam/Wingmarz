@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from html import escape
 from typing import Any
 
@@ -101,6 +102,20 @@ async def _live_panel(admin: Any) -> tuple[dict[str, Any], dict[str, Any], int]:
     return remote, snapshot, int(usage)
 
 
+def _expires_text(raw_value: Any) -> tuple[str, str]:
+    if isinstance(raw_value, bool) or not isinstance(raw_value, (float, int)) or raw_value <= 0:
+        return "نامحدود", "—"
+    expiry = datetime.fromtimestamp(float(raw_value), tz=timezone.utc)
+    remaining = max(0, int(expiry.timestamp() - datetime.now(timezone.utc).timestamp()))
+    if remaining == 0:
+        label = "منقضی شده"
+    elif remaining >= 86400:
+        label = f"{remaining // 86400} روز و {(remaining % 86400) // 3600} ساعت"
+    else:
+        label = f"{remaining // 3600} ساعت و {(remaining % 3600) // 60} دقیقه"
+    return label, expiry.strftime("%Y-%m-%d %H:%M UTC")
+
+
 async def _render_info(callback: CallbackQuery, admin: Any) -> None:
     try:
         remote, snapshot, usage = await _live_panel(admin)
@@ -122,6 +137,13 @@ async def _render_info(callback: CallbackQuery, admin: Any) -> None:
         if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0:
             traffic_limit_text = await format_traffic_size(limit)
 
+        time_left, expiry_date = _expires_text(remote.get("expire"))
+        remaining_data = (
+            max(0, limit - usage)
+            if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0
+            else None
+        )
+        percent_used = (100 * usage / limit) if remaining_data is not None else None
         lines = [
             "👤 <b>اطلاعات پنل</b>",
             "",
@@ -143,6 +165,15 @@ async def _render_info(callback: CallbackQuery, admin: Any) -> None:
             "📊 <b>ترافیک زنده Rebecca</b>",
             f"• مصرف‌شده: <b>{escape(await format_traffic_size(usage))}</b>",
             f"• سقف: <b>{escape(traffic_limit_text)}</b>",
+            f"• باقی‌مانده: <b>{escape(await format_traffic_size(remaining_data)) if remaining_data is not None else 'نامحدود'}</b>",
+            f"• درصد مصرف: <b>{percent_used:.1f}%</b>" if percent_used is not None else "• درصد مصرف: بدون محدودیت",
+            "",
+            "⏳ <b>زمان اعتبار</b>",
+            f"• باقی‌مانده: <b>{escape(time_left)}</b>",
+            f"• پایان: <b>{escape(expiry_date)}</b>",
+            "",
+            f"🆔 شناسه مالک: <code>{int(admin.user_id)}</code>",
+            "<i>آمار از Rebecca خوانده شده و به‌صورت محلی تخمین زده نشده است.</i>",
         ])
         await callback.message.edit_text("\n".join(lines), reply_markup=_back_keyboard())
     except Exception:
@@ -211,9 +242,11 @@ async def _render_users(callback: CallbackQuery, admin: Any) -> None:
                     limit_text = await format_traffic_size(data_limit)
                 service_name = str(user.get("service_name") or "").strip()
                 service_part = f" · {escape(service_name)}" if service_name else ""
+                remaining, expires_at = _expires_text(user.get("expire"))
                 lines.extend([
                     f"• <code>{username}</code> — {_user_status_label(user)}{service_part}",
                     f"  ↳ مصرف: <b>{escape(used)}</b> / {escape(limit_text)}",
+                    f"  ↳ اعتبار: <b>{escape(remaining)}</b>" if expires_at != "—" else "  ↳ اعتبار: نامحدود/نامشخص",
                 ])
             if total > len(users[:20]):
                 lines.append(f"\n… و <b>{total - len(users[:20])}</b> کاربر دیگر.")

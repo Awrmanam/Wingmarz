@@ -45,12 +45,60 @@ async def _home_callback(user_id: int) -> str:
     return "public_back_main"
 
 
+def kyc_intro_text(profile: dict | None, telegram_user_id: int) -> str:
+    """Short, consent-aware KYC onboarding for one numeric Telegram identity."""
+    status = str((profile or {}).get("status") or "not_submitted")
+    intro = (
+        "🪪 <b>احراز هویت حساب</b>\n"
+        f"🆔 شناسه تلگرام: <code>{int(telegram_user_id)}</code>\n"
+        f"📌 وضعیت: <b>{_user_status_text(profile)}</b>\n\n"
+    )
+    if status == "approved":
+        return intro + (
+            "✅ هویت شما تأیید شده است. نیازی به ارسال مجدد مدرک ندارید.\n"
+            "از منوی اصلی می‌توانید خدمات خود را مدیریت کنید."
+        )
+    if status == "pending":
+        return intro + (
+            "⏳ مدارک شما ثبت شده و در صف بررسی مدیر قرار دارد.\n"
+            "تا پایان بررسی، مدرک دیگری ارسال نکنید.\n\n"
+            "پس از تصمیم مدیر، نتیجه در همین گفتگوی خصوصی اعلام می‌شود."
+        )
+    if status == "rejected":
+        reason = escape(str(profile.get("rejection_reason") or "تصویر یا اطلاعات قابل تأیید نبود."))
+        note = f"⚠️ علت: {reason}\n\n"
+    else:
+        note = ""
+    return intro + note + (
+        "<b>مراحل احراز هویت</b>\n"
+        "۱. نام و نام خانوادگی واقعی را وارد کنید.\n"
+        "۲. یک عکس خوانا از مدرک هویتی بفرستید.\n"
+        "۳. درخواست شما توسط مدیر بررسی می‌شود.\n\n"
+        "🔒 اطلاعات فقط برای بررسی هویت استفاده می‌شود؛ تصویر در سرور ربات ذخیره نمی‌شود "
+        "اما برای مدیران مجاز در تلگرام ارسال می‌شود.\n"
+        "احراز هویت برای صدور سرویس‌های نیازمند بررسی الزامی است."
+    )
+
+
+def kyc_entry_keyboard(profile: dict | None, *, has_admin: bool = False) -> InlineKeyboardMarkup:
+    status = str((profile or {}).get("status") or "not_submitted")
+    rows = []
+    if status in {"not_submitted", "rejected"}:
+        rows.append([InlineKeyboardButton(text="🪪 شروع احراز هویت", callback_data="kyc:start")])
+    elif status == "pending":
+        rows.append([InlineKeyboardButton(text="🔄 بررسی وضعیت درخواست", callback_data="kyc:status")])
+    if not has_admin:
+        rows.append([InlineKeyboardButton(text="🛒 مشاهده پلن‌ها", callback_data="public_buy_reseller")])
+    rows.append([InlineKeyboardButton(text="🎧 پشتیبانی", callback_data="support:home")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 async def _status_keyboard(user_id: int) -> InlineKeyboardMarkup:
     profile = await kyc_service.get_profile(user_id)
     rows = []
-    if not profile or profile.get("status") != "approved":
+    if not profile or profile.get("status") in {None, "rejected"}:
         rows.append([InlineKeyboardButton(
-            text="🪪 شروع/اصلاح درخواست KYC", callback_data="kyc:start"
+            text="🪪 شروع/ارسال مجدد درخواست", callback_data="kyc:start"
         )])
     rows.append([InlineKeyboardButton(
         text=config.BUTTONS["back"], callback_data=await _home_callback(user_id)
@@ -60,12 +108,12 @@ async def _status_keyboard(user_id: int) -> InlineKeyboardMarkup:
 
 @kyc_router.callback_query(F.data == "kyc:status")
 async def kyc_status(callback: CallbackQuery):
+    chat_type = getattr(getattr(callback.message, "chat", None), "type", "private")
+    if str(getattr(chat_type, "value", chat_type)) != "private":
+        await callback.answer("وضعیت احراز هویت فقط در گفتگوی خصوصی نمایش داده می‌شود.", show_alert=True)
+        return
     profile = await kyc_service.get_profile(callback.from_user.id)
-    lines = [
-        "🪪 <b>وضعیت احراز هویت</b>",
-        "",
-        f"وضعیت: <b>{_user_status_text(profile)}</b>",
-    ]
+    lines = [kyc_intro_text(profile, callback.from_user.id)]
     if profile and profile.get("full_name"):
         lines.append(f"نام ثبت‌شده: <b>{escape(str(profile['full_name']))}</b>")
     if profile and profile.get("status") == "rejected":
@@ -88,16 +136,20 @@ async def kyc_start(callback: CallbackQuery, state: FSMContext):
     if await kyc_service.is_approved(callback.from_user.id):
         await callback.answer("احراز هویت شما قبلاً تأیید شده است.", show_alert=True)
         return
+    if await kyc_service.status(callback.from_user.id) == "pending":
+        await callback.answer("درخواست شما در صف بررسی است. منتظر پاسخ مدیر باشید.", show_alert=True)
+        return
     await state.clear()
     await state.set_state(KycStates.waiting_full_name)
     await callback.message.edit_text(
-        "🪪 <b>احراز هویت</b>\n\n"
-        "نام و نام خانوادگی کامل صاحب پنل را ارسال کنید.\n\n"
-        "ارسال مدارک اختیاری است تا زمانی که سفارش نیازمند احراز هویت داشته باشید.\n"
-        "تصویر برای بررسی به مدیران مجاز ربات ارسال می‌شود؛ فقط شناسه فایل تلگرام در دیتابیس ذخیره می‌شود.\n"
-        "برای لغو، دکمه زیر را بزنید.",
+        "🪪 <b>احراز هویت · مرحله ۱ از ۳</b>\n\n"
+        "👤 <b>نام و نام خانوادگی</b>\n"
+        "نام واقعی مطابق مدرک هویتی خود را در یک پیام بفرستید.\n\n"
+        "مثال: علی رضایی\n\n"
+        "🔒 نام و تصویر فقط برای تأیید هویت توسط مدیران مجاز بررسی می‌شود.\n"
+        "برای انصراف، دکمه زیر را انتخاب کنید.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=config.BUTTONS["cancel"], callback_data="kyc:cancel")]
+            [InlineKeyboardButton(text="✖️ انصراف از احراز هویت", callback_data="kyc:cancel")]
         ]),
     )
     await callback.answer()
@@ -116,21 +168,35 @@ async def kyc_cancel(callback: CallbackQuery, state: FSMContext):
 @kyc_router.message(KycStates.waiting_full_name, F.text)
 async def kyc_full_name(message: Message, state: FSMContext):
     full_name = " ".join((message.text or "").split()).strip()
-    if len(full_name) < 3 or len(full_name) > 120:
-        await message.answer("نام کامل معتبر نیست. لطفاً نام و نام خانوادگی را ارسال کنید.")
+    if len(full_name) < 4 or len(full_name) > 120 or len(full_name.split()) < 2:
+        await message.answer(
+            "⚠️ نام و نام خانوادگی را کامل، در دو بخش یا بیشتر وارد کنید.\n"
+            "مثال: علی رضایی"
+        )
         return
     await state.update_data(kyc_full_name=full_name)
     await state.set_state(KycStates.waiting_document)
     await message.answer(
-        "📷 حالا <b>تصویر واضح مدرک هویتی</b> را به‌صورت Photo ارسال کنید.\n\n"
-        "فایل مدرک داخل سرور Wingmarz دانلود نمی‌شود؛ فقط شناسه فایل تلگرام برای بررسی ذخیره می‌شود."
+        "🪪 <b>احراز هویت · مرحله ۲ از ۳</b>\n\n"
+        "📷 <b>ارسال تصویر مدرک</b>\n"
+        "یک عکس واضح از مدرک هویتی متعلق به خودتان بفرستید.\n\n"
+        "• تصویر خوانا و بدون برش بخش‌های اصلی باشد.\n"
+        "• آن را در همین چت خصوصی به‌صورت <b>Photo</b> ارسال کنید.\n"
+        "• از ارسال عکس دیگران یا مدارک اضافی خودداری کنید.\n\n"
+        "پس از ارسال، درخواست برای بررسی مدیر ثبت می‌شود.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✖️ انصراف", callback_data="kyc:cancel")
+        ]]),
     )
 
 
 @kyc_router.message(KycStates.waiting_document)
 async def kyc_document(message: Message, state: FSMContext):
     if not message.photo:
-        await message.answer("لطفاً تصویر مدرک را به‌صورت Photo ارسال کنید.")
+        await message.answer(
+            "📷 هنوز عکس دریافت نشده است. لطفاً تصویر مدرک را با گزینه Photo بفرستید؛ "
+            "فایل یا متن جایگزین عکس پذیرفته نمی‌شود."
+        )
         return
     data = await state.get_data()
     full_name = str(data.get("kyc_full_name") or "").strip()
@@ -144,9 +210,14 @@ async def kyc_document(message: Message, state: FSMContext):
     await state.clear()
 
     await message.answer(
-        "✅ <b>درخواست KYC ثبت شد.</b>\n\n"
-        "وضعیت: 🟡 در انتظار بررسی\n"
-        "بعد از تأیید، دسترسی پنل‌های نیازمند KYC خودکار باز می‌شود."
+        "✅ <b>احراز هویت · مرحله ۳ از ۳</b>\n\n"
+        "🟡 <b>مدرک دریافت شد؛ منتظر بررسی مدیر</b>\n"
+        f"🆔 Telegram ID: <code>{int(message.from_user.id)}</code>\n\n"
+        "نتیجه تأیید یا رد درخواست در همین گفتگو اطلاع‌رسانی می‌شود.\n"
+        "تا آن زمان لازم نیست دوباره مدرک ارسال کنید.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="📋 وضعیت احراز هویت", callback_data="kyc:status")
+        ]]),
     )
 
     review_kb = InlineKeyboardMarkup(inline_keyboard=[[
