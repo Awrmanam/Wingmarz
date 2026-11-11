@@ -61,6 +61,17 @@ class GroupOpsService:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
 
+                -- Telegram user IDs are the sole identity key for /start
+                -- telemetry; mutable @usernames never identify a user.
+                CREATE TABLE IF NOT EXISTS group_ops_start_users (
+                    telegram_user_id INTEGER PRIMARY KEY CHECK(telegram_user_id > 0),
+                    first_seen_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    last_seen_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    start_count INTEGER NOT NULL DEFAULT 1 CHECK(start_count > 0),
+                    delivery_status TEXT NOT NULL DEFAULT 'pending'
+                        CHECK(delivery_status IN ('pending', 'sent', 'failed'))
+                );
+
                 CREATE TABLE IF NOT EXISTS group_ops_audit (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     actor_id INTEGER,
@@ -333,6 +344,73 @@ class GroupOpsService:
             await conn.commit()
             return cur.rowcount == 1
 
+    async def record_private_start(self, telegram_user_id: int) -> bool:
+        """Record one /start by immutable Telegram numeric ID.
+
+        Exactly the first observation may generate a Group Ops notification.
+        Later /start commands increment the counter silently. The insert is
+        committed *before* contacting Telegram to make concurrent updates and
+        process restarts unable to emit repeated notifications.
+
+        A failed/ambiguous Telegram delivery is intentionally not retried on
+        another /start: at-most-once reporting takes priority over duplicates.
+        """
+        if isinstance(telegram_user_id, bool):
+            raise ValueError("Telegram user ID must be a positive integer")
+        user_id = int(telegram_user_id)
+        if user_id <= 0:
+            raise ValueError("Telegram user ID must be a positive integer")
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            await conn.execute("BEGIN IMMEDIATE")
+            created = await conn.execute(
+                "INSERT OR IGNORE INTO group_ops_start_users(telegram_user_id) VALUES(?)",
+                (user_id,),
+            )
+            first = created.rowcount == 1
+            if not first:
+                await conn.execute(
+                    """
+                    UPDATE group_ops_start_users
+                    SET start_count=start_count+1, last_seen_at=CURRENT_TIMESTAMP
+                    WHERE telegram_user_id=?
+                    """,
+                    (user_id,),
+                )
+            await conn.commit()
+        return first
+
+    async def mark_start_delivery(self, telegram_user_id: int, delivered: bool) -> None:
+        """Keep a local delivery outcome without re-emitting a notification."""
+        user_id = int(telegram_user_id)
+        async with aiosqlite.connect(self.db_path) as conn:
+            await conn.execute(
+                """
+                UPDATE group_ops_start_users SET delivery_status=?
+                WHERE telegram_user_id=? AND delivery_status='pending'
+                """,
+                ("sent" if delivered else "failed", user_id),
+            )
+            await conn.commit()
+
+    async def start_statistics(self) -> dict[str, int]:
+        """Telemetry counts keyed solely by the immutable Telegram user ID."""
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            async with conn.execute(
+                """
+                SELECT COUNT(*), COALESCE(SUM(start_count), 0),
+                       COALESCE(SUM(delivery_status='sent'), 0)
+                FROM group_ops_start_users
+                """
+            ) as cursor:
+                row = await cursor.fetchone()
+        return {
+            "unique_telegram_ids": int(row[0] or 0),
+            "total_start_commands": int(row[1] or 0),
+            "notifications_sent": int(row[2] or 0),
+        }
+
     async def audit(
         self,
         *,
@@ -405,7 +483,7 @@ class GroupOpsService:
             bot,
             "starts",
             (
-                "👋 <b>/start جدید</b>\n\n"
+                "👋 <b>اولین /start ثبت‌شده برای این Telegram ID</b>\n\n"
                 f"👤 نام: <b>{escape(full_name)}</b>\n"
                 f"🔗 یوزرنیم: {username}\n"
                 f"🆔 Telegram ID: <code>{int(user.id)}</code>\n"
@@ -465,6 +543,9 @@ class GroupOpsService:
             approved = await scalar("SELECT COUNT(*) FROM orders WHERE status='approved' AND date(created_at)=?", (today,))
             submitted = await scalar("SELECT COUNT(*) FROM orders WHERE status='submitted'")
             pending_kyc = await scalar("SELECT COUNT(*) FROM kyc_profiles WHERE status='pending'")
+            first_starts_today = await scalar(
+                "SELECT COUNT(*) FROM group_ops_start_users WHERE date(first_seen_at)=?", (today,)
+            )
             active_admins = await scalar("SELECT COUNT(*) FROM admins WHERE is_active=1")
             revenue = await scalar("SELECT COALESCE(SUM(price_snapshot),0) FROM orders WHERE status='approved' AND date(updated_at)=?", (today,))
         return await self.send_text(
@@ -472,6 +553,7 @@ class GroupOpsService:
             "daily",
             (
                 "📊 <b>گزارش روزانه Wingmarz</b>\n\n"
+                f"👋 Telegram IDهای یکتای تازه: <b>{first_starts_today}</b>\n"
                 f"🛒 سفارش امروز: <b>{orders}</b>\n"
                 f"✅ تأییدشده امروز: <b>{approved}</b>\n"
                 f"🧾 منتظر بررسی: <b>{submitted}</b>\n"

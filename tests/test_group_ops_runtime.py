@@ -67,6 +67,14 @@ def test_global_start_middleware_logs_public_start(monkeypatch):
         AsyncMock(return_value={"enabled": 1, "chat_id": -1001}),
     )
     monkeypatch.setattr(group_ops_middleware.group_ops_service, "notify_start", notify)
+    monkeypatch.setattr(
+        group_ops_middleware.group_ops_service, "record_private_start",
+        AsyncMock(return_value=True),
+    )
+    mark_delivery = AsyncMock()
+    monkeypatch.setattr(
+        group_ops_middleware.group_ops_service, "mark_start_delivery", mark_delivery
+    )
     monkeypatch.setattr(group_ops_middleware.db, "get_admins_for_user", AsyncMock(return_value=[]))
     monkeypatch.setattr(group_ops_middleware.kyc_service, "status", AsyncMock(return_value="not_submitted"))
     monkeypatch.setattr(
@@ -93,6 +101,7 @@ def test_global_start_middleware_logs_public_start(monkeypatch):
     kwargs = notify.await_args.kwargs
     assert kwargs["account_kind"] == "مشتری"
     assert kwargs["kyc_status"] == "not_submitted"
+    mark_delivery.assert_awaited_once_with(42, True)
 
 
 def test_order_receipt_always_goes_to_receipts_topic(monkeypatch):
