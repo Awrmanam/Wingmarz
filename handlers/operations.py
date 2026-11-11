@@ -34,8 +34,9 @@ MENU_SPECS = [
     ("ops:hub:settings", "تنظیمات و ظاهر", "settings", "⚙️"),
 ]
 
+# Keep admin management in the Panels hub only, avoiding duplicate entries
+# that appear to lead to different admin centers.
 QUICK_ACTIONS = (
-    ("gops:admins:0", "مدیریت ادمین‌ها", "admin", "👥"),
     ("cc:orders:0", "سفارش‌های در انتظار", "orders", "🧾"),
 )
 
