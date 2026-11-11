@@ -1,0 +1,38 @@
+name: Wingmarz Group Ops and KYC Regression
+
+on:
+  push:
+    branches:
+      - fix/group-ops-kyc-navigation-20261111
+  workflow_dispatch:
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.11']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install runtime and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pytest
+      - name: Compile the complete source tree
+        run: python -m compileall -q bot.py handlers group_ops_service.py group_ops_middleware.py kyc_service.py
+      - name: Run focused regression suite
+        run: |
+          timeout 180s python -m pytest -q \
+            tests/test_group_ops_kyc_navigation_20261111.py \
+            tests/test_group_ops_admin_center.py \
+            tests/test_group_ops_runtime.py \
+            tests/test_kyc_message_gate.py \
+            tests/test_home_keyboards.py \
+            tests/test_home_navigation.py
+      - name: Diff check
+        run: git diff --check
