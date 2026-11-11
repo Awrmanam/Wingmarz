@@ -140,10 +140,11 @@ def test_group_ops_subscription_input_validation():
 
 
 def test_admin_alert_threshold_ranks():
-    assert _percent_rank(69.9) == 0
-    assert _percent_rank(70) == 1
-    assert _percent_rank(94.9) == 3
-    assert _percent_rank(100) == 5
+    assert _percent_rank(79.9) == 0
+    assert _percent_rank(80) == 1
+    assert _percent_rank(90) == 2
+    assert _percent_rank(99) == 3
+    assert _percent_rank(100) == 4
 
     assert _time_rank(8 * 86400) == 0
     assert _time_rank(7 * 86400) == 1
