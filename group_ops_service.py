@@ -475,21 +475,28 @@ class GroupOpsService:
             await conn.commit()
 
     async def notify_start(self, bot, user, *, account_kind: str, kyc_status: str, trusted: bool) -> bool:
-        username = f"@{escape(user.username)}" if getattr(user, "username", None) else "—"
+        username = f"@{escape(user.username)}" if getattr(user, "username", None) else "ثبت نشده"
         full_name = " ".join(
             x for x in [getattr(user, "first_name", None), getattr(user, "last_name", None)] if x
-        ).strip() or "—"
+        ).strip() or "ثبت نشده"
+        kyc_label = {
+            "not_submitted": "ثبت نشده",
+            "pending": "در انتظار بررسی",
+            "approved": "تأییدشده",
+            "rejected": "ردشده",
+        }.get(str(kyc_status), "نامشخص")
         return await self.send_text(
             bot,
             "starts",
             (
-                "👋 <b>اولین /start ثبت‌شده برای این Telegram ID</b>\n\n"
-                f"👤 نام: <b>{escape(full_name)}</b>\n"
-                f"🔗 یوزرنیم: {username}\n"
-                f"🆔 Telegram ID: <code>{int(user.id)}</code>\n"
-                f"🏷 نوع: <b>{escape(account_kind)}</b>\n"
-                f"🪪 KYC: <b>{escape(kyc_status)}</b>\n"
-                f"🤝 Trust: <b>{'تأیید' if trusted else 'عادی'}</b>"
+                "👋 <b>ورود کاربر جدید به Wingmarz</b>\n\n"
+                f"🆔 <b>شناسه تلگرام:</b> <code>{int(user.id)}</code>\n"
+                f"👤 <b>نام:</b> {escape(full_name)}\n"
+                f"🔗 <b>یوزرنیم:</b> {username}\n"
+                f"🏷 <b>نقش:</b> {escape(account_kind)}\n"
+                f"🪪 <b>احراز هویت:</b> {escape(kyc_label)}\n"
+                f"🤝 <b>اعتماد دستی:</b> {'تأییدشده' if trusted else 'ثبت نشده'}\n\n"
+                "<i>برای هر شناسه عددی فقط یک گزارش ورود ثبت می‌شود.</i>"
             ),
         )
 
