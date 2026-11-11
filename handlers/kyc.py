@@ -371,10 +371,13 @@ async def kyc_pending(callback: CallbackQuery):
             )
         ])
     rows.append([InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="ops:hub:customers")])
-    await callback.message.edit_text(
-        f"🪪 <b>KYCهای در انتظار</b>\n\nتعداد: <b>{len(pending)}</b>",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
-    )
+    title = f"🪪 <b>KYCهای در انتظار</b>\n\nتعداد: <b>{len(pending)}</b>"
+    keyboard = InlineKeyboardMarkup(inline_keyboard=rows)
+    # Telegram cannot edit a photo into a text message on Back.
+    if getattr(callback.message, "photo", None):
+        await callback.message.answer(title, reply_markup=keyboard)
+    else:
+        await callback.message.edit_text(title, reply_markup=keyboard)
     await callback.answer()
 
 
