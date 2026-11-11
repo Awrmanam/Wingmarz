@@ -18,7 +18,12 @@ logger = logging.getLogger(__name__)
 
 
 class GroupOpsStartMiddleware(BaseMiddleware):
-    """Mirror every private /start into Group Ops before router-specific handling."""
+    """Notify Group Ops once per Telegram numeric user ID (not per /start).
+
+    /start always reaches its role-specific handler. We observe *after*
+    handling so a newly auto-linked Rebecca account is classified correctly.
+    An outage in reporting never blocks the user or sends duplicate events.
+    """
 
     async def __call__(
         self,
@@ -26,49 +31,87 @@ class GroupOpsStartMiddleware(BaseMiddleware):
         event: Any,
         data: dict[str, Any],
     ) -> Any:
+        result = await handler(event, data)
+        first_user_id: int | None = None
+        delivered = False
         try:
-            if isinstance(event, Message) and event.from_user and event.chat:
-                chat_type = str(getattr(getattr(event.chat, "type", None), "value", getattr(event.chat, "type", ""))).lower()
-                raw_text = str(event.text or "").strip()
-                command = raw_text.split(maxsplit=1)[0].lower() if raw_text else ""
-                command = command.split("@", 1)[0]
-                if chat_type == "private" and command == "/start":
-                    cfg = await group_ops_service.get_config()
-                    if cfg and int(cfg.get("enabled") or 0):
-                        user_id = int(event.from_user.id)
-                        admins = await db.get_admins_for_user(user_id)
-                        active_admins = [admin for admin in admins if admin.is_active]
-                        if user_id in config.SUDO_ADMINS:
-                            account_kind = "سودو ادمین"
-                        elif active_admins:
-                            account_kind = f"ادمین Rebecca · {len(active_admins)} پنل"
-                        else:
-                            account_kind = "مشتری"
-                        try:
-                            kyc_status = await kyc_service.status(user_id)
-                        except Exception:
-                            kyc_status = "unknown"
-                        try:
-                            trusted = await trust_service.is_manually_trusted(user_id)
-                        except Exception:
-                            trusted = False
-                        bot = data.get("bot") or getattr(event, "bot", None)
-                        if bot is None:
-                            logger.warning("Group Ops start mirror skipped: bot instance unavailable")
-                        else:
-                            ok = await group_ops_service.notify_start(
-                                bot,
-                                event.from_user,
-                                account_kind=account_kind,
-                                kyc_status=kyc_status,
-                                trusted=trusted,
-                            )
-                            if not ok:
-                                logger.warning("Group Ops start mirror failed for user %s", user_id)
+            if not isinstance(event, Message) or not event.from_user or not event.chat:
+                return result
+            if bool(getattr(event.from_user, "is_bot", False)):
+                return result
+
+            chat_type = str(
+                getattr(getattr(event.chat, "type", None), "value", getattr(event.chat, "type", ""))
+            ).lower()
+            raw_text = str(event.text or "").strip()
+            command = raw_text.split(maxsplit=1)[0].lower() if raw_text else ""
+            command = command.split("@", 1)[0]
+            if chat_type != "private" or command != "/start":
+                return result
+
+            user_id = int(event.from_user.id)
+            if user_id <= 0:
+                return result
+
+            cfg = await group_ops_service.get_config()
+            if not cfg or not int(cfg.get("enabled") or 0):
+                # A disconnected reporting group must never intercept /start.
+                return result
+
+            if not await group_ops_service.record_private_start(user_id):
+                # Repeated starts and username changes are silent.
+                return result
+            first_user_id = user_id
+
+            # The actual /start handler may have just synchronized a Rebecca
+            # account by its telegram_id; use that post-handler identity.
+            try:
+                admins = await db.get_admins_for_user(user_id)
+                active_admins = [admin for admin in admins if admin.is_active]
+            except Exception as exc:
+                logger.warning("Start role lookup failed for Telegram ID %s: %s", user_id, exc)
+                active_admins = []
+
+            if user_id in config.SUDO_ADMINS:
+                account_kind = "سودو ادمین"
+            elif active_admins:
+                provider = "Rebecca" if config.PANEL_PROVIDER == "rebecca" else "Marzban"
+                account_kind = f"ادمین {provider} · {len(active_admins)} پنل"
+            else:
+                account_kind = "مشتری"
+
+            try:
+                kyc_status = await kyc_service.status(user_id)
+            except Exception:
+                kyc_status = "unknown"
+            try:
+                trusted = await trust_service.is_manually_trusted(user_id)
+            except Exception:
+                trusted = False
+
+            bot = data.get("bot") or getattr(event, "bot", None)
+            if bot is None:
+                logger.warning("Group Ops first start skipped: bot instance unavailable for %s", user_id)
+            else:
+                delivered = bool(await group_ops_service.notify_start(
+                    bot,
+                    event.from_user,
+                    account_kind=account_kind,
+                    kyc_status=kyc_status,
+                    trusted=trusted,
+                ))
+                if not delivered:
+                    logger.warning("Group Ops first start delivery failed for Telegram ID %s", user_id)
         except Exception:
-            # Observability must never block /start or photo/FSM messages.
-            logger.exception("Group Ops start observer failed")
-        return await handler(event, data)
+            # Reporting must never block /start or photo/FSM messages.
+            logger.exception("Group Ops first start observer failed")
+        finally:
+            if first_user_id is not None:
+                try:
+                    await group_ops_service.mark_start_delivery(first_user_id, delivered)
+                except Exception:
+                    logger.exception("Could not persist start report outcome for %s", first_user_id)
+        return result
 
 
 class GroupOpsErrorMiddleware(BaseMiddleware):
