@@ -105,18 +105,10 @@ async def render_home(message: Message, user_id: int, *, edit: bool) -> None:
             await _send_dashboard(message)
         return
 
+    # Purchase-first UX: /start must not demand identity documents.
+    # Show products and account navigation first; the shared checkout guard
+    # requests KYC immediately before presenting bank transfer details.
     admins = await db.get_admins_for_user(user_id)
-    if await _needs_kyc_onboarding(user_id, admins):
-        from handlers.kyc import kyc_entry_keyboard, kyc_intro_text
-        profile = await kyc_service.get_profile(user_id)
-        text = kyc_intro_text(profile, user_id)
-        markup = kyc_entry_keyboard(profile, has_admin=bool(admins))
-        if edit:
-            await message.edit_text(text, reply_markup=markup)
-        else:
-            await message.answer(text, reply_markup=markup)
-        return
-
     if admins:
         text = await _admin_home_text(user_id)
         keyboard = await reseller_home_keyboard()
