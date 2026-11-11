@@ -18,7 +18,11 @@ def _username(user: Any) -> str:
 
 
 async def _approved_card_review_note(user_id: int) -> str:
-    profile = await kyc_service.get_profile(int(user_id))
+    try:
+        profile = await kyc_service.get_profile(int(user_id))
+    except Exception as exc:
+        logger.warning("Card-review note unavailable for Telegram ID %s: %s", user_id, type(exc).__name__)
+        return "💳 کارت مبدأ ثبت‌شده: نامشخص؛ بررسی دستی الزامی است\n"
     if (
         profile and profile.get("status") == "approved"
         and profile.get("card_first4") and profile.get("card_last4")
