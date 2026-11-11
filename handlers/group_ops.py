@@ -45,7 +45,10 @@ def _ops_home_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🔗 اتصال/تعویض گروه", callback_data="gops:connect"),
             InlineKeyboardButton(text="🧱 تکمیل تاپیک‌ها", callback_data="gops:repair"),
         ],
-        [InlineKeyboardButton(text="📊 وضعیت Group Ops", callback_data="gops:status")],
+        [
+            InlineKeyboardButton(text="📊 وضعیت Group Ops", callback_data="gops:status"),
+            InlineKeyboardButton(text="🧪 تست ۹ تاپیک", callback_data="gops:test"),
+        ],
         [InlineKeyboardButton(text="🏠 بازگشت به داشبورد", callback_data="back_to_main")],
     ])
 
@@ -53,8 +56,9 @@ def _ops_home_keyboard() -> InlineKeyboardMarkup:
 def _ops_home_text() -> str:
     return (
         "🧭 <b>Group Ops</b>\n\n"
-        "این بخش فقط برای اتصال گروه مدیریت، ساخت تاپیک‌ها و بررسی سلامت گزارش‌دهی است. "
-        "مدیریت ادمین‌ها از بخش «پنل‌ها و ادمین‌ها» انجام می‌شود."
+        "گروه باید Supergroup با Topics فعال باشد و ربات دسترسی Manage Topics داشته باشد. "
+        "برای دریافت گزارش‌ها ابتدا «اتصال/تعویض گروه» را اجرا کنید، سپس «تست ۹ تاپیک» را بزنید.\n\n"
+        "مدیریت ادمین‌ها فقط از بخش «پنل‌ها و ادمین‌ها» انجام می‌شود."
     )
 
 
@@ -608,6 +612,57 @@ async def ops_repair(callback: CallbackQuery):
         return
     await callback.answer(f"تاپیک‌ها آماده‌اند: {len(topics)}/{len(TOPICS)}", show_alert=True)
     await _render_ops_status(callback.message)
+
+
+@group_ops_router.callback_query(F.data == "gops:test")
+async def ops_test_topics(callback: CallbackQuery):
+    """Send a real message into each forum thread, not the group root.
+
+    Unlike the normal reporting fallback this probes the exact Telegram
+    message_thread_id, so a misleading '9/9 topics' DB count cannot pass.
+    """
+    if await _deny_event(callback):
+        return
+    cfg = await group_ops_service.get_config()
+    if not cfg or not int(cfg.get("enabled") or 0):
+        await callback.answer("اول گروه Forum را متصل کنید.", show_alert=True)
+        return
+    try:
+        topics = await group_ops_service.setup_topics(callback.bot, int(cfg["chat_id"]))
+    except Exception as exc:
+        await callback.answer(f"ساخت تاپیک ناموفق: {str(exc)[:120]}", show_alert=True)
+        return
+    successes = []
+    failures = []
+    for key, title in TOPICS.items():
+        thread_id = topics.get(key)
+        if not thread_id:
+            failures.append(title)
+            continue
+        try:
+            await callback.bot.send_message(
+                chat_id=int(cfg["chat_id"]),
+                message_thread_id=int(thread_id),
+                text=f"🧪 <b>آزمایش گزارش‌دهی</b>\nتاپیک: {escape(title)}",
+            )
+            successes.append(title)
+        except Exception:
+            failures.append(title)
+    report = [
+        "🧪 <b>نتیجه آزمایش واقعی تاپیک‌ها</b>",
+        "",
+        f"✅ ارسال موفق: <b>{len(successes)}/{len(TOPICS)}</b>",
+    ]
+    if failures:
+        report.append("❌ ناموفق: " + "، ".join(escape(x) for x in failures))
+        report.append("دسترسی Manage Topics و وضعیت تاپیک‌ها را بررسی کنید.")
+    else:
+        report.append("هر ۹ تاپیک پیام آزمایشی مستقل دریافت کردند.")
+    await callback.message.edit_text(
+        "\n".join(report),
+        reply_markup=_ops_home_keyboard(),
+    )
+    await callback.answer()
 
 
 @group_ops_router.callback_query(F.data.startswith("gops:admins:"))

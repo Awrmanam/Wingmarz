@@ -24,6 +24,7 @@ def test_public_home_keyboard_uses_runtime_style_engine(monkeypatch):
         "public_buy_reseller",
         "tariffs:home",
         "svcmarket:trial",
+        "kyc:status",
         "support:home",
     ]
     assert all("callback_data" in kwargs for _text, kwargs in calls)
@@ -46,6 +47,7 @@ def test_reseller_home_keyboard_preserves_business_callbacks(monkeypatch):
         "admin_renew",
         "tariffs:home",
         "svcmarket:trial",
+        "kyc:status",
         "support:home",
     ]
 
