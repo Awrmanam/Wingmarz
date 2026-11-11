@@ -166,7 +166,7 @@ async def kyc_start(callback: CallbackQuery, state: FSMContext):
     if await kyc_service.status(callback.from_user.id) == "pending":
         await callback.answer("درخواست شما در صف بررسی است. منتظر پاسخ مدیر باشید.", show_alert=True)
         return
-    level = 2 if str(callback.data or "") == "kyc:level:2" else 1
+    level = 2 if str(getattr(callback, "data", "") or "") == "kyc:level:2" else 1
     await state.clear()
     await state.update_data(kyc_level=level)
     await state.set_state(KycStates.waiting_full_name)
