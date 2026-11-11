@@ -134,7 +134,7 @@ async def render_home(message: Message, user_id: int, *, edit: bool) -> None:
         await message.answer(text, reply_markup=keyboard)
 
 
-@home_navigation_router.message(CommandStart())
+@home_navigation_router.message(CommandStart(), F.chat.type == "private")
 async def role_aware_start(message: Message, state: FSMContext):
     """Single /start owner after sudo: sync Rebecca by numeric Telegram ID first."""
     await state.clear()
