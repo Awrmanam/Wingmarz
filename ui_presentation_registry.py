@@ -72,6 +72,7 @@ SCREENS: dict[str, ScreenDef] = {
     "purchase.summary": ScreenDef("purchase.summary", "customer", "sales", "خلاصه خرید", 3),
     "tariffs.home": ScreenDef("tariffs.home", "customer", "sales", "تعرفه‌ها", 4),
     "payment.checkout": ScreenDef("payment.checkout", "customer", "payment", "پرداخت و ثبت سفارش", 0),
+    "payment.kyc": ScreenDef("payment.kyc", "customer", "payment", "بررسی کارت پیش از پرداخت", 1),
     "trial.home": ScreenDef("trial.home", "customer", "trial", "صفحه تست رایگان", 0),
     "trial.config": ScreenDef("trial.config", "customer", "trial", "تست رایگان کانفیگ", 1),
     "trial.panel": ScreenDef("trial.panel", "customer", "trial", "تست پنل نمایندگی", 2),
@@ -140,6 +141,8 @@ BUTTONS: tuple[ButtonDef, ...] = (
     ButtonDef("payment.checkout.discount", "payment.checkout", "اعمال کد تخفیف", "ux:checkout:code", rank=0),
     ButtonDef("payment.checkout.continue", "payment.checkout", "ادامه به پرداخت", "ux:checkout:nocode", "ادامه به پرداخت", 1),
     ButtonDef("payment.checkout.no_discount", "payment.checkout", "ادامه بدون تخفیف", "ux:checkout:nocode", "ادامه بدون تخفیف", 2),
+    ButtonDef("payment.kyc.resume", "payment.kyc", "ادامه پرداخت سفارش قبلی", "ckyc:resume", rank=0),
+    ButtonDef("payment.kyc.advanced", "payment.kyc", "احراز هویت پیشرفته", "kyc:level:2", rank=1),
 
     ButtonDef("admin.dashboard.sales", "admin.dashboard", "فروش و تعرفه‌ها", "sudo_menu_sales", "فروش و تعرفه‌ها", 0),
     ButtonDef("admin.dashboard.panels", "admin.dashboard", "مرکز پنل‌ها", "sudo_menu_panels", rank=1),
