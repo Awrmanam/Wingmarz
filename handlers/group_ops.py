@@ -130,6 +130,7 @@ async def _bootstrap_ops_group(bot, chat_id: int, actor_id: int) -> dict[str, in
 async def _render_ops_status(message: Message) -> None:
     cfg = await group_ops_service.get_config()
     topics = await group_ops_service.topics()
+    start_stats = await group_ops_service.start_statistics()
     if not cfg:
         text = (
             "⚪ <b>Group Ops هنوز متصل نیست.</b>\n\n"
@@ -140,7 +141,11 @@ async def _render_ops_status(message: Message) -> None:
             "📊 <b>وضعیت Group Ops</b>\n\n"
             f"Chat ID: <code>{int(cfg['chat_id'])}</code>\n"
             f"وضعیت: <b>{'فعال' if int(cfg.get('enabled') or 0) else 'خاموش'}</b>\n"
-            f"Topics: <b>{len(topics)}/{len(TOPICS)}</b>"
+            f"Topics: <b>{len(topics)}/{len(TOPICS)}</b>\n"
+            f"👤 Telegram ID یکتا: <b>{start_stats['unique_telegram_ids']}</b>\n"
+            f"🔄 کل دفعات /start: <b>{start_stats['total_start_commands']}</b>\n"
+            f"📨 گزارش اولین استارت ارسال‌شده: <b>{start_stats['notifications_sent']}</b>\n\n"
+            "هر Telegram User ID فقط یک گزارش استارت دارد؛ تکرار /start بی‌صدا شمرده می‌شود."
         )
     await message.edit_text(text, reply_markup=_ops_home_keyboard())
 
