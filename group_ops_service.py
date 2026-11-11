@@ -393,6 +393,24 @@ class GroupOpsService:
             )
             await conn.commit()
 
+    async def start_statistics(self) -> dict[str, int]:
+        """Telemetry counts keyed solely by the immutable Telegram user ID."""
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            async with conn.execute(
+                """
+                SELECT COUNT(*), COALESCE(SUM(start_count), 0),
+                       COALESCE(SUM(delivery_status='sent'), 0)
+                FROM group_ops_start_users
+                """
+            ) as cursor:
+                row = await cursor.fetchone()
+        return {
+            "unique_telegram_ids": int(row[0] or 0),
+            "total_start_commands": int(row[1] or 0),
+            "notifications_sent": int(row[2] or 0),
+        }
+
     async def audit(
         self,
         *,
@@ -465,7 +483,7 @@ class GroupOpsService:
             bot,
             "starts",
             (
-                "👋 <b>/start جدید</b>\n\n"
+                "👋 <b>اولین /start ثبت‌شده برای این Telegram ID</b>\n\n"
                 f"👤 نام: <b>{escape(full_name)}</b>\n"
                 f"🔗 یوزرنیم: {username}\n"
                 f"🆔 Telegram ID: <code>{int(user.id)}</code>\n"
@@ -525,6 +543,9 @@ class GroupOpsService:
             approved = await scalar("SELECT COUNT(*) FROM orders WHERE status='approved' AND date(created_at)=?", (today,))
             submitted = await scalar("SELECT COUNT(*) FROM orders WHERE status='submitted'")
             pending_kyc = await scalar("SELECT COUNT(*) FROM kyc_profiles WHERE status='pending'")
+            first_starts_today = await scalar(
+                "SELECT COUNT(*) FROM group_ops_start_users WHERE date(first_seen_at)=?", (today,)
+            )
             active_admins = await scalar("SELECT COUNT(*) FROM admins WHERE is_active=1")
             revenue = await scalar("SELECT COALESCE(SUM(price_snapshot),0) FROM orders WHERE status='approved' AND date(updated_at)=?", (today,))
         return await self.send_text(
@@ -532,6 +553,7 @@ class GroupOpsService:
             "daily",
             (
                 "📊 <b>گزارش روزانه Wingmarz</b>\n\n"
+                f"👋 Telegram IDهای یکتای تازه: <b>{first_starts_today}</b>\n"
                 f"🛒 سفارش امروز: <b>{orders}</b>\n"
                 f"✅ تأییدشده امروز: <b>{approved}</b>\n"
                 f"🧾 منتظر بررسی: <b>{submitted}</b>\n"
