@@ -1043,12 +1043,12 @@ async def _broadcast_show_job(message: Message, job_id: int) -> None:
         )],
     ])
     await message.edit_text(
-        f"📣 <b>صف پیام همگانی #{int(item['id'])}</b>\\n\\n"
-        f"وضعیت: <b>{state_labels.get(item['status'],'نامشخص')}</b>\\n"
-        f"👥 گیرنده‌ها: <b>{int(item['total'])}</b>\\n"
-        f"✅ ارسال شده: <b>{int(item['sent'])}</b>\\n"
-        f"⏳ در انتظار: <b>{int(item['queued'])}</b>\\n"
-        f"❌ شکست نهایی: <b>{int(item['failed'])}</b>\\n\\n"
+        f"📣 <b>صف پیام همگانی #{int(item['id'])}</b>\n\n"
+        f"وضعیت: <b>{state_labels.get(item['status'],'نامشخص')}</b>\n"
+        f"👥 گیرنده‌ها: <b>{int(item['total'])}</b>\n"
+        f"✅ ارسال شده: <b>{int(item['sent'])}</b>\n"
+        f"⏳ در انتظار: <b>{int(item['queued'])}</b>\n"
+        f"❌ شکست نهایی: <b>{int(item['failed'])}</b>\n\n"
         "پس از قطع ربات، ارسال‌های در انتظار در شروع مجدد ادامه می‌یابند. "
         "ممکن است در صورت قطع ارتباط پس از پذیرش پیام توسط تلگرام "
         "و قبل از ثبت رسید، یک پیام تکرار شود.",
@@ -1076,7 +1076,7 @@ async def broadcast_queue_list(callback: CallbackQuery, state: FSMContext):
         text="⬅️ بازگشت به ارسال همگانی",callback_data="sudo_menu_broadcast",
     )])
     await callback.message.edit_text(
-        "📣 <b>تاریخچه و مدیریت ارسال همگانی</b>\\n\\n"
+        "📣 <b>تاریخچه و مدیریت ارسال همگانی</b>\n\n"
         "روی یک ارسال بزنید تا جزئیات و کنترل توقف/ادامه را ببینید. "
         "ارسال‌های در انتظار در دیتابیس نگهداری می‌شوند.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
