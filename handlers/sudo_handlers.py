@@ -174,7 +174,9 @@ def _build_auto_import_keyboard(candidates: List[Dict[str, Any]], page: int) -> 
 
     for candidate in candidates[start:end]:
         prefix_parts = []
-        if candidate.get("already_registered"):
+        if candidate.get("ownership_conflict"):
+            prefix_parts.append("⚠️")
+        elif candidate.get("already_registered"):
             prefix_parts.append("✅")
         else:
             prefix_parts.append("➕")
@@ -226,7 +228,11 @@ async def _render_auto_import_menu(
             raw_admins = []
 
         existing_admins = await db.get_all_admins()
-        existing_usernames = {adm.marzban_username for adm in existing_admins if adm.marzban_username}
+        existing_by_username = {
+            str(adm.marzban_username): adm
+            for adm in existing_admins if adm.marzban_username
+        }
+        existing_usernames = set(existing_by_username)
 
         processed: List[Dict[str, Any]] = []
         for item in raw_admins:
@@ -235,8 +241,23 @@ async def _render_auto_import_menu(
             username = item.get("username")
             if not username:
                 continue
+            local = existing_by_username.get(str(username))
+            local_id = int(local.user_id) if local else None
+            try:
+                remote_id = int(str(item.get("telegram_id") or "").strip())
+                if remote_id <= 0:
+                    remote_id = None
+            except (TypeError, ValueError):
+                remote_id = None
+            ownership_conflict = (
+                config.PANEL_PROVIDER == "rebecca"
+                and local_id is not None and remote_id is not None
+                and local_id != remote_id
+            )
             processed.append({
                 "username": username,
+                "local_telegram_id": local_id,
+                "ownership_conflict": ownership_conflict,
                 "is_sudo": bool(item.get("is_sudo")) if config.PANEL_PROVIDER == "marzban" else item.get("role") != "standard",
                 "role": item.get("role"),
                 "status": item.get("status"),
@@ -245,7 +266,11 @@ async def _render_auto_import_menu(
                 "already_registered": username in existing_usernames
             })
 
-        processed.sort(key=lambda c: (c["already_registered"], c["username"].lower()))
+        processed.sort(key=lambda c: (
+            not c.get("ownership_conflict"),
+            c["already_registered"],
+            str(c["username"]).lower(),
+        ))
         for idx, candidate in enumerate(processed):
             candidate["idx"] = idx
 
@@ -278,11 +303,21 @@ async def _render_auto_import_menu(
         lines.append("")
         lines.append("هیچ ادمینی توسط API گزارش نشد.")
     elif config.PANEL_PROVIDER == "rebecca":
-        lines.extend(["", "جزئیات:"])
-        for candidate in candidates:
+        conflicts_count = sum(bool(c.get("ownership_conflict")) for c in candidates)
+        lines.extend([
+            "", f"⚠️ اختلاف مالکیت: {conflicts_count}",
+            "اختلاف‌ها صرفاً گزارش می‌شوند؛ انتقال مالکیت خودکار نیست.",
+            "", f"جزئیات صفحه {page + 1}/{total_pages}:",
+        ])
+        start_idx = page * AUTO_IMPORT_PAGE_SIZE
+        for candidate in candidates[start_idx:start_idx + AUTO_IMPORT_PAGE_SIZE]:
+            conflict = "⚠️" if candidate.get("ownership_conflict") else "•"
             lines.append(
-                f"• {candidate['username']} | role={candidate.get('role') or '-'} | "
-                f"status={candidate.get('status') or '-'} | telegram_id={candidate.get('telegram_id') or '-'}"
+                f"{conflict} {escape(str(candidate['username']))} | "
+                f"role={escape(str(candidate.get('role') or '-'))} | "
+                f"status={escape(str(candidate.get('status') or '-'))}\n"
+                f"    Rebecca ID: {candidate.get('telegram_id') or '-'} · "
+                f"Wingmarz ID: {candidate.get('local_telegram_id') or '-'}"
             )
 
     kb = _build_auto_import_keyboard(candidates, page)
