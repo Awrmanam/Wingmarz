@@ -87,6 +87,9 @@ SCREENS: dict[str, ScreenDef] = {
     "admin.navigation": ScreenDef("admin.navigation", "manage", "dashboard", "ناوبری مدیریت", 90),
     "admin.panels": ScreenDef("admin.panels", "manage", "products", "مرکز پنل‌ها", 0),
     "admin.panel_add": ScreenDef("admin.panel_add", "manage", "products", "افزودن پنل", 1),
+    "admin.reseller_management": ScreenDef(
+        "admin.reseller_management", "manage", "products", "مدیریت نمایندگان", 1
+    ),
     "admin.panel_import": ScreenDef("admin.panel_import", "manage", "products", "افزودن پنل قبلی", 2),
     "admin.panel_cleanup": ScreenDef("admin.panel_cleanup", "manage", "products", "پاکسازی و نگهداری پنل‌ها", 3),
     "admin.products": ScreenDef("admin.products", "manage", "products", "محصولات و پلن‌ها", 4),
@@ -173,6 +176,9 @@ BUTTONS: tuple[ButtonDef, ...] = (
     ButtonDef("admin.dashboard.settings", "admin.dashboard", "تنظیمات", "sudo_menu_settings", rank=16),
     ButtonDef("admin.navigation.home", "admin.navigation", "خانه", "back_to_main", rank=0, navigation_type="home"),
 
+    ButtonDef("admin.reseller_management.open", "admin.panels", "مدیریت نمایندگان", "resellercenter:home", "مدیریت نمایندگان", 0),
+    ButtonDef("admin.reseller_management.back", "admin.reseller_management", "بازگشت به نمایندگان", "resellercenter:home", "⬅️ مدیریت نمایندگان", 90, navigation_type="back"),
+    ButtonDef("admin.reseller_management.orders", "admin.reseller_management", "سفارش‌ها و پرداخت‌های نمایندگی", "cc:orders:submitted:0", "📋 سفارش‌ها و پرداخت‌های نمایندگی", 2),
     ButtonDef("admin.panels.cleanup", "admin.panels", "پاکسازی", "sudo_menu_cleanup", rank=0),
     ButtonDef("admin.panels.reports", "admin.panels", "گزارشات", "sudo_menu_reports", "گزارشات", 1),
     ButtonDef("admin.panels.status", "admin.panels", "وضعیت ادمین‌ها", "admin_status", rank=2),
@@ -225,6 +231,8 @@ BUTTONS: tuple[ButtonDef, ...] = (
     ButtonDef("admin.finance.card_delete", "admin.finance", "حذف کارت", "card_delete", rank=2),
     ButtonDef("admin.finance.card_toggle", "admin.finance", "فعال یا غیرفعال کردن کارت", "card_toggle", rank=3),
     ButtonDef("admin.finance.billing", "admin.finance", "تعرفه تمدید", "set_billing", rank=4),
+    ButtonDef("admin.finance.payg_review", "admin.finance", "بازبینی مالی PAYG", "paygaudit:root", "🧾 بازبینی مالی PAYG", 30),
+    ButtonDef("admin.finance.payg_review_resellers", "admin.reseller_management", "بازبینی و تعلیق مالی PAYG", "paygaudit:root", "🔒 بازبینی و تعلیق مالی PAYG", 30),
     ButtonDef("admin.finance.login_url", "admin.finance", "آدرس ورود", "set_login_url", rank=5),
 
     ButtonDef("admin.discounts.add", "admin.discounts", "ساخت کد تخفیف", "ops:disc:add", rank=0),
