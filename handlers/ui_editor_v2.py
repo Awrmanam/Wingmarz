@@ -425,6 +425,34 @@ async def message_preview(callback: CallbackQuery):
     await callback.answer("پیش‌نمایش ارسال شد")
 
 
+@ui_editor_v2_router.callback_query(F.data.startswith("uiv2:mt:"))
+async def message_private_test(callback: CallbackQuery):
+    """Send a real template rendering ONLY to the requesting admin's private DM."""
+    if await _deny(callback):
+        return
+    key = (callback.data or "").split(":", 2)[-1]
+    item = await premium_ui_service.get_message(key)
+    if not item:
+        await callback.answer("این متن دیگر موجود نیست.",show_alert=True)
+        return
+    try:
+        preview = await _preview_body(item,item.body)
+        await callback.bot.send_message(
+            chat_id=callback.from_user.id,
+            text=preview,
+            parse_mode="HTML",
+        )
+    except Exception:
+        # Never fall back to sending potentially sensitive templates in a
+        # management group/chat. An operator must open the bot DM first.
+        await callback.answer(
+            "ارسال خصوصی ناموفق بود؛ ابتدا گفتگوی خصوصی ربات را باز کنید.",
+            show_alert=True,
+        )
+    else:
+        await callback.answer("📨 پیام آزمایشی به گفتگوی خصوصی شما ارسال شد.")
+
+
 async def _button_groups() -> dict[str, list[Any]]:
     groups = {key: [] for key, _title, _emoji in BUTTON_CATEGORY_META}
     for item in await _load_clean_buttons():
