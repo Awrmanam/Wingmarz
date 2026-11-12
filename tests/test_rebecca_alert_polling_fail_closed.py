@@ -88,3 +88,22 @@ def test_rebecca_rejects_user_count_over_scan_cap(monkeypatch):
 )
 def test_rebecca_state_priorities_and_invalid_quota(user, expected):
     assert alerts.classify_user(user, now=2000) == expected
+
+
+@pytest.mark.parametrize(
+    "users",
+    [
+        [{"username": "same", "admin": "a"}, {"username": "same", "admin": "a"}],
+        [{"username": "", "admin": "a"}],
+        [{"username": None, "admin": "a"}],
+        [{"admin": "a"}],
+    ],
+)
+def test_rebecca_rejects_duplicate_or_missing_username(monkeypatch, users):
+    monkeypatch.setattr(
+        alerts.rebecca_api,
+        "_request",
+        AsyncMock(return_value={"users": users, "total": len(users)}),
+    )
+    with pytest.raises(ValueError, match="username"):
+        run(alerts._all_scoped_users("a"))
