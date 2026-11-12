@@ -693,7 +693,17 @@ class PaygService:
                     await self.get_balance(int(account["user_id"])),
                 )
             last_raw = int(account["last_raw_usage_bytes"] or 0)
-            delta_bytes = (raw - last_raw) if raw >= last_raw else raw
+            # Fail closed on a provider counter regression. A lower raw value
+            # could be a legitimate reset, a changed panel, or a stale API
+            # response. None of those authorizes charging the new value as
+            # fresh traffic without explicit reconciliation.
+            if raw < last_raw:
+                await conn.rollback()
+                raise PaygError(
+                    "Rebecca usage counter decreased; manual reconciliation required "
+                    f"(account={int(account_id)}, previous={last_raw}, current={raw})"
+                )
+            delta_bytes = raw - last_raw
             cumulative = int(account["cumulative_usage_bytes"] or 0) + max(0, delta_bytes)
             rate = int(account["price_per_gb_toman"])
             target_charge = cumulative * rate // GIB
