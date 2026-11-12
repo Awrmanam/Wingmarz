@@ -62,6 +62,7 @@ async def _all_scoped_users(panel_username: str) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     offset = 0
     total: int | None = None
+    seen_usernames: set[str] = set()
     while True:
         payload = await rebecca_api._request(
             "GET",
@@ -94,6 +95,14 @@ async def _all_scoped_users(panel_username: str) -> list[dict[str, Any]]:
             owner = user.get("admin")
             if owner is not None and str(owner) != str(panel_username):
                 raise ValueError("Rebecca returned a user outside requested admin")
+            username = user.get("username")
+            if not isinstance(username, str) or not username.strip():
+                raise ValueError("Rebecca returned a user without a valid username")
+            if username in seen_usernames:
+                # Offset pagination can overlap when users change mid-scan.
+                # Reject the snapshot instead of emitting false transitions.
+                raise ValueError("Rebecca users pagination returned duplicate username")
+            seen_usernames.add(username)
         result.extend(page)
         offset += len(page)
         if offset >= total:
