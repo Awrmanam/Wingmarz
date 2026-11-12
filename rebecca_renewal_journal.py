@@ -50,12 +50,17 @@ class RebeccaRenewalJournal:
         async with aiosqlite.connect(self.db_path) as conn:
             await conn.execute("BEGIN IMMEDIATE")
             async with conn.execute(
-                "SELECT status,order_type,target_admin_id FROM orders WHERE id=?",
+                """SELECT o.status,o.order_type,o.target_admin_id,
+                          o.user_id,a.user_id
+                   FROM orders o
+                   JOIN admins a ON a.id=o.target_admin_id
+                   WHERE o.id=?""",
                 (int(order_id),),
             ) as cur:
                 order = await cur.fetchone()
             if (not order or str(order[0]) not in {'pending','submitted','failed'}
-                    or str(order[1]) != 'renew' or int(order[2] or 0) != int(admin_id)):
+                    or str(order[1]) != 'renew' or int(order[2] or 0) != int(admin_id)
+                    or int(order[3]) != int(order[4])):
                 await conn.rollback()
                 raise RenewalJournalError("سفارش تمدید دیگر قابل اجرا نیست.")
             try:
