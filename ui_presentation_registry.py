@@ -172,6 +172,7 @@ BUTTONS: tuple[ButtonDef, ...] = (
     ButtonDef("admin.dashboard.style", "admin.dashboard", "ایموجی و استایل", "style:menu", rank=12),
     ButtonDef("admin.dashboard.texts", "admin.dashboard", "مدیریت متن‌ها", "cc:texts", rank=13),
     ButtonDef("admin.dashboard.buttons", "admin.dashboard", "دکمه‌ها و منوها", "cc:buttons", rank=14),
+    ButtonDef("admin.content.back", "admin.content", "بازگشت به مرکز ظاهر و محتوا", "ops:ui:home", "بازگشت به مرکز ظاهر و محتوا", rank=90, navigation_type="back"),
     ButtonDef("admin.dashboard.tools", "admin.dashboard", "ابزارها و بکاپ", "sudo_menu_backup", rank=15),
     ButtonDef("admin.dashboard.settings", "admin.dashboard", "تنظیمات", "sudo_menu_settings", rank=16),
     ButtonDef("admin.navigation.home", "admin.navigation", "خانه", "back_to_main", rank=0, navigation_type="home"),
