@@ -72,6 +72,7 @@ HUB_MENUS = {
             ("sales_cards", "کارت‌های بانکی", "finance", "💳"),
             ("set_billing", "تنظیمات صورتحساب", "settings", "🧮"),
             ("paygsvcadmin:home", "مدیریت PAYG", "finance", "⚡"),
+            ("paygaudit:root", "بازبینی شمارنده و تعلیق PAYG", "finance", "🧾"),
         ),
     },
     "customers": {
