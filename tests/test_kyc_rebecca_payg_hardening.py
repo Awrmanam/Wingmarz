@@ -144,7 +144,12 @@ def test_rebecca_status_alert_repeats_after_a_real_reactivation(tmp_path, monkey
         await rebecca_admin_ops._maybe_status_alert(None, admin, "disabled")
         await rebecca_admin_ops._maybe_status_alert(None, admin, "active")
         await rebecca_admin_ops._maybe_status_alert(None, admin, "disabled")
-        assert sent.await_count == 3
+        # Each status transition is delivered to private + group independently.
+        # Three episodes (disable, activate, disable) = six deliveries.
+        assert sent.await_count == 6
+        assert [call.kwargs["destination"] for call in sent.await_args_list] == [
+            "private", "group", "private", "group", "private", "group"
+        ]
 
     run(scenario())
 
