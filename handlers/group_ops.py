@@ -29,6 +29,8 @@ from database import db
 from group_ops_service import TOPICS, group_ops_service
 from kyc_service import kyc_service
 from rebecca_api import RebeccaAPIError, rebecca_api
+from payg_service import payg_service
+from reseller_lifecycle import classify_reseller
 from trust_service import trust_service
 
 
@@ -315,6 +317,26 @@ async def _render_admin_card(message: Message, admin_id: int) -> bool:
         except RebeccaAPIError:
             usage = None
 
+    financial_account = None
+    finance_unavailable = False
+    if config.PANEL_PROVIDER == "rebecca":
+        try:
+            financial_account = await payg_service.get_admin_account(int(admin.id))
+        except Exception:
+            finance_unavailable = True
+    lifecycle = classify_reseller(
+        remote if config.PANEL_PROVIDER == "rebecca" else
+        {"status": "active" if admin.is_active else "disabled"},
+        usage_bytes=usage,
+        financial_status=(financial_account or {}).get("status"),
+        local_active=bool(admin.is_active),
+        local_reason=getattr(admin,"deactivated_reason",None),
+        api_failed=remote_error or finance_unavailable,
+    )
+    lifecycle_text = " | ".join(lifecycle.labels())
+    if finance_unavailable:
+        lifecycle_text += " | ⚠️ وضعیت مالی نامشخص"
+
     raw_status = str((remote or {}).get("status") or ("active" if admin.is_active else "disabled")).lower()
     if remote_error:
         status = "unknown"
@@ -350,7 +372,8 @@ async def _render_admin_card(message: Message, admin_id: int) -> bool:
         f"🔐 Rebecca: <code>{escape(str(admin.marzban_username or '-'))}</code>\n"
         f"🆔 Telegram: <code>{int(admin.user_id)}</code>\n"
         f"📱 Username: {('@' + escape(admin.username)) if admin.username else '—'}\n"
-        f"{escape(status_line)}\n\n"
+        f"{escape(status_line)}\n"
+        f"🧭 <b>وضعیت‌های مستقل:</b> {escape(lifecycle_text)}\n\n"
         f"📊 مصرف: <b>{_format_bytes(usage)}</b> / {_format_bytes(data_limit)}\n"
         f"⏳ اعتبار: <b>{escape(remaining)}</b>\n"
         f"👤 User Limit: <b>{users_limit if isinstance(users_limit, int) and users_limit > 0 else 'نامحدود'}</b>\n\n"
@@ -363,6 +386,12 @@ async def _render_admin_card(message: Message, admin_id: int) -> bool:
     auto_button = "🤖 خاموش کردن Auto Approve" if auto_approve else "🤖 روشن کردن Auto Approve"
     status_button = "⛔ غیرفعال‌سازی" if status == "active" else "✅ فعال‌سازی"
     status_cb = f"manage_action_deactivate_{admin.id}" if status == "active" else f"manage_action_activate_{admin.id}"
+    if lifecycle.financial_hold or finance_unavailable:
+        status_button = (
+            "🔒 بررسی تعلیق مالی" if lifecycle.financial_hold
+            else "⚠️ بررسی وضعیت مالی"
+        )
+        status_cb = "paygaudit:holds"
 
     rows = [
         [
