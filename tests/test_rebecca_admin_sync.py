@@ -43,7 +43,7 @@ def test_admin_users_snapshot_is_explicitly_scoped_to_selected_rebecca_admin(mon
     request.assert_awaited_once_with(
         "GET",
         "/api/users",
-        params={"admin": "payg7072365858_7", "limit": 20, "sort": "username"},
+        params={"admin": "payg7072365858_7", "limit": 20, "offset": 0, "sort": "username"},
     )
 
 
