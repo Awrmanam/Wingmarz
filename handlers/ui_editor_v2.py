@@ -26,6 +26,10 @@ class UIMessageEditStates(StatesGroup):
     body = State()
 
 
+class UIMessageSearchStates(StatesGroup):
+    query = State()
+
+
 TRIAL_MESSAGE_TITLES = {
     "trial_v2_root": "صفحه انتخاب تست رایگان",
     "trial_v2_config_select": "انتخاب سرویس کانفیگ تست",
@@ -174,8 +178,9 @@ async def message_categories(callback: CallbackQuery, state: FSMContext):
         if count:
             rows.append([await _btn(f"{emoji} {title} · {count}", f"uiv2:mc:{key}")])
     rows.extend([
+        [await _btn("🔎 جستجو در متن‌ها", "uiv2:search", fallback="🔎")],
         [await _btn("Premium Emojiها", "style:emojis", icon_key="style", fallback="✨")],
-        [await _btn("خانه", "back_to_main", icon_key="home", fallback="🏠")],
+        [await _btn("بازگشت به مرکز ظاهر و محتوا", "ops:ui:home", fallback="⬅️")],
     ])
     await callback.message.edit_text(
         "📝 <b>مدیریت متن‌های ربات</b>\n\n"
@@ -185,6 +190,67 @@ async def message_categories(callback: CallbackQuery, state: FSMContext):
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
     )
     await callback.answer()
+
+
+def search_message_catalog(items: list[MessageTemplateItem], query: str) -> list[MessageTemplateItem]:
+    """Human-readable search; never exposes technical callback metadata."""
+    needle = str(query or "").replace("\u200c"," ").casefold().strip()
+    if not needle:
+        return []
+    return sorted((
+        item for item in items
+        if needle in _message_title(item.key).replace("\u200c"," ").casefold()
+        or needle in str(item.body).replace("\u200c"," ").casefold()
+    ), key=lambda item: _message_title(item.key))
+
+
+@ui_editor_v2_router.callback_query(F.data == "uiv2:search")
+async def message_search_start(callback: CallbackQuery, state: FSMContext):
+    if await _deny(callback):
+        return
+    await state.clear()
+    await state.set_state(UIMessageSearchStates.query)
+    await callback.message.answer(
+        "🔎 <b>جستجو در متن‌های ربات</b>\n\n"
+        "بخشی از عنوان یا متن پیام را بنویسید (۲ تا ۶۰ کاراکتر).",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [await _btn("انصراف و بازگشت", "cc:texts", fallback="⬅️")],
+        ]),
+    )
+    await callback.answer()
+
+
+@ui_editor_v2_router.message(UIMessageSearchStates.query, F.text)
+async def message_search_result(message: Message, state: FSMContext):
+    if not message.from_user or not _sudo(message.from_user.id):
+        return
+    query = (message.text or "").strip()
+    if not 2 <= len(query) <= 60:
+        await message.answer("عبارت جستجو باید ۲ تا ۶۰ کاراکتر باشد.")
+        return
+    results = search_message_catalog(await premium_ui_service.list_messages(), query)
+    await state.clear()
+    rows = [
+        [await _btn(
+            ("✨" if item.is_overridden else "▫️") + " " +
+            _message_title(item.key), f"uiv2:m:{item.key}",
+        )]
+        for item in results[:12]
+    ]
+    rows.extend([
+        [await _btn("جستجوی دوباره", "uiv2:search", fallback="🔎")],
+        [await _btn("بازگشت به بخش‌های متن", "cc:texts", fallback="⬅️")],
+    ])
+    await message.answer(
+        "🔎 <b>نتیجه جستجو</b>\n"
+        f"عبارت: <b>{escape(query)}</b>\n"
+        f"تعداد نتیجه: <b>{len(results)}</b>\n"
+        + ("برای نتایج بیشتر عبارت دقیق‌تری وارد کنید."
+           if len(results) > 12 else
+           "متن موردنظر را انتخاب کنید." if results else
+           "موردی پیدا نشد."),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
 
 
 @ui_editor_v2_router.callback_query(F.data.startswith("uiv2:mc:"))
