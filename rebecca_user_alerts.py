@@ -323,14 +323,44 @@ class RebeccaUserAlerts:
                     """, (int(now), int(event_id), token))
             await conn.commit()
 
-    async def deliver(self, bot, now: int | None = None) -> int:
+    async def deliver(
+        self, bot, now: int | None = None,
+        *, owner_map: dict[str, int] | None = None,
+    ) -> int:
+        """Deliver only to the current, unambiguously linked Telegram owner.
+
+        A queued event may outlive a reseller ownership transfer. Revalidating
+        at delivery avoids leaking old customers to a former owner.
+        """
         now = int(now if now is not None else time.time())
+        if owner_map is None:
+            local = await db.get_all_admins()
+            owners: dict[str, set[int]] = defaultdict(set)
+            for admin in local:
+                if admin.marzban_username and int(admin.user_id) > 0:
+                    owners[str(admin.marzban_username)].add(int(admin.user_id))
+            owner_map = {
+                panel: next(iter(ids)) for panel, ids in owners.items()
+                if len(ids) == 1
+            }
         token, rows = await self.claim_due(
             now, window=int(getattr(config, "REBECCA_USER_ALERTS_GROUP_WINDOW", 60))
         )
         groups: dict[int, list[dict]] = defaultdict(list)
+        rejected: list[int] = []
         for item in rows:
+            remote_owner = owner_map.get(str(item["panel_username"]))
+            if remote_owner != int(item["owner_telegram_id"]):
+                rejected.append(int(item["id"]))
+                continue
             groups[int(item["owner_telegram_id"])].append(item)
+        if rejected:
+            logger.warning(
+                "Rebecca alert delivery quarantined %s stale/unlinked owner events",
+                len(rejected),
+            )
+            # Keep events durable, never reassign them to a different owner.
+            await self.retry_later(rejected, token, now)
         delivered = 0
         for owner_id, events in groups.items():
             blocks = [events[i:i+MAX_ITEMS_PER_DIGEST] for i in range(0, len(events), MAX_ITEMS_PER_DIGEST)]
@@ -380,35 +410,53 @@ class RebeccaUserAlerts:
         return await premium_ui_service.render_placeholders(str(rendered))
 
     async def tick(self, bot, now: int | None = None) -> dict[str, int]:
-        """All network reads are scoped by Rebecca panel and immutable owner."""
+        """Poll read-only Rebecca state and independently drain queued alerts."""
         now = int(now if now is not None else time.time())
         if config.PANEL_PROVIDER != "rebecca":
             return {"polled": 0, "events": 0, "delivered": 0}
         local = await db.get_all_admins()
-        remotes = await rebecca_api.list_admins()
-        by_name = {
-            str(a.get("username")): a for a in remotes
-            if isinstance(a, dict) and a.get("username")
+        owners: dict[str, set[int]] = defaultdict(set)
+        for admin in local:
+            if admin.marzban_username and int(admin.user_id) > 0:
+                owners[str(admin.marzban_username)].add(int(admin.user_id))
+        owner_map = {
+            panel: next(iter(ids)) for panel, ids in owners.items()
+            if len(ids) == 1
         }
-        chosen = await self.poll_candidates(local)
-        emitted = 0
-        successful = 0
-        for admin in chosen:
-            panel = str(admin.marzban_username)
-            remote = by_name.get(panel)
-            if not remote or str(remote.get("role") or "").lower() != "standard":
-                continue
-            remote_id = _nonneg(remote.get("telegram_id"))
-            if remote_id and remote_id != int(admin.user_id):
-                logger.warning("Skipping Rebecca user scan for panel with ownership mismatch %s", panel)
-                continue
-            try:
-                users = await _all_scoped_users(panel)
-                emitted += await self.observe_panel(panel, int(admin.user_id), users, now)
-                successful += 1
-            except Exception:
-                logger.exception("Rebecca user alert scan failed for panel %s", panel)
-        delivered = await self.deliver(bot, now)
+        by_name: dict[str, dict] = {}
+        api_ok = False
+        try:
+            remotes = await rebecca_api.list_admins()
+            api_ok = True
+            by_name = {
+                str(a.get("username")): a for a in remotes
+                if isinstance(a, dict) and a.get("username")
+            }
+        except Exception:
+            logger.exception("Rebecca alert polling failed; draining queued Telegram events")
+        emitted, successful = 0, 0
+        if api_ok:
+            # A detected provider ownership discrepancy blocks delivery of
+            # already-queued data too, not just new scans.
+            for panel, owner in tuple(owner_map.items()):
+                remote = by_name.get(panel)
+                remote_id = _nonneg(remote.get("telegram_id")) if remote else None
+                if (remote is None
+                    or str(remote.get("role") or "").lower() != "standard"
+                    or (remote_id and remote_id != owner)):
+                    owner_map.pop(panel, None)
+            chosen = await self.poll_candidates(local)
+            for admin in chosen:
+                panel = str(admin.marzban_username)
+                if owner_map.get(panel) != int(admin.user_id):
+                    continue
+                try:
+                    users = await _all_scoped_users(panel)
+                    emitted += await self.observe_panel(panel, int(admin.user_id), users, now)
+                    successful += 1
+                except Exception:
+                    logger.exception("Rebecca user alert scan failed for panel %s", panel)
+        delivered = await self.deliver(bot, now, owner_map=owner_map)
         return {"polled": successful, "events": emitted, "delivered": delivered}
 
 
