@@ -8,6 +8,7 @@ import pyzipper
 import pytest
 
 import config
+import authorization
 from utils.backup import BackupArtifact, create_backup_zip, restore_database_from_zip
 from utils.backup_delivery import send_backup_to_chat
 
@@ -114,6 +115,7 @@ def test_backup_never_exposes_any_secret_in_telegram(tmp_path, monkeypatch):
         size_bytes=archive.stat().st_size,
     )
     monkeypatch.setattr(config, "SUDO_ADMINS", [123])
+    monkeypatch.setattr(authorization, "OWNER_IDS", (123,))
     monkeypatch.setattr(config, "BOT_TOKEN", "bot-token-secret")
     monkeypatch.setattr(config, "MARZBAN_USERNAME", "admin")
     monkeypatch.setattr(config, "MARZBAN_PASSWORD", "panel-password-secret")
@@ -144,6 +146,7 @@ def test_backup_rejects_non_owner_and_group_recipients(tmp_path, monkeypatch):
         created_at=datetime.now(timezone.utc), size_bytes=archive.stat().st_size,
     )
     monkeypatch.setattr(config, "SUDO_ADMINS", [123])
+    monkeypatch.setattr(authorization, "OWNER_IDS", (123,))
     bot = _FakeBot()
 
     for destination in (-1001234567890, 999):
@@ -162,3 +165,22 @@ def test_backup_requires_recoverable_strong_password(tmp_path, monkeypatch):
 
     with pytest.raises(RuntimeError, match="BACKUP_ZIP_PASSWORD"):
         asyncio.run(create_backup_zip())
+
+
+def test_runtime_manager_is_not_allowed_to_receive_encrypted_backup(tmp_path, monkeypatch):
+    archive = tmp_path / "backup.zip"
+    archive.write_bytes(b"encrypted-fixture")
+    artifact = BackupArtifact(
+        path=archive, zip_password="long-password-123456",
+        database_password=None, database_engine="SQLite",
+        created_at=datetime.now(timezone.utc), size_bytes=archive.stat().st_size,
+    )
+    # The Manager joins SUDO_ADMINS for legacy operational routes only.
+    monkeypatch.setattr(config, "SUDO_ADMINS", [123, 456])
+    monkeypatch.setattr(authorization, "OWNER_IDS", (123,))
+    bot = _FakeBot()
+    with pytest.raises(PermissionError):
+        asyncio.run(send_backup_to_chat(bot, 456, artifact, automatic=False))
+    assert not bot.documents
+    asyncio.run(send_backup_to_chat(bot, 123, artifact, automatic=False))
+    assert [document["chat_id"] for document in bot.documents] == [123]
