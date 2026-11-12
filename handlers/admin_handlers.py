@@ -469,49 +469,17 @@ async def admin_buy_reseller(callback: CallbackQuery):
 
 
 @admin_router.callback_query(F.data.startswith("admin_order_"))
-async def admin_order(callback: CallbackQuery):
-    plan_id = int(callback.data.split("_")[-1])
-    plans = await db.get_plans(only_active=True)
-    plan = next((p for p in plans if p.id == plan_id), None)
-    if not plan:
-        await callback.answer("پلن یافت نشد.", show_alert=True)
+async def admin_order(callback: CallbackQuery, state: FSMContext):
+    """Legacy reseller order buttons use the canonical guarded checkout."""
+    try:
+        plan_id = int(str(callback.data or "").rsplit("_", 1)[-1])
+        if plan_id <= 0:
+            raise ValueError("invalid plan")
+    except (ValueError, TypeError):
+        await callback.answer("پلن نامعتبر است.", show_alert=True)
         return
-    order_id = await db.add_order(callback.from_user.id, plan_id, plan.price, plan.name)
-    if not order_id:
-        await callback.answer("خطا در ثبت سفارش.", show_alert=True)
-        return
-    await _mirror_admin_order_created(callback.bot, order_id)
-    price_txt = f"{plan.price:,}"
-    current_order = await db.get_order_by_id(order_id)
-    kyc_needed = await order_kyc_gate.requires_kyc(current_order or {
-        "id": order_id, "user_id": callback.from_user.id, "order_type": "purchase"
-    })
-    # Show manual payment cards
-    cards = await db.get_cards(only_active=True)
-    lines = [
-        f"✅ سفارش ثبت شد.\n\nشناسه سفارش: {order_id}\nپلن: {plan.name}\nقیمت: {price_txt} تومان\n",
-        config.MESSAGES["public_payment_instructions"],
-        "",
-        (
-            "🪪 <b>توجه:</b> بعد از تأیید پرداخت، صدور این سفارش تا تکمیل KYC متوقف می‌ماند. "
-            "در صورت رد KYC، سفارش وارد صف استرداد می‌شود."
-            if kyc_needed else
-            "✅ هویت شما تأیید شده؛ بعد از تأیید پرداخت، سفارش وارد مرحله صدور می‌شود."
-        ),
-        "",
-        "کارت‌های فعال:",
-    ]
-    if not cards:
-        lines.append("— فعلاً کارتی ثبت نشده. لطفاً با پشتیبانی تماس بگیرید.")
-    else:
-        for c in cards:
-            lines.append(f"• {c.get('bank_name','بانک')} | {c.get('card_number','---- ---- ---- ----')} | {c.get('holder_name','')} ")
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=config.BUTTONS["mark_paid"], callback_data=f"admin_mark_paid_{order_id}")],
-        [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="back_to_admin_main")]
-    ])
-    await callback.message.edit_text("\n".join(lines), reply_markup=kb)
-    await callback.answer()
+    from handlers.operations import _checkout_prompt
+    await _checkout_prompt(callback, "a", plan_id, state)
 
 
 @admin_router.callback_query(F.data.startswith("admin_mark_paid_"))
@@ -525,6 +493,18 @@ async def admin_mark_paid(callback: CallbackQuery, state: FSMContext):
     if not order or order.get("user_id") != callback.from_user.id or order.get("status") != "pending":
         await callback.answer("سفارش یافت نشد.", show_alert=True)
         return
+    # Old "I paid" buttons must never skip first-time card verification.
+    from purchase_kyc_flow import require_checkout_kyc
+    if await require_checkout_kyc(
+        callback.message,
+        telegram_user_id=int(callback.from_user.id),
+        kind="fixed",
+        reference_id=order_id,
+        source="a",
+        edit=True,
+    ):
+        await callback.answer()
+        return
     await state.update_data(order_id=order_id)
     await state.set_state(AdminPaymentStates.waiting_for_receipt)
     await callback.message.edit_text(config.MESSAGES["public_send_receipt"], reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="back_to_admin_main")]]))
@@ -536,6 +516,18 @@ async def admin_receive_payment_receipt(message: Message, state: FSMContext):
     data = await state.get_data()
     order_id = data.get("order_id")
     if not order_id:
+        await state.clear()
+        return
+    # A previously-open receipt FSM cannot bypass the card KYC gate.
+    from purchase_kyc_flow import require_checkout_kyc
+    if await require_checkout_kyc(
+        message,
+        telegram_user_id=int(message.from_user.id),
+        kind="fixed",
+        reference_id=int(order_id),
+        source="a",
+        edit=False,
+    ):
         await state.clear()
         return
     if not message.photo:
@@ -712,23 +704,11 @@ async def admin_full_renew_plan_selected(callback: CallbackQuery):
     await db.update_order(order_id, order_type="renew", target_admin_id=admin_id, apply_as_reset=1)
     await _mirror_admin_order_created(callback.bot, order_id)
     # Show payment instructions
-    cards = await db.get_cards(only_active=True)
-    lines = [
-        f"✅ سفارش تمدید کامل ثبت شد.\n\nشناسه سفارش: {order_id}\nپلن انتخابی: {plan.name}\nقیمت: {plan.price:,} تومان\n",
-        config.MESSAGES["public_payment_instructions"],
-        "",
-        "کارت‌های فعال:",
-    ]
-    if not cards:
-        lines.append("— فعلاً کارتی ثبت نشده. لطفاً با پشتیبانی تماس بگیرید.")
-    else:
-        for c in cards:
-            lines.append(f"• {c.get('bank_name','بانک')} | {c.get('card_number','---- ---- ---- ----')} | {c.get('holder_name','')} ")
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=config.BUTTONS["mark_paid"], callback_data=f"admin_mark_paid_{order_id}")],
-        [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data=f"admin_renew_panel_{admin_id}")]
-    ])
-    await callback.message.edit_text("\n".join(lines), reply_markup=kb)
+    # Same checkout guard for new plans and all renewal variants.
+    from handlers.operations import render_checkout_payment
+    await render_checkout_payment(
+        callback.message, await db.get_order_by_id(order_id), source="a"
+    )
     await callback.answer()
 
 
@@ -764,6 +744,11 @@ async def admin_renew_traffic_amount(callback: CallbackQuery, state: FSMContext)
         data = await state.get_data()
         admin_id = int(data.get("current_admin_id"))
     gb = int(parts[-1])
+    # Avoid forged renewal callbacks targeting another Telegram account.
+    target = await db.get_admin_by_id(int(admin_id))
+    if not target or int(target.user_id) != int(callback.from_user.id):
+        await callback.answer("این پنل متعلق به حساب شما نیست.", show_alert=True)
+        return
     rates = await db.get_billing_rates()
     price = gb * rates['per_gb_toman']
     # ایجاد سفارش تمدید
@@ -772,23 +757,11 @@ async def admin_renew_traffic_amount(callback: CallbackQuery, state: FSMContext)
     await db.update_order(order_id, order_type="renew", target_admin_id=admin_id, delta_traffic_bytes=delta_bytes)
     await _mirror_admin_order_created(callback.bot, order_id)
     # نمایش کارت‌ها و دریافت رسید
-    cards = await db.get_cards(only_active=True)
-    lines = [
-        f"✅ سفارش تمدید ثبت شد.\n\nشناسه سفارش: {order_id}\nافزایش حجم: +{gb}GB\nقیمت: {price:,} تومان\n",
-        config.MESSAGES["public_payment_instructions"],
-        "",
-        "کارت‌های فعال:",
-    ]
-    if not cards:
-        lines.append("— فعلاً کارتی ثبت نشده. لطفاً با پشتیبانی تماس بگیرید.")
-    else:
-        for c in cards:
-            lines.append(f"• {c.get('bank_name','بانک')} | {c.get('card_number','---- ---- ---- ----')} | {c.get('holder_name','')} ")
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=config.BUTTONS["mark_paid"], callback_data=f"admin_mark_paid_{order_id}")],
-        [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data=f"admin_renew_panel_{admin_id}")]
-    ])
-    await callback.message.edit_text("\n".join(lines), reply_markup=kb)
+    # Same checkout guard for new plans and all renewal variants.
+    from handlers.operations import render_checkout_payment
+    await render_checkout_payment(
+        callback.message, await db.get_order_by_id(order_id), source="a"
+    )
     await callback.answer()
 
 
@@ -821,29 +794,22 @@ async def admin_renew_time_amount(callback: CallbackQuery, state: FSMContext):
         data = await state.get_data()
         admin_id = int(data.get("current_admin_id"))
     days = int(parts[-1])
+    # Avoid forged renewal callbacks targeting another Telegram account.
+    target = await db.get_admin_by_id(int(admin_id))
+    if not target or int(target.user_id) != int(callback.from_user.id):
+        await callback.answer("این پنل متعلق به حساب شما نیست.", show_alert=True)
+        return
     rates = await db.get_billing_rates()
     price = (days // 30) * rates['per_30days_toman']
     delta_seconds = days * 24 * 60 * 60
     order_id = await db.add_order(callback.from_user.id, plan_id=0, price_snapshot=price, plan_name_snapshot=f"تمدید زمان +{days} روز")
     await db.update_order(order_id, order_type="renew", target_admin_id=admin_id, delta_time_seconds=delta_seconds)
     await _mirror_admin_order_created(callback.bot, order_id)
-    cards = await db.get_cards(only_active=True)
-    lines = [
-        f"✅ سفارش تمدید ثبت شد.\n\nشناسه سفارش: {order_id}\nافزایش زمان: +{days} روز\nقیمت: {price:,} تومان\n",
-        config.MESSAGES["public_payment_instructions"],
-        "",
-        "کارت‌های فعال:",
-    ]
-    if not cards:
-        lines.append("— فعلاً کارتی ثبت نشده. لطفاً با پشتیبانی تماس بگیرید.")
-    else:
-        for c in cards:
-            lines.append(f"• {c.get('bank_name','بانک')} | {c.get('card_number','---- ---- ---- ----')} | {c.get('holder_name','')} ")
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=config.BUTTONS["mark_paid"], callback_data=f"admin_mark_paid_{order_id}")],
-        [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data=f"admin_renew_panel_{admin_id}")]
-    ])
-    await callback.message.edit_text("\n".join(lines), reply_markup=kb)
+    # Same checkout guard for new plans and all renewal variants.
+    from handlers.operations import render_checkout_payment
+    await render_checkout_payment(
+        callback.message, await db.get_order_by_id(order_id), source="a"
+    )
     await callback.answer()
 
 
@@ -876,28 +842,21 @@ async def admin_renew_users_amount(callback: CallbackQuery, state: FSMContext):
         data = await state.get_data()
         admin_id = int(data.get("current_admin_id"))
     users = int(parts[-1])
+    # Avoid forged renewal callbacks targeting another Telegram account.
+    target = await db.get_admin_by_id(int(admin_id))
+    if not target or int(target.user_id) != int(callback.from_user.id):
+        await callback.answer("این پنل متعلق به حساب شما نیست.", show_alert=True)
+        return
     rates = await db.get_billing_rates()
     price = users * rates['per_user_toman']
     order_id = await db.add_order(callback.from_user.id, plan_id=0, price_snapshot=price, plan_name_snapshot=f"افزایش کاربر +{users}")
     await db.update_order(order_id, order_type="renew", target_admin_id=admin_id, delta_users=users)
     await _mirror_admin_order_created(callback.bot, order_id)
-    cards = await db.get_cards(only_active=True)
-    lines = [
-        f"✅ سفارش تمدید ثبت شد.\n\nشناسه سفارش: {order_id}\nافزایش کاربر: +{users}\nقیمت: {price:,} تومان\n",
-        config.MESSAGES["public_payment_instructions"],
-        "",
-        "کارت‌های فعال:",
-    ]
-    if not cards:
-        lines.append("— فعلاً کارتی ثبت نشده. لطفاً با پشتیبانی تماس بگیرید.")
-    else:
-        for c in cards:
-            lines.append(f"• {c.get('bank_name','بانک')} | {c.get('card_number','---- ---- ---- ----')} | {c.get('holder_name','')} ")
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=config.BUTTONS["mark_paid"], callback_data=f"admin_mark_paid_{order_id}")],
-        [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data=f"admin_renew_panel_{admin_id}")]
-    ])
-    await callback.message.edit_text("\n".join(lines), reply_markup=kb)
+    # Same checkout guard for new plans and all renewal variants.
+    from handlers.operations import render_checkout_payment
+    await render_checkout_payment(
+        callback.message, await db.get_order_by_id(order_id), source="a"
+    )
     await callback.answer()
 
 

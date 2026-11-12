@@ -309,37 +309,22 @@ async def _create_order_and_render(
         await _notify_free_order(message.bot, order_id, customer_id, str(plan.name), username, quote)
         return
 
-    cards = await db.get_cards(only_active=True)
-    lines = [
-        "✅ سفارش ثبت شد.",
-        "",
-
-        f"پلن: {escape(str(plan.name))}",
-        f"نام کاربری دلخواه: <code>{escape(username)}</code>{discount_lines}",
-        f"قیمت نهایی: <b>{final_price:,} تومان</b>",
-        "",
-        config.MESSAGES["public_payment_instructions"],
-        "",
-        "کارت‌های فعال:",
-    ]
-    if not cards:
-        lines.append("— فعلاً کارتی ثبت نشده. لطفاً با پشتیبانی تماس بگیرید.")
-    else:
-        for card in cards:
-            lines.append(
-                f"• {escape(str(card.get('bank_name','بانک')))} | "
-                f"<code>{escape(str(card.get('card_number','---- ---- ---- ----')))}</code> | "
-                f"{escape(str(card.get('holder_name','')))}"
-            )
-    back_cb = "back_to_admin_main" if source == "a" else "public_back_main"
-    await message.answer(
-        "\n".join(lines),
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [await _button(config.BUTTONS["mark_paid"], f"public_mark_paid_{order_id}", fallback="✅")],
-            [await _button("بازگشت", back_cb, icon_key="back", fallback="⬅️")],
-        ]),
+    # This named-username checkout used to bypass KYC and reveal bank cards
+    # directly. Render the same guarded payment screen as all other orders.
+    # The user message cannot be edited, so wrap edit_text -> answer.
+    from handlers.operations import _CheckoutMessage, render_checkout_payment
+    await render_checkout_payment(
+        _CheckoutMessage(message),
+        {
+            "id": int(order_id),
+            "user_id": customer_id,
+            "status": "pending",
+            "order_type": "purchase",
+            "plan_name_snapshot": str(plan.name),
+            "price_snapshot": int(final_price),
+        },
+        source=source,
     )
-
 
 @trial_experience_router.callback_query(PreferredOrderApproval())
 @track_approval

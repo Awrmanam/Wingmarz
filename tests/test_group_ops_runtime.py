@@ -237,13 +237,14 @@ def test_kyc_gate_release_returns_paid_orders_to_submitted(tmp_path, monkeypatch
     run(scenario())
 
 
-def test_canonical_checkout_warns_about_kyc_before_payment():
+def test_canonical_checkout_enforces_kyc_before_any_payment_card():
     source = open("handlers/operations.py", encoding="utf-8").read()
     start = source.index("async def _create_checkout_order")
     end = source.index("# ---------------------------- Trial configs", start)
     checkout = source[start:end]
     assert "render_checkout_payment" in checkout
-    assert "order_kyc_gate.requires_kyc" in checkout
+    # Renewal fulfillment exemptions must not bypass sender-card verification.
+    assert "order_kyc_gate.requires_kyc" not in checkout
     assert "require_checkout_kyc" in checkout
     assert checkout.index("require_checkout_kyc") < checkout.index("db.get_cards")
 

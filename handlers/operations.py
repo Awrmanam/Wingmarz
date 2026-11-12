@@ -723,13 +723,6 @@ async def _create_checkout_order(callback: CallbackQuery | _MessageCheckoutAdapt
             )
     except Exception:
         pass
-    current_order = await db.get_order_by_id(order_id)
-    kyc_needed = await order_kyc_gate.requires_kyc(current_order or {
-        "id": order_id,
-        "user_id": callback.from_user.id,
-        "order_type": "purchase",
-    })
-
     if quote:
         try:
             await operations_service.record_redemption(quote, callback.from_user.id, order_id)
@@ -772,20 +765,29 @@ async def render_checkout_payment(message, order: dict, *, source: str = "p") ->
         return
     order_id = int(order["id"])
     user_id = int(order["user_id"])
-    if await order_kyc_gate.requires_kyc(order):
-        if await require_checkout_kyc(
-            message,
-            telegram_user_id=user_id,
-            kind="fixed",
-            reference_id=order_id,
-            source=source,
-            edit=True,
-        ):
-            return
+    # Identity is checked before displaying the payment destination for
+    # EVERY fixed/renew order. The older per-panel fulfillment exemption is
+    # not a payment-card authorization policy.
+    if await require_checkout_kyc(
+        message,
+        telegram_user_id=user_id,
+        kind="fixed",
+        reference_id=order_id,
+        source=source,
+        edit=True,
+    ):
+        return
 
     cards = await db.get_cards(only_active=True)
     plan_name = escape(str(order.get("plan_name_snapshot") or "پنل نمایندگی"))
     amount = int(order.get("price_snapshot") or 0)
+    # Preferred-username orders need to retain their selected username
+    # both before KYC and after the buyer resumes this same order.
+    try:
+        from trial_experience_service import trial_experience_service
+        preferred_username = await trial_experience_service.get_order_username(order_id)
+    except Exception:
+        preferred_username = None
     lines = [
         "💳 <b>وقت پرداخت رسیده!</b>",
         "",
@@ -797,6 +799,8 @@ async def render_checkout_payment(message, order: dict, *, source: str = "p") ->
         "",
         "🏦 <b>کارت‌های مقصد پرداخت</b>",
     ]
+    if preferred_username:
+        lines.insert(4, f"🔐 نام کاربری درخواستی: <code>{escape(preferred_username)}</code>")
     from purchase_kyc_flow import approved_payment_card_note
     lines.insert(-1, await approved_payment_card_note(user_id))
     lines.insert(-1, "")
