@@ -22,6 +22,8 @@ _ROOT_ACTIONS = {
 
 _PANEL_PATTERNS = (
     re.compile(r"^(?:info|report|users|reactivate)_panel_(\d+)$"),
+    # Previously issued pagination buttons must not bypass renewed KYC restrictions.
+    re.compile(r"^rebecca_users_page:(\d+):\d+$"),
     re.compile(r"^admin_renew_panel_(\d+)$"),
     re.compile(r"^admin_renew_(?:traffic|time|users)_(\d+)$"),
     re.compile(r"^admin_renew_(?:traffic|time|users)_amount_(\d+)_\d+$"),
