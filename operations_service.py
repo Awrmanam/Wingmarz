@@ -499,6 +499,9 @@ class OperationsService:
         key = str(callback_data or "").strip()
         if not key or len(key) > 64:
             raise OperationsError("شناسه دکمه نامعتبر است.")
+        # The settings entry is the recovery path for every other hidden item.
+        if key == "ops:hub:settings" and not visible:
+            raise OperationsError("مسیر تنظیمات ربات نباید پنهان شود.")
         async with aiosqlite.connect(self.db_path) as conn:
             await conn.execute(
                 """
