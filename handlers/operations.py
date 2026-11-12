@@ -18,6 +18,7 @@ from authorization import is_staff
 from database import db
 from operations_service import DiscountQuote, OperationsError, operations_service
 from style_engine import style_engine
+from premium_ui_service import PremiumUIError, premium_ui_service
 from group_ops_service import group_ops_service
 from order_kyc_gate import order_kyc_gate
 
@@ -169,8 +170,9 @@ async def build_operational_dashboard_keyboard() -> InlineKeyboardMarkup:
 
     quick = []
     for callback_data, default, icon_key, fallback in QUICK_ACTIONS:
-        label = await _menu_label(callback_data, default)
-        quick.append(await _button(label, callback_data, icon_key=icon_key, fallback=fallback))
+        # Always supply canonical text identity. The premium UI runtime
+        # applies the migrated override without mutating callback metadata.
+        quick.append(await _button(default, callback_data, icon_key=icon_key, fallback=fallback))
     if quick:
         rows.append(quick)
 
@@ -179,8 +181,7 @@ async def build_operational_dashboard_keyboard() -> InlineKeyboardMarkup:
         visible = await operations_service.menu_is_visible(callback_data)
         if not visible:
             continue
-        label = await _menu_label(callback_data, default)
-        rendered.append(await _button(label, callback_data, icon_key=icon_key, fallback=fallback))
+        rendered.append(await _button(default, callback_data, icon_key=icon_key, fallback=fallback))
 
     for idx in range(0, len(rendered), 2):
         rows.append(rendered[idx:idx + 2])
@@ -1168,20 +1169,9 @@ async def texts_menu(callback: CallbackQuery, state: FSMContext):
 
 
 async def _render_buttons_menu(message: Message) -> None:
-    lines = ["🔘 <b>دکمه‌ها و منوهای داشبورد</b>", "", "روی هر مورد بزنید تا نام یا نمایش/عدم نمایش آن را تغییر دهید."]
-    rows = []
-    seen_callbacks = set()
-    for idx, (callback_data, default, _icon, _fallback) in enumerate(MENU_SPECS):
-        # Keep one editor row per callback identity.
-        if callback_data in seen_callbacks:
-            continue
-        seen_callbacks.add(callback_data)
-        visible = await operations_service.menu_is_visible(callback_data)
-        label = await _menu_label(callback_data, default)
-        state = "✅" if visible else "⛔"
-        rows.append([await _button(f"{state} {label}", f"ops:menu:item:{idx}", fallback="🔘")])
-    rows.append([await _button("خانه", "back_to_main", icon_key="home", fallback="🏠")])
-    await message.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    """Legacy entry is now an alias of the one registry-driven button editor."""
+    from handlers.button_editor_context import _render_root
+    await _render_root(message)
 
 
 async def buttons_menu(callback: CallbackQuery, state: FSMContext):
@@ -1256,9 +1246,18 @@ async def menu_rename_value(message: Message, state: FSMContext):
     if not label or len(label) > 40 or "<" in label or ">" in label:
         await message.answer("❌ نام باید ۱ تا ۴۰ کاراکتر و بدون HTML باشد.")
         return
-    await style_engine.set_text_override("menu", spec[0], label)
+    try:
+        await premium_ui_service.set_button_text_by_identity(spec[0], spec[1], label)
+    except PremiumUIError as exc:
+        await message.answer(f"❌ {escape(str(exc))}")
+        return
     await state.clear()
-    await message.answer("✅ نام دکمه ذخیره شد.")
+    await message.answer(
+        "✅ نام در مرکز واحد دکمه‌ها ذخیره شد.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [await _button("مدیریت دکمه‌ها", "cc:buttons", fallback="🔘")]
+        ]),
+    )
 
 
 @operations_router.callback_query(F.data.startswith("ops:menu:toggle:"))
@@ -1291,6 +1290,9 @@ async def menu_label_reset(callback: CallbackQuery):
     )
     if target:
         await style_engine.remove_text_override(target.id)
+    item = await premium_ui_service.get_button_by_identity(spec[0], spec[1])
+    if item:
+        await premium_ui_service.reset_button_text(item.id)
     await _render_buttons_menu(callback.message)
     await callback.answer("بازگردانی شد")
 
@@ -1307,8 +1309,8 @@ async def unified_ui_settings(callback: CallbackQuery) -> None:
         [await _button("بازگشت به تنظیمات", "ops:hub:settings", fallback="↩️")],
     ]
     await callback.message.edit_text(
-        "🎨 <b>مرکز شخصی‌سازی Wingmarz</b>\n\n"
-        "از همین صفحه متن‌ها، دکمه‌ها و ایموجی‌ها را مدیریت کنید. "
+        "🎨 <b>مدیریت ظاهر و محتوای ربات</b>\n\n"
+        "تمام تنظیمات نمایشی را از این مرکز مدیریت کنید. "
         "تغییر ظاهر هیچ شناسه فنی، پرداخت یا عملکرد دکمه را تغییر نمی‌دهد.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
     )
