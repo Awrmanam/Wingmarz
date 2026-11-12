@@ -33,6 +33,10 @@ def _operator(monkeypatch, raw):
     monkeypatch.setattr(
         module.rebecca_api, "get_admin_usage", AsyncMock(return_value=raw),
     )
+    monkeypatch.setattr(
+        module.rebecca_api, "find_admin",
+        AsyncMock(return_value={"status": "active"}),
+    )
 
 
 def test_verified_reset_starts_new_epoch_without_charging_ambiguous_bytes(tmp_path, monkeypatch):
