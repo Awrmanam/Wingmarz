@@ -7,6 +7,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
 
 import config
+from authorization import OWNER_IDS
 from database import db
 from marzban_api import marzban_api
 from models.schemas import UsageReportModel, LogModel, LimitCheckResult
@@ -422,7 +423,7 @@ class MonitoringScheduler:
 
                 artifact = await create_backup_zip()
                 failures = []
-                owner_ids = {int(x) for x in config.SUDO_ADMINS if int(x) > 0}
+                owner_ids = {int(x) for x in OWNER_IDS if int(x) > 0}
                 recipients = [
                     int(chat_id) for chat_id in config.BACKUP_RECIPIENTS
                     if int(chat_id) in owner_ids
@@ -442,7 +443,7 @@ class MonitoringScheduler:
                 print(f"Encrypted backup delivered: {artifact.path.name}")
             except Exception as e:
                 print(f"Error creating/sending backup: {e}")
-                for chat_id in config.SUDO_ADMINS:
+                for chat_id in OWNER_IDS:
                     try:
                         await self.bot.send_message(
                             int(chat_id),
