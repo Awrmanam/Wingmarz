@@ -723,13 +723,6 @@ async def _create_checkout_order(callback: CallbackQuery | _MessageCheckoutAdapt
             )
     except Exception:
         pass
-    current_order = await db.get_order_by_id(order_id)
-    kyc_needed = await order_kyc_gate.requires_kyc(current_order or {
-        "id": order_id,
-        "user_id": callback.from_user.id,
-        "order_type": "purchase",
-    })
-
     if quote:
         try:
             await operations_service.record_redemption(quote, callback.from_user.id, order_id)
@@ -772,16 +765,18 @@ async def render_checkout_payment(message, order: dict, *, source: str = "p") ->
         return
     order_id = int(order["id"])
     user_id = int(order["user_id"])
-    if await order_kyc_gate.requires_kyc(order):
-        if await require_checkout_kyc(
-            message,
-            telegram_user_id=user_id,
-            kind="fixed",
-            reference_id=order_id,
-            source=source,
-            edit=True,
-        ):
-            return
+    # Identity is checked before displaying the payment destination for
+    # EVERY fixed/renew order. The older per-panel fulfillment exemption is
+    # not a payment-card authorization policy.
+    if await require_checkout_kyc(
+        message,
+        telegram_user_id=user_id,
+        kind="fixed",
+        reference_id=order_id,
+        source=source,
+        edit=True,
+    ):
+        return
 
     cards = await db.get_cards(only_active=True)
     plan_name = escape(str(order.get("plan_name_snapshot") or "پنل نمایندگی"))
