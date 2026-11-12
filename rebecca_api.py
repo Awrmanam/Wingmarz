@@ -1,4 +1,5 @@
 """Adapter for Rebecca's documented administrator HTTP API."""
+import asyncio
 from typing import Any, Dict, Optional
 from urllib.parse import quote
 
@@ -26,30 +27,77 @@ class RebeccaAPI:
     def __init__(self) -> None:
         self.base_url = config.REBECCA_URL.rstrip("/")
         self._token = config.REBECCA_BEARER_TOKEN
+        # Created only for the long-lived production event loop. Standalone
+        # tests/scripts continue using one-shot clients to avoid cross-loop use.
+        self._client: httpx.AsyncClient | None = None
+        self._concurrency: asyncio.Semaphore | None = None
+
+    async def open(self, *, max_connections: int = 12) -> None:
+        if self._client is not None and not self._client.is_closed:
+            return
+        cap = max(1, min(int(max_connections), 32))
+        self._concurrency = asyncio.Semaphore(cap)
+        self._client = httpx.AsyncClient(
+            timeout=config.API_TIMEOUT,
+            limits=httpx.Limits(
+                max_connections=cap,
+                max_keepalive_connections=max(1, cap // 2),
+            ),
+        )
+
+    async def close(self) -> None:
+        client, self._client = self._client, None
+        self._concurrency = None
+        if client is not None and not client.is_closed:
+            await client.aclose()
+
 
     def _headers(self) -> Dict[str, str]:
         return {"Authorization": f"Bearer {self._token}", "Content-Type": "application/json"}
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> Any:
-        """Issue a Rebecca request without ever including secrets in errors."""
-        try:
-            async with httpx.AsyncClient(timeout=config.API_TIMEOUT) as client:
-                response = await client.request(
-                    method, f"{self.base_url}{path}", headers=self._headers(), **kwargs
+        """Issue a bounded request; retry only safe reads, never mutations.
+
+        Non-idempotent writes (especially user creation, resets and payments)
+        must NEVER be retried automatically after an ambiguous network failure.
+        """
+        verb = str(method).upper()
+        attempts = 3 if verb in {"GET", "HEAD"} else 1
+        headers = self._headers()
+        for attempt in range(attempts):
+            try:
+                if self._client is None or self._client.is_closed:
+                    # Scripts and isolated tests have no shared pool.
+                    async with httpx.AsyncClient(timeout=config.API_TIMEOUT) as client:
+                        response = await client.request(
+                            verb, f"{self.base_url}{path}", headers=headers, **kwargs,
+                        )
+                else:
+                    async with self._concurrency:
+                        response = await self._client.request(
+                            verb, f"{self.base_url}{path}", headers=headers, **kwargs,
+                        )
+            except httpx.HTTPError as exc:
+                if attempt + 1 < attempts:
+                    await asyncio.sleep(0.15 * (2 ** attempt))
+                    continue
+                raise RebeccaAPIError("Rebecca API request failed") from exc
+            if (response.status_code in {502, 503, 504}
+                    and attempt + 1 < attempts):
+                await asyncio.sleep(0.15 * (2 ** attempt))
+                continue
+            if response.status_code < 200 or response.status_code >= 300:
+                raise RebeccaAPIError(
+                    f"Rebecca API request failed (HTTP {response.status_code})",
+                    status_code=response.status_code,
                 )
-        except httpx.HTTPError as exc:
-            raise RebeccaAPIError("Rebecca API request failed") from exc
-        if response.status_code < 200 or response.status_code >= 300:
-            raise RebeccaAPIError(
-                f"Rebecca API request failed (HTTP {response.status_code})",
-                status_code=response.status_code,
-            )
-        if response.status_code == 204 or not response.content:
-            return {}
-        try:
-            return response.json()
-        except ValueError as exc:
-            raise RebeccaAPIError("Rebecca returned an invalid response") from exc
+            if response.status_code == 204 or not response.content:
+                return {}
+            try:
+                return response.json()
+            except ValueError as exc:
+                raise RebeccaAPIError("Rebecca returned an invalid response") from exc
+        raise RebeccaAPIError("Rebecca API read failed after bounded retries")
 
     def verify_admin(self, admin: Dict[str, Any], username: str, telegram_id: int, *,
                      data_limit: Optional[int], expire: Optional[int], users_limit: Optional[int],
@@ -256,26 +304,21 @@ class RebeccaAPI:
         return True
 
     async def health_check(self) -> bool:
-        """Read-only provider health check; never creates panel data."""
+        """Read-only provider health check with pooled connection."""
         try:
-            async with httpx.AsyncClient(timeout=config.API_TIMEOUT) as client:
-                response = await client.get(f"{self.base_url}/api/admin", headers=self._headers())
-            return response.status_code == 200
-        except httpx.HTTPError:
+            await self._request("GET", "/api/admin")
+            return True
+        except RebeccaAPIError:
             return False
 
     async def list_admins(self) -> list[Dict[str, Any]]:
         """Return admins through Rebecca's official read-only list route."""
-        try:
-            async with httpx.AsyncClient(timeout=config.API_TIMEOUT) as client:
-                response = await client.get(f"{self.base_url}/api/admins", headers=self._headers())
-        except httpx.HTTPError as exc:
-            raise RebeccaAPIError("Rebecca admin list request failed") from exc
-        if response.status_code != 200:
-            raise RebeccaAPIError("Rebecca admin list failed", status_code=response.status_code)
-        data = response.json()
+        data = await self._request("GET", "/api/admins")
         admins = data.get("admins", data) if isinstance(data, dict) else data
-        return [item for item in admins if isinstance(item, dict)] if isinstance(admins, list) else []
+        if not isinstance(admins, list):
+            raise RebeccaAPIError("Rebecca returned invalid administrator list")
+        return [item for item in admins if isinstance(item, dict)]
+
 
 
 rebecca_api = RebeccaAPI()
