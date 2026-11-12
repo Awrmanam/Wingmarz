@@ -4468,23 +4468,46 @@ async def manage_action_quota(callback: CallbackQuery):
 
 @sudo_router.callback_query(F.data.startswith("manage_action_quota_add_"))
 async def manage_action_quota_add(callback: CallbackQuery):
+    """Retire unsafe legacy quota edits; hand off to verified limits flow.
+
+    Old inline buttons may be replayed. Do not interpret their numeric suffix
+    as authorization for a second provider-side or local quota mutation.
+    """
     if callback.from_user.id not in config.SUDO_ADMINS:
         await callback.answer("غیرمجاز", show_alert=True)
         return
-    admin = await db.get_admin_by_id(admin_id)
     try:
-        if not admin:
-            await callback.message.edit_text("❌ پنل یافت نشد.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="gops:admins:0")]]))
-            await callback.answer()
-            return
-        add_bytes = gb_to_bytes(gb)
-        new_total = (admin.max_total_traffic or 0) + add_bytes
-        await db.update_admin(admin_id, max_total_traffic=new_total)
-        text = f"✅ حجم پنل {gb}GB افزایش یافت. ظرفیت جدید: {await format_traffic_size(new_total)}"
-    except Exception as e:
-        text = f"❌ خطا در افزایش حجم: {e}"
-    await callback.message.edit_text(text, reply_markup=_manage_back_keyboard(admin_id))
+        raw_id, raw_gb = (callback.data or "").removeprefix(
+            "manage_action_quota_add_"
+        ).split("_", 1)
+        admin_id, gb = int(raw_id), int(raw_gb)
+        if admin_id <= 0 or gb not in {1, 5, 10}:
+            raise ValueError("unsupported legacy quota increment")
+    except (ValueError, TypeError):
+        await callback.answer("درخواست نامعتبر است.", show_alert=True)
+        return
+    admin = await db.get_admin_by_id(admin_id)
+    if not admin:
+        await callback.answer("پنل پیدا نشد.", show_alert=True)
+        return
+    await callback.message.edit_text(
+        "⚠️ <b>دکمه قدیمی افزایش حجم</b>\n\n"
+        f"درخواست قبلی: +{gb} GB برای پنل #{admin_id}.\n"
+        "برای جلوگیری از افزایش تکراری و اختلاف حجم، از مرکز محدودیت‌های "
+        "نماینده اقدام کنید. هیچ تغییری در سهمیه انجام نشد.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text="📊 مدیریت امن محدودیت‌ها",
+                callback_data=f"gops:limits:{admin_id}",
+            )],
+            [InlineKeyboardButton(
+                text="🔙 بازگشت به نماینده",
+                callback_data=f"gops:admin:{admin_id}",
+            )],
+        ]),
+    )
     await callback.answer()
+
 
 
 def _sales_menu_keyboard() -> InlineKeyboardMarkup:
