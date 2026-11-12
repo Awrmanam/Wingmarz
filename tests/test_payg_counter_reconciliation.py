@@ -144,3 +144,32 @@ def test_concurrent_duplicate_snapshot_debits_wallet_only_once(tmp_path):
         assert len([row for row in history if row["kind"] == "payg_usage"]) == 1
 
     asyncio.run(scenario())
+
+
+def test_manual_rebecca_suspension_is_not_released_by_payment(monkeypatch, tmp_path):
+    svc = PaygService(str(tmp_path / "manual.db"))
+    _operator(monkeypatch, GIB)
+
+    async def scenario():
+        account_id = await _account(
+            svc, status="suspended", used=GIB, cumulative=GIB, charged=10_000,
+        )
+        await svc.credit_wallet(8, 50_000, kind="seed")
+        module.db.get_admin_by_id.return_value = SimpleNamespace(
+            marzban_username="reseller-88",
+            is_active=False,
+            deactivated_reason="Disabled by owner",
+        )
+        with pytest.raises(PaygError, match="manual panel suspension"):
+            await svc.release_financial_hold(account_id, 9001)
+        assert (await svc.get_account(account_id))["status"] == "suspended"
+
+        module.db.get_admin_by_id.return_value = SimpleNamespace(
+            marzban_username="reseller-88",
+            is_active=False,
+            deactivated_reason="PAYG balance exhausted",
+        )
+        module.rebecca_api.find_admin.return_value = {"status": "disabled"}
+        assert await svc.release_financial_hold(account_id, 9001) is True
+
+    asyncio.run(scenario())
