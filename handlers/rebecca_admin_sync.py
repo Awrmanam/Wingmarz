@@ -268,14 +268,15 @@ async def _render_users(callback: CallbackQuery, admin: Any, page: int = 0) -> N
 
 
 async def _owned_active_admins(user_id: int) -> list[Any]:
-    admins = await db.get_admins_for_user(int(user_id))
-    return [admin for admin in admins if bool(admin.is_active)]
+    # Read-only panel information remains available after expiry/suspension.
+    # This does not authorize provisioning or any state-changing operation.
+    return await db.get_admins_for_user(int(user_id))
 
 
 async def _select_or_render(callback: CallbackQuery, action: str) -> None:
     admins = await _owned_active_admins(callback.from_user.id)
     if not admins:
-        await callback.answer("شما هیچ پنل فعالی ندارید.", show_alert=True)
+        await callback.answer("هیچ پنل متصل‌شده‌ای برای شما یافت نشد.", show_alert=True)
         return
     renderers = {"info": _render_info, "report": _render_report, "users": _render_users}
     if len(admins) == 1:
@@ -285,11 +286,11 @@ async def _select_or_render(callback: CallbackQuery, action: str) -> None:
     for admin in admins:
         name = str(admin.admin_name or admin.marzban_username or f"Panel {admin.id}")
         rows.append([InlineKeyboardButton(
-            text=f"✅ {name}", callback_data=f"{action}_panel_{int(admin.id)}"
+            text=f"{'✅' if admin.is_active else '⏸'} {name}", callback_data=f"{action}_panel_{int(admin.id)}"
         )])
     rows.append([InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="back_to_admin_main")])
     await callback.message.edit_text(
-        f"🔹 شما {len(admins)} پنل فعال دارید. لطفاً یکی را برای ادامه انتخاب کنید:",
+        f"🔹 شما {len(admins)} پنل متصل دارید. لطفاً یکی را برای مشاهده انتخاب کنید:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
     )
     await callback.answer()
