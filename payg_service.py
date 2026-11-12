@@ -589,6 +589,20 @@ class PaygService:
                 row = await cur.fetchone()
         return dict(row) if row else None
 
+    async def get_admin_account(self, admin_id: int) -> dict[str, Any] | None:
+        """Read a panel-scoped PAYG hold, not another panel owned by that user."""
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            async with conn.execute(
+                "SELECT * FROM payg_accounts WHERE admin_id=? "
+                "AND provider='rebecca' AND status!='migrated' "
+                "ORDER BY id DESC LIMIT 1",
+                (int(admin_id),),
+            ) as cur:
+                row = await cur.fetchone()
+        return dict(row) if row else None
+
     async def get_user_account(
         self, user_id: int, provider: str = "rebecca", *, include_migrated: bool = False
     ) -> dict[str, Any] | None:
