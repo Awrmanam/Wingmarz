@@ -21,6 +21,7 @@ from handlers.admin_handlers import admin_router
 from handlers.public_handlers import public_router
 from scheduler import init_scheduler
 from style_engine import style_engine
+from premium_ui_service import premium_ui_service
 from utils.bold_fix_bot import BoldFixBot
 from kyc_middleware import KycGateMiddleware, KycMessageGateMiddleware
 from group_ops_middleware import GroupOpsErrorMiddleware, GroupOpsStartMiddleware
@@ -59,7 +60,11 @@ class MarzbanAdminBot:
         try:
             await db.init_db()
             await style_engine.init()
-            logger.info("Database and style engine initialized successfully")
+            # Apply saved presentation overrides before any Telegram message.
+            # This also migrates old dashboard menu labels without removing
+            # the legacy rows required by a possible rollback.
+            await premium_ui_service.init()
+            logger.info("Database, presentation registry and style engine initialized successfully")
 
             # Heal Group Ops after upgrades. New topic types (for example
             # receipts) are created automatically for an already-connected
