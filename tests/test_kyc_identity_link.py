@@ -101,36 +101,78 @@ def test_rebecca_start_auto_links_only_matching_standard_admins(monkeypatch):
     assert remote["username"] == "seller-a"
 
 
-def test_sync_one_rebinds_existing_local_panel_to_authoritative_telegram_id(monkeypatch):
-    existing = SimpleNamespace(
-        id=8,
-        user_id=111,
-        login_url=None,
+def test_remote_telegram_id_change_is_quarantined_not_silently_rebound(monkeypatch):
+    existing = SimpleNamespace(id=8, user_id=111, login_url=None)
+    monkeypatch.setattr(
+        identity.db, "get_admin_by_marzban_username",
+        AsyncMock(return_value=existing),
     )
-    monkeypatch.setattr(identity.db, "get_admin_by_marzban_username", AsyncMock(return_value=existing))
+    update = AsyncMock(return_value=True)
+    conflict = AsyncMock()
+    monkeypatch.setattr(identity.db, "update_admin", update)
+    monkeypatch.setattr(identity.rebecca_identity_conflicts, "report", conflict)
+    monkeypatch.setattr(
+        identity.rebecca_identity_conflicts, "clear_when_matching", AsyncMock()
+    )
+    remote = {
+        "username": "seller-a", "role": "standard", "telegram_id": "555",
+        "status": "active", "users_limit": 10,
+        "data_limit": 20 * 1024**3, "expire": None,
+    }
+    result = run(identity._sync_one(remote, telegram_username="tgname"))
+    assert result is None
+    update.assert_not_awaited()
+    conflict.assert_awaited_once_with("seller-a", 111, 555)
+
+
+def test_matching_telegram_owner_syncs_limits_without_rewriting_owner(monkeypatch):
+    existing = SimpleNamespace(id=8, user_id=555, login_url=None)
+    monkeypatch.setattr(
+        identity.db, "get_admin_by_marzban_username",
+        AsyncMock(return_value=existing),
+    )
     update = AsyncMock(return_value=True)
     monkeypatch.setattr(identity.db, "update_admin", update)
-
+    monkeypatch.setattr(
+        identity.rebecca_identity_conflicts, "clear_when_matching", AsyncMock()
+    )
+    monkeypatch.setattr(
+        identity.rebecca_identity_conflicts, "report", AsyncMock()
+    )
     remote = {
-        "username": "seller-a",
-        "role": "standard",
-        "telegram_id": "555",
-        "status": "active",
-        "users_limit": 10,
-        "data_limit": 20 * 1024**3,
-        "expire": None,
+        "username": "seller-a", "role": "standard", "telegram_id": 555,
+        "status": "active", "users_limit": 0,
+        "data_limit": 20 * 1024**3, "expire": None,
     }
-
-    admin_id = run(identity._sync_one(remote, telegram_username="tgname"))
-
-    assert admin_id == 8
-    kwargs = update.call_args.kwargs
-    assert kwargs["user_id"] == 555
+    assert run(identity._sync_one(remote, telegram_username="tgname")) == 8
+    kwargs = update.await_args.kwargs
+    assert "user_id" not in kwargs
     assert kwargs["is_active"] == 1
-    assert kwargs["max_users"] == 10
+    assert kwargs["max_users"] == 1_000_000
     assert kwargs["max_total_traffic"] == 20 * 1024**3
     assert kwargs["username"] == "tgname"
 
+
+def test_missing_remote_limit_does_not_reset_existing_local_quota(monkeypatch):
+    existing = SimpleNamespace(id=8, user_id=555, login_url=None)
+    monkeypatch.setattr(
+        identity.db, "get_admin_by_marzban_username",
+        AsyncMock(return_value=existing),
+    )
+    update = AsyncMock(return_value=True)
+    monkeypatch.setattr(identity.db, "update_admin", update)
+    monkeypatch.setattr(
+        identity.rebecca_identity_conflicts, "clear_when_matching", AsyncMock()
+    )
+    remote = {
+        "username": "seller-a", "role": "standard", "telegram_id": 555
+    }
+    run(identity._sync_one(remote))
+    kwargs = update.await_args.kwargs
+    assert "max_users" not in kwargs
+    assert "max_total_traffic" not in kwargs
+    assert "is_active" not in kwargs
+    assert "user_id" not in kwargs
 
 def test_sudo_start_does_not_consume_regular_user_start():
     source = open("handlers/sudo_handlers.py", encoding="utf-8").read()
