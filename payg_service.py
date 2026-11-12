@@ -856,6 +856,29 @@ class PaygService:
             ) as cur:
                 return [dict(row) for row in await cur.fetchall()]
 
+    async def list_financial_holds(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Read-only finance queue with calculated outstanding debt."""
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            async with conn.execute(
+                "SELECT a.id,a.user_id,a.admin_id,a.cumulative_usage_bytes,"
+                "a.price_per_gb_toman,a.charged_toman_total,"
+                "COALESCE(w.balance_toman,0) AS balance_toman "
+                "FROM payg_accounts a LEFT JOIN wallets w ON w.user_id=a.user_id "
+                "WHERE a.status='suspended' ORDER BY a.id DESC LIMIT ?",
+                (max(1,min(int(limit),100)),),
+            ) as cur:
+                items = [dict(row) for row in await cur.fetchall()]
+        for item in items:
+            item["outstanding_toman"] = max(
+                0,
+                int(item["cumulative_usage_bytes"]) *
+                int(item["price_per_gb_toman"]) // GIB
+                - int(item["charged_toman_total"]),
+            )
+        return items
+
     async def resolve_counter_review(
         self, review_id: int, actor_id: int, *, approve_reset: bool,
         note: str = "Reviewed in Telegram",
