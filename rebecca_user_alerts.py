@@ -522,11 +522,11 @@ class RebeccaUserAlerts:
                 chunk = items[start:start+MAX_ITEMS_PER_DIGEST]
                 ids = [int(item["id"]) for item in chunk]
                 try:
-                    text = (
-                        "📣 <b>اعلان کاربران نماینده</b>\n"
-                        f"پنل: <code>{escape(panel)}</code>\n\n"
-                        + await self.render_alert(chunk)
+                    text = config.MESSAGES["rebecca_user_group_digest"].format(
+                        panel_name=escape(panel),
+                        users_summary=await self.render_alert(chunk),
                     )
+                    text = await premium_ui_service.render_placeholders(str(text))
                     if not await group_ops_service.send_text(
                         bot, "admins", text,
                     ):
