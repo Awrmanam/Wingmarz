@@ -23,6 +23,7 @@ from order_kyc_gate import order_kyc_gate
 from forced_join_service import inspect_channel_access
 from database import db
 from broadcast_outbox import BroadcastError, broadcast_outbox
+from payg_service import payg_service
 from models.schemas import AdminModel, LogModel
 from utils.notify import (
     notify_admin_added, notify_admin_removed, notify_admin_deactivated, format_traffic_size, format_time_duration,
@@ -4348,11 +4349,45 @@ async def manage_action_activate(callback: CallbackQuery):
     if callback.from_user.id not in config.SUDO_ADMINS:
         await callback.answer("غیرمجاز", show_alert=True)
         return
-    admin_id = int(callback.data.split("_")[-1])
+    try:
+        admin_id = int((callback.data or "").split("_")[-1])
+    except (TypeError,ValueError):
+        await callback.answer("شناسه پنل نامعتبر", show_alert=True)
+        return
     admin = await db.get_admin_by_id(admin_id)
     if not admin:
         await callback.answer("پنل یافت نشد.", show_alert=True)
         return
+    if config.PANEL_PROVIDER == "rebecca":
+        try:
+            account = await payg_service.get_admin_account(admin_id)
+        except Exception:
+            # A financial lookup error must never become permission to
+            # reactivate an account whose money status cannot be verified.
+            logger.exception("PAYG hold check unavailable for activation")
+            await callback.answer(
+                "وضعیت مالی قابل بررسی نیست؛ فعال‌سازی متوقف شد.",
+                show_alert=True,
+            )
+            return
+        if account and account["status"] == "suspended":
+            await callback.message.edit_text(
+                "🔒 این نماینده به‌دلیل وضعیت مالی PAYG معلق است.\\n"
+                "فعال‌سازی عادی مجاز نیست؛ بدهی را در مرکز PAYG تسویه "
+                "و رفع تعلیق را از مسیر تأیید دستی انجام دهید.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(
+                        text="🧾 بررسی و رفع تعلیق مالی",
+                        callback_data="paygaudit:holds",
+                    )],
+                    [InlineKeyboardButton(
+                        text="↩️ بازگشت به نماینده",
+                        callback_data=f"gops:admin:{admin_id}",
+                    )],
+                ]),
+            )
+            await callback.answer()
+            return
     try:
         if config.PANEL_PROVIDER == "rebecca":
             remote = await rebecca_api.find_admin(admin.marzban_username)
