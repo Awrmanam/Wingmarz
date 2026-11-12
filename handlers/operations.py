@@ -177,7 +177,10 @@ async def build_operational_dashboard_keyboard() -> InlineKeyboardMarkup:
         rows.append(quick)
 
     rendered = []
-    for callback_data, default, icon_key, fallback in MENU_SPECS:
+    by_callback = {entry[0]:entry for entry in MENU_SPECS}
+    order = await operations_service.get_menu_order([entry[0] for entry in MENU_SPECS])
+    for callback_data in order:
+        _, default, icon_key, fallback = by_callback[callback_data]
         visible = await operations_service.menu_is_visible(callback_data)
         if not visible:
             continue
