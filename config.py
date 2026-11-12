@@ -60,6 +60,20 @@ BACKUP_RECIPIENTS: List[int] = [
 MONITORING_INTERVAL = int(os.getenv("MONITORING_INTERVAL", "600"))  # 10 minutes in seconds
 WARNING_THRESHOLD = float(os.getenv("WARNING_THRESHOLD", "0.8"))  # 80% threshold
 AUTO_DELETE_EXPIRED_USERS = os.getenv("AUTO_DELETE_EXPIRED_USERS", "false").lower() in ["1", "true", "yes"]
+# New scanner is opt-in for Production until the first baseline and API
+# pagination have been verified against the deployed Rebecca instance.
+REBECCA_USER_ALERTS_ENABLED = os.getenv(
+    "REBECCA_USER_ALERTS_ENABLED", "false"
+).lower() in ["1", "true", "yes"]
+REBECCA_USER_ALERTS_INTERVAL = max(
+    60, min(900, int(os.getenv("REBECCA_USER_ALERTS_INTERVAL", "120")))
+)
+REBECCA_USER_ALERTS_GROUP_WINDOW = max(
+    0, min(600, int(os.getenv("REBECCA_USER_ALERTS_GROUP_WINDOW", "60")))
+)
+REBECCA_USER_ALERTS_GROUP_MIN = max(
+    2, min(12, int(os.getenv("REBECCA_USER_ALERTS_GROUP_MIN", "3")))
+)
 
 # API Configuration
 API_TIMEOUT = int(os.getenv("API_TIMEOUT", "30"))
