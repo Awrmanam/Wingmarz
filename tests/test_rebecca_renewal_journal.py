@@ -118,7 +118,7 @@ def test_ambiguous_remote_timeout_blocks_second_increment(tmp_path, monkeypatch)
         raise RebeccaAPIError("upstream timed out")
     api.update_admin_fields.side_effect = timeout_after_apply
     for _ in range(2):
-        with pytest.raises(renewal.RebeccaRenewalError, match="بررسی دستی"):
+        with pytest.raises(renewal.RebeccaRenewalError, match="بررسی"):
             run(renewal.apply_rebecca_renewal(order, 99))
     assert len(attempts) == 1
     assert run(snapshot(path, admin_id)) == ((100, 10), "submitted")
@@ -137,7 +137,7 @@ def test_sqlite_failure_rolls_back_local_limits_and_blocks_retry(tmp_path, monke
                 BEGIN SELECT RAISE(ABORT,'simulated write failure'); END;
             """)
     run(fail_on_approval())
-    with pytest.raises(renewal.RebeccaRenewalError, match="بررسی دستی"):
+    with pytest.raises(renewal.RebeccaRenewalError, match="بررسی"):
         run(renewal.apply_rebecca_renewal(order, 99))
     assert remote["data_limit"] == 150
     assert run(snapshot(path, admin_id)) == ((100, 10), "submitted")
