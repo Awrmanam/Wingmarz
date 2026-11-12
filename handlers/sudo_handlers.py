@@ -4372,7 +4372,7 @@ async def manage_action_activate(callback: CallbackQuery):
             return
         if account and account["status"] == "suspended":
             await callback.message.edit_text(
-                "🔒 این نماینده به‌دلیل وضعیت مالی PAYG معلق است.\\n"
+                "🔒 این نماینده به‌دلیل وضعیت مالی PAYG معلق است.\n"
                 "فعال‌سازی عادی مجاز نیست؛ بدهی را در مرکز PAYG تسویه "
                 "و رفع تعلیق را از مسیر تأیید دستی انجام دهید.",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
