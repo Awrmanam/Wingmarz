@@ -14,6 +14,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import config
 from database import db
 from marzban_api import marzban_api
+from rebecca_api import rebecca_api
 from handlers.style_admin import style_admin_router
 from handlers.sudo_handlers import sudo_router
 from handlers.rebecca_services import rebecca_services_router
@@ -82,6 +83,11 @@ class MarzbanAdminBot:
             logger.error(f"Failed to initialize database/style engine: {e}")
             raise
         
+        # Shared Rebecca HTTP pool lives for this bot event loop only.
+        # Failure to construct it must not break the legacy provider.
+        if config.PANEL_PROVIDER == "rebecca":
+            await rebecca_api.open(max_connections=12)
+
         # Test Marzban API connection
         try:
             if config.PANEL_PROVIDER == "rebecca":
@@ -292,6 +298,7 @@ class MarzbanAdminBot:
         try:
             if self.scheduler:
                 await self.scheduler.stop()
+            await rebecca_api.close()
             await db.close()
             await self.bot.session.close()
         except Exception as e:
