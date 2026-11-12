@@ -213,7 +213,10 @@ def test_requested_username_purchase_uses_guarded_payment_screen(monkeypatch):
 
     renderer.assert_awaited_once()
     wrapped, same_order = renderer.await_args.args
-    assert same_order is order
+    assert same_order["id"] == order["id"]
+    assert same_order["user_id"] == 42
+    assert same_order["status"] == "pending"
+    assert same_order["price_snapshot"] == 20000
     assert renderer.await_args.kwargs["source"] == "p"
     assert wrapped._message is cb_msg
     cards.assert_not_awaited()
