@@ -47,6 +47,10 @@ UI_MESSAGES = {
         '{count} رویداد جدید ثبت شد:\n{users_list}\n\n'
         'برای مدیریت، از بخش کاربران پنل استفاده کنید.'
     ),
+    'rebecca_user_group_digest': (
+        '📣 <b>اعلان کاربران نماینده</b>\n'
+        'پنل: <code>{panel_name}</code>\n\n{users_summary}'
+    ),
 }
 UI_TITLES = {
     'home_public_title': 'شروع مشتری — عنوان',
