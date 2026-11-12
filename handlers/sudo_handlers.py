@@ -818,6 +818,48 @@ async def sudo_menu_cleanup(callback: CallbackQuery):
     await callback.message.edit_text("🧹 عملیات پاکسازی:", reply_markup=kb)
     await callback.answer()
 
+@sudo_router.callback_query(F.data == "sudo_renew_review")
+async def sudo_renew_review(callback: CallbackQuery):
+    """Read-only owner review queue; never retries ambiguous Rebecca mutations."""
+    if not is_owner(callback.from_user.id):
+        await callback.answer("فقط مالک می‌تواند این گزارش را ببیند.", show_alert=True)
+        return
+    from rebecca_renewal_journal import rebecca_renewal_journal
+    try:
+        issues = await rebecca_renewal_journal.list_needing_review(limit=20)
+    except Exception:
+        await callback.answer("گزارش تمدیدها فعلاً قابل دریافت نیست.", show_alert=True)
+        return
+    lines = [
+        "⚠️ <b>تمدیدهای Rebecca نیازمند بررسی</b>",
+        "",
+        "تا تعیین نتیجه واقعی در Rebecca، هیچ تمدید متوقف‌شده‌ای "
+        "نباید مجدداً اجرا یا ریست مصرف شود.",
+        "",
+    ]
+    if not issues:
+        lines.append("✅ هیچ تمدید معلق یا مبهمی وجود ندارد.")
+    for item in issues:
+        lines.append(
+            f"• سفارش <code>#{int(item['order_id'])}</code> · "
+            f"پنل <code>#{int(item['admin_id'])}</code> · "
+            f"{escape(str(item['status']))} · "
+            f"{escape(str(item.get('error_type') or '-'))}"
+        )
+    lines.append("\nاین صفحه فقط گزارش است؛ برای رفع مغایرت، ابتدا "
+                 "وضعیت واقعی پنل و سفارش را تطبیق بده.")
+    await callback.message.edit_text(
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(
+                text="↩️ بازگشت به فروش",
+                callback_data="ops:hub:sales",
+            )
+        ]]),
+    )
+    await callback.answer()
+
+
 @sudo_router.callback_query(F.data == "sudo_menu_sales")
 async def sudo_menu_sales(callback: CallbackQuery):
     """Legacy callback: redirect to the canonical sales hub."""
