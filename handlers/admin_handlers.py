@@ -745,6 +745,11 @@ async def admin_renew_traffic_amount(callback: CallbackQuery, state: FSMContext)
         data = await state.get_data()
         admin_id = int(data.get("current_admin_id"))
     gb = int(parts[-1])
+    # Reject forged/stale renewal buttons for panels owned by another ID.
+    admin = await db.get_admin_by_id(int(admin_id))
+    if not admin or int(admin.user_id) != int(callback.from_user.id):
+        await callback.answer("این پنل متعلق به حساب شما نیست.", show_alert=True)
+        return
     rates = await db.get_billing_rates()
     price = gb * rates['per_gb_toman']
     # ایجاد سفارش تمدید
@@ -791,6 +796,11 @@ async def admin_renew_time_amount(callback: CallbackQuery, state: FSMContext):
         data = await state.get_data()
         admin_id = int(data.get("current_admin_id"))
     days = int(parts[-1])
+    # Reject forged/stale renewal buttons for panels owned by another ID.
+    admin = await db.get_admin_by_id(int(admin_id))
+    if not admin or int(admin.user_id) != int(callback.from_user.id):
+        await callback.answer("این پنل متعلق به حساب شما نیست.", show_alert=True)
+        return
     rates = await db.get_billing_rates()
     price = (days // 30) * rates['per_30days_toman']
     delta_seconds = days * 24 * 60 * 60
@@ -835,6 +845,11 @@ async def admin_renew_users_amount(callback: CallbackQuery, state: FSMContext):
         data = await state.get_data()
         admin_id = int(data.get("current_admin_id"))
     users = int(parts[-1])
+    # Reject forged/stale renewal buttons for panels owned by another ID.
+    admin = await db.get_admin_by_id(int(admin_id))
+    if not admin or int(admin.user_id) != int(callback.from_user.id):
+        await callback.answer("این پنل متعلق به حساب شما نیست.", show_alert=True)
+        return
     rates = await db.get_billing_rates()
     price = users * rates['per_user_toman']
     order_id = await db.add_order(callback.from_user.id, plan_id=0, price_snapshot=price, plan_name_snapshot=f"افزایش کاربر +{users}")
