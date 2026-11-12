@@ -103,6 +103,7 @@ async def sales_menu_with_payg(callback: CallbackQuery):
                 callback_data="paygsvcadmin:home",
             )],
             [InlineKeyboardButton(text="🔌 سرویس‌های Rebecca", callback_data="rebecca_services")],
+            [InlineKeyboardButton(text="🧾 بازبینی مالی PAYG", callback_data="paygaudit:root")],
             [InlineKeyboardButton(text=config.BUTTONS["set_login_url"], callback_data="set_login_url")],
             [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="back_to_main")],
         ]),
