@@ -453,27 +453,15 @@ async def control_center_ticket_reply_value(message: Message, state: FSMContext)
 
 @control_center_router.callback_query(F.data.startswith("cc:ticketclose:"))
 async def control_center_ticket_close(callback: CallbackQuery, state: FSMContext):
-    if await _deny(callback):
-        return
-    try:
-        ticket_id = int((callback.data or "").rsplit(":", 1)[-1])
-    except ValueError:
-        await callback.answer("شناسه نامعتبر", show_alert=True)
-        return
-    await _ensure_schema()
-    async with aiosqlite.connect(config.DATABASE_PATH) as conn:
-        cur = await conn.execute(
-            "UPDATE support_tickets SET status='closed', replied_by=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-            (callback.from_user.id, ticket_id),
-        )
-        await conn.commit()
-        changed = cur.rowcount > 0
-    await state.clear()
-    if not changed:
-        await callback.answer("تیکت پیدا نشد", show_alert=True)
-        return
-    await _render_tickets(callback.message, 0)
-    await callback.answer("بسته شد")
+    """Legacy route: use the same confirmed, idempotent ticket closure flow.
+
+    The canonical support_v2 router is registered before this fallback. A
+    forwarded or outdated callback must never execute a second SQL close or
+    bypass the confirmation screen.
+    """
+    from handlers.support_v2 import admin_close_ask
+
+    return await admin_close_ask(callback, state)
 
 
 @control_center_router.message(Command("ticket"))
