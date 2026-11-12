@@ -27,6 +27,26 @@ UI_MESSAGES = {
     'sales_plan_select_public': '🛒 <b>پلن‌های نمایندگی</b>\n\nپلن موردنظر را انتخاب کنید:',
     'sales_duration_select_public': '🛒 <b>پلن‌های نمایندگی</b>\n\nمدت موردنظر را انتخاب کنید:',
     'renew_panel_select': '🔄 <b>تمدید و افزایش</b>\n\nپنل موردنظر را انتخاب کنید:',
+    # Read-only Rebecca per-user monitoring. All three messages can be edited
+    # in Telegram and can use Premium Emoji keys via the existing editor.
+    'rebecca_user_quota_single': (
+        '📦 <b>حجم کاربر به پایان رسید</b>\n\n'
+        '👤 <code>{username}</code>\n'
+        '🖥 پنل: {panel_name}\n'
+        '📊 مصرف: {used_traffic} / {data_limit}\n\n'
+        'برای مدیریت کاربر به بخش کاربران پنل مراجعه کنید.'
+    ),
+    'rebecca_user_expired_single': (
+        '⏳ <b>اعتبار کاربر پایان یافت</b>\n\n'
+        '👤 <code>{username}</code>\n'
+        '🖥 پنل: {panel_name}\n'
+        '📊 مصرف: {used_traffic} / {data_limit}'
+    ),
+    'rebecca_user_smart_digest': (
+        '📦 <b>گزارش کاربران نیازمند بررسی</b>\n\n'
+        '{count} رویداد جدید ثبت شد:\n{users_list}\n\n'
+        'برای مدیریت، از بخش کاربران پنل استفاده کنید.'
+    ),
 }
 UI_TITLES = {
     'home_public_title': 'شروع مشتری — عنوان',
@@ -49,6 +69,9 @@ UI_TITLES = {
     'sales_plan_select_public': 'انتخاب پلن نمایندگی',
     'sales_duration_select_public': 'انتخاب مدت پلن نمایندگی',
     'renew_panel_select': 'انتخاب پنل برای تمدید',
+    'rebecca_user_quota_single': 'Rebecca — اتمام حجم یک کاربر',
+    'rebecca_user_expired_single': 'Rebecca — پایان اعتبار یک کاربر',
+    'rebecca_user_smart_digest': 'Rebecca — گزارش هوشمند گروهی کاربران',
 }
 
 TRIAL_UI_DEFAULTS: dict[str, str] = {
