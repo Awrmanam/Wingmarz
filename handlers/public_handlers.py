@@ -162,6 +162,18 @@ async def public_receive_payment_receipt(message: Message, state: FSMContext):
     if not order_id:
         await state.clear()
         return
+    # Old receipt FSM state must never let an unverified user skip card KYC.
+    from purchase_kyc_flow import require_checkout_kyc
+    if await require_checkout_kyc(
+        message,
+        telegram_user_id=int(message.from_user.id),
+        kind="fixed",
+        reference_id=int(order_id),
+        source="p",
+        edit=False,
+    ):
+        await state.clear()
+        return
     if not message.photo:
         await message.answer(config.MESSAGES["public_send_receipt"])
         return
