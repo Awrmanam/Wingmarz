@@ -10,6 +10,7 @@ from .style_admin import style_admin_router
 from .kyc import kyc_router
 from purchase_kyc_flow import checkout_kyc_router
 from .group_ops import group_ops_router
+from .reseller_management_center import reseller_management_router
 from .trial_ui_v2 import trial_ui_v2_router
 from .panel_trial_restore import panel_trial_restore_router
 from .operations_bootstrap import operations_bootstrap_router
