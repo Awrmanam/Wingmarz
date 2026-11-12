@@ -405,9 +405,6 @@ async def auto_import_select(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id not in config.SUDO_ADMINS:
         await callback.answer("غیرمجاز", show_alert=True)
         return
-    if config.PANEL_PROVIDER == "rebecca":
-        await callback.answer("کشف Rebecca فقط خواندنی است؛ ورود امن بدون گذرواژه ممکن نیست.", show_alert=True)
-        return
     try:
         idx = int(callback.data.split(":")[1])
     except (IndexError, ValueError):
@@ -418,6 +415,10 @@ async def auto_import_select(callback: CallbackQuery, state: FSMContext):
     selected = next((c for c in candidates if c.get("idx") == idx), None)
     if not selected:
         await callback.answer("ادمین پیدا نشد.", show_alert=True)
+        return
+    if config.PANEL_PROVIDER == "rebecca":
+        from handlers.rebecca_manual_bind import start_legacy_bind
+        await start_legacy_bind(callback, state, selected)
         return
     if selected.get("already_registered"):
         await callback.answer("این ادمین قبلاً در ربات ثبت شده است.", show_alert=True)
