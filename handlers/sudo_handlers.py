@@ -16,6 +16,7 @@ import re
 import secrets
 import time
 import config
+from authorization import is_owner
 from order_tracking import track_approval
 from group_ops_service import group_ops_service
 from order_kyc_gate import order_kyc_gate
@@ -921,7 +922,7 @@ async def broadcast_confirm(callback: CallbackQuery, state: FSMContext):
 
 @sudo_router.callback_query(F.data == "sudo_menu_backup")
 async def sudo_menu_backup(callback: CallbackQuery):
-    if callback.from_user.id not in config.SUDO_ADMINS:
+    if not is_owner(callback.from_user.id):
         await callback.answer("غیرمجاز", show_alert=True)
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -934,7 +935,7 @@ async def sudo_menu_backup(callback: CallbackQuery):
 
 @sudo_router.callback_query(F.data == "backup_now")
 async def backup_now(callback: CallbackQuery):
-    if callback.from_user.id not in config.SUDO_ADMINS:
+    if not is_owner(callback.from_user.id):
         await callback.answer("غیرمجاز", show_alert=True)
         return
     await callback.answer("در حال ساخت بکاپ...", show_alert=False)
@@ -973,7 +974,7 @@ class BackupRestoreStates(StatesGroup):
 
 @sudo_router.callback_query(F.data == "backup_restore")
 async def backup_restore_entry(callback: CallbackQuery, state: FSMContext):
-    if callback.from_user.id not in config.SUDO_ADMINS:
+    if not is_owner(callback.from_user.id):
         await callback.answer("غیرمجاز", show_alert=True)
         return
     await state.set_state(BackupRestoreStates.waiting_for_file)
@@ -985,7 +986,7 @@ async def backup_restore_entry(callback: CallbackQuery, state: FSMContext):
 
 @sudo_router.message(BackupRestoreStates.waiting_for_file)
 async def backup_restore_receive(message: Message, state: FSMContext):
-    if message.from_user.id not in config.SUDO_ADMINS:
+    if not is_owner(message.from_user.id):
         return
     if not message.document or not (message.document.file_name or '').lower().endswith('.zip'):
         await message.answer("لطفاً یک فایل ZIP معتبر ارسال کنید.")
@@ -1012,7 +1013,7 @@ async def backup_restore_receive(message: Message, state: FSMContext):
 
 @sudo_router.message(BackupRestoreStates.waiting_for_password, F.text)
 async def backup_restore_password(message: Message, state: FSMContext):
-    if message.from_user.id not in config.SUDO_ADMINS:
+    if not is_owner(message.from_user.id):
         return
     data = await state.get_data()
     restore_zip_path = data.get("restore_zip_path")
@@ -1048,7 +1049,7 @@ class BackupScheduleStates(StatesGroup):
 
 @sudo_router.callback_query(F.data == "backup_schedule")
 async def backup_schedule_entry(callback: CallbackQuery, state: FSMContext):
-    if callback.from_user.id not in config.SUDO_ADMINS:
+    if not is_owner(callback.from_user.id):
         await callback.answer("غیرمجاز", show_alert=True)
         return
     text = (
@@ -1063,6 +1064,10 @@ async def backup_schedule_entry(callback: CallbackQuery, state: FSMContext):
 
 @sudo_router.message(BackupScheduleStates.waiting_input, F.text)
 async def backup_schedule_set(message: Message, state: FSMContext):
+    if not is_owner(message.from_user.id):
+        await state.clear()
+        await message.answer("فقط مالک اصلی اجازه تغییر بکاپ را دارد.")
+        return
     txt = message.text.strip().lower()
     from scheduler import scheduler
     if txt in ("off", "0", "disable", "stop"):
@@ -1504,8 +1509,11 @@ async def sudo_reset_usage_entry(callback: CallbackQuery):
 
 @sudo_router.callback_query(F.data == "sudo_non_payer")
 async def sudo_non_payer_entry(callback: CallbackQuery):
-    if callback.from_user.id not in config.SUDO_ADMINS:
-        await callback.answer("غیرمجاز", show_alert=True)
+    if not is_owner(callback.from_user.id):
+        await callback.answer("این عملیات فقط برای مالک اصلی مجاز است.", show_alert=True)
+        return
+    if config.PANEL_PROVIDER != "marzban":
+        await callback.answer("این روش قدیمی مخصوص Marzban است؛ در Rebecca از مدیریت پنل و غیرفعال‌سازی Rebecca استفاده کنید.", show_alert=True)
         return
     # انتخاب پنل برای غیرفعال‌سازی به علت عدم پرداخت
     admins = await db.get_all_admins()
@@ -1523,8 +1531,11 @@ async def sudo_non_payer_entry(callback: CallbackQuery):
 
 @sudo_router.callback_query(F.data.startswith("sudo_non_payer_panel_"))
 async def sudo_non_payer_panel_selected(callback: CallbackQuery):
-    if callback.from_user.id not in config.SUDO_ADMINS:
-        await callback.answer("غیرمجاز", show_alert=True)
+    if not is_owner(callback.from_user.id):
+        await callback.answer("این عملیات فقط برای مالک اصلی مجاز است.", show_alert=True)
+        return
+    if config.PANEL_PROVIDER != "marzban":
+        await callback.answer("این روش قدیمی مخصوص Marzban است؛ در Rebecca از مدیریت پنل و غیرفعال‌سازی Rebecca استفاده کنید.", show_alert=True)
         return
     admin_id = int(callback.data.split("_")[-1])
     admin = await db.get_admin_by_id(admin_id)
@@ -1549,8 +1560,11 @@ async def sudo_non_payer_panel_selected(callback: CallbackQuery):
 
 @sudo_router.callback_query(F.data.startswith("sudo_non_payer_confirm_"))
 async def sudo_non_payer_confirm(callback: CallbackQuery):
-    if callback.from_user.id not in config.SUDO_ADMINS:
-        await callback.answer("غیرمجاز", show_alert=True)
+    if not is_owner(callback.from_user.id):
+        await callback.answer("این عملیات فقط برای مالک اصلی مجاز است.", show_alert=True)
+        return
+    if config.PANEL_PROVIDER != "marzban":
+        await callback.answer("این روش قدیمی مخصوص Marzban است؛ در Rebecca از مدیریت پنل و غیرفعال‌سازی Rebecca استفاده کنید.", show_alert=True)
         return
     admin_id = int(callback.data.split("_")[-1])
     admin = await db.get_admin_by_id(admin_id)

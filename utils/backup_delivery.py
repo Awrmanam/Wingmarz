@@ -11,6 +11,7 @@ from html import escape
 from aiogram.types import FSInputFile
 
 import config
+from authorization import is_owner
 from utils.backup import BackupArtifact
 
 
@@ -30,8 +31,10 @@ def backup_caption(artifact: BackupArtifact, automatic: bool) -> str:
 async def send_backup_to_chat(bot, chat_id: int, artifact: BackupArtifact, *, automatic: bool) -> None:
     # A private user chat has the same positive ID as the Telegram user.
     # Never send the archive to a supergroup, forum topic, or third party.
-    recipients = {int(uid) for uid in config.SUDO_ADMINS if int(uid) > 0}
-    if int(chat_id) not in recipients:
+    # Runtime managers are included in config.SUDO_ADMINS for legacy routes.
+    # Encrypted archives include .env, panel credentials, and the customer DB;
+    # only immutable server-configured owners may receive them.
+    if not is_owner(int(chat_id)) or int(chat_id) <= 0:
         raise PermissionError("Backup recipients must be owner Telegram user IDs")
     await bot.send_document(
         chat_id=int(chat_id),
