@@ -315,6 +315,7 @@ async def _render_message_detail(message: Message, key: str) -> None:
     rows = [
         [await _btn("ویرایش متن", f"uiv2:me:{key}", fallback="✏️")],
         [await _btn("پیش‌نمایش", f"uiv2:mp:{key}", fallback="👁")],
+        [await _btn("📨 ارسال پیام آزمایشی به مدیر", f"uiv2:mt:{key}", fallback="📨")],
         [await _btn("بازگردانی پیش‌فرض", f"uiv2:mr:{key}", fallback="♻️")],
         [await _btn("بازگشت", f"uiv2:mc:{category}", icon_key="back", fallback="⬅️")],
     ]
