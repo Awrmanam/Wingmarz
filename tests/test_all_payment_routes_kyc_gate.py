@@ -170,3 +170,50 @@ def test_old_receipt_fsm_cannot_submit_before_kyc(monkeypatch, module, handler_n
     assert gate.await_args.kwargs["edit"] is False
     st.clear.assert_awaited_once()
     db_submit.assert_not_awaited()
+
+
+def test_requested_username_purchase_uses_guarded_payment_screen(monkeypatch):
+    from handlers import trial_experience
+    cb_msg = SimpleNamespace(
+        from_user=SimpleNamespace(id=42),
+        answer=AsyncMock(),
+        bot=object(),
+    )
+    order = {
+        "id": 91, "status": "pending", "user_id": 42,
+        "plan_name_snapshot": "Pro", "price_snapshot": 20000,
+    }
+    monkeypatch.setattr(trial_experience.db, "get_plan_by_id", AsyncMock(return_value=SimpleNamespace(
+        id=6, name="Pro", price=20000, is_active=True,
+    )))
+    monkeypatch.setattr(
+        trial_experience.trial_experience_service,
+        "validate_username",
+        lambda value: value,
+    )
+    monkeypatch.setattr(
+        trial_experience.trial_experience_service,
+        "username_available", AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        trial_experience.trial_experience_service,
+        "save_order_username", AsyncMock(),
+    )
+    monkeypatch.setattr(trial_experience.db, "add_order", AsyncMock(return_value=91))
+    monkeypatch.setattr(trial_experience.db, "get_order_by_id", AsyncMock(return_value=order))
+    cards = AsyncMock()
+    monkeypatch.setattr(trial_experience.db, "get_cards", cards)
+    renderer = AsyncMock()
+    monkeypatch.setattr(operations, "render_checkout_payment", renderer)
+
+    run(trial_experience._create_order_and_render(
+        cb_msg, source="p", plan_id=6,
+        username="my-panel-name", quote=None,
+    ))
+
+    renderer.assert_awaited_once()
+    wrapped, same_order = renderer.await_args.args
+    assert same_order is order
+    assert renderer.await_args.kwargs["source"] == "p"
+    assert wrapped._message is cb_msg
+    cards.assert_not_awaited()
