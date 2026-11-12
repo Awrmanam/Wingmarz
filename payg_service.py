@@ -973,6 +973,26 @@ class PaygService:
         """Authorize financial reactivation without bypassing unpaid usage."""
         if int(actor_id) not in config.SUDO_ADMINS:
             raise PaygError("operator permission required")
+        # Validate external/operator hold ownership BEFORE making a local
+        # financial state transition. A manually disabled Rebecca admin must
+        # not be reactivated by this payment-specific workflow.
+        before = await self.get_account(account_id)
+        if not before or before["status"] != "suspended":
+            raise PaygError("account does not have a financial hold")
+        admin = await db.get_admin_by_id(int(before["admin_id"]))
+        if not admin or not getattr(admin, "marzban_username", None):
+            raise PaygError("PAYG admin is missing")
+        reason = str(getattr(admin, "deactivated_reason", "") or "")
+        if not bool(getattr(admin, "is_active", True)) and reason != "PAYG balance exhausted":
+            raise PaygError("manual panel suspension cannot be released by PAYG")
+        remote = await rebecca_api.find_admin(admin.marzban_username)
+        if not isinstance(remote, dict):
+            raise PaygError("Rebecca status cannot be verified")
+        remote_status = str(remote.get("status") or "").strip().lower()
+        if remote_status not in {"active", "disabled"}:
+            raise PaygError("Rebecca status cannot be verified")
+        if remote_status == "disabled" and reason != "PAYG balance exhausted":
+            raise PaygError("manually disabled Rebecca admin cannot be reactivated")
         await self.ensure_schema()
         async with aiosqlite.connect(self.db_path) as conn:
             conn.row_factory = aiosqlite.Row
