@@ -469,49 +469,17 @@ async def admin_buy_reseller(callback: CallbackQuery):
 
 
 @admin_router.callback_query(F.data.startswith("admin_order_"))
-async def admin_order(callback: CallbackQuery):
-    plan_id = int(callback.data.split("_")[-1])
-    plans = await db.get_plans(only_active=True)
-    plan = next((p for p in plans if p.id == plan_id), None)
-    if not plan:
-        await callback.answer("پلن یافت نشد.", show_alert=True)
+async def admin_order(callback: CallbackQuery, state: FSMContext):
+    """Legacy reseller order buttons must use the canonical KYC checkout."""
+    try:
+        plan_id = int(str(callback.data or "").rsplit("_", 1)[-1])
+        if plan_id <= 0:
+            raise ValueError("invalid plan")
+    except (ValueError, TypeError):
+        await callback.answer("پلن نامعتبر است.", show_alert=True)
         return
-    order_id = await db.add_order(callback.from_user.id, plan_id, plan.price, plan.name)
-    if not order_id:
-        await callback.answer("خطا در ثبت سفارش.", show_alert=True)
-        return
-    await _mirror_admin_order_created(callback.bot, order_id)
-    price_txt = f"{plan.price:,}"
-    current_order = await db.get_order_by_id(order_id)
-    kyc_needed = await order_kyc_gate.requires_kyc(current_order or {
-        "id": order_id, "user_id": callback.from_user.id, "order_type": "purchase"
-    })
-    # Show manual payment cards
-    cards = await db.get_cards(only_active=True)
-    lines = [
-        f"✅ سفارش ثبت شد.\n\nشناسه سفارش: {order_id}\nپلن: {plan.name}\nقیمت: {price_txt} تومان\n",
-        config.MESSAGES["public_payment_instructions"],
-        "",
-        (
-            "🪪 <b>توجه:</b> بعد از تأیید پرداخت، صدور این سفارش تا تکمیل KYC متوقف می‌ماند. "
-            "در صورت رد KYC، سفارش وارد صف استرداد می‌شود."
-            if kyc_needed else
-            "✅ هویت شما تأیید شده؛ بعد از تأیید پرداخت، سفارش وارد مرحله صدور می‌شود."
-        ),
-        "",
-        "کارت‌های فعال:",
-    ]
-    if not cards:
-        lines.append("— فعلاً کارتی ثبت نشده. لطفاً با پشتیبانی تماس بگیرید.")
-    else:
-        for c in cards:
-            lines.append(f"• {c.get('bank_name','بانک')} | {c.get('card_number','---- ---- ---- ----')} | {c.get('holder_name','')} ")
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=config.BUTTONS["mark_paid"], callback_data=f"admin_mark_paid_{order_id}")],
-        [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="back_to_admin_main")]
-    ])
-    await callback.message.edit_text("\n".join(lines), reply_markup=kb)
-    await callback.answer()
+    from handlers.operations import _checkout_prompt
+    await _checkout_prompt(callback, "a", plan_id, state)
 
 
 @admin_router.callback_query(F.data.startswith("admin_mark_paid_"))
@@ -524,6 +492,18 @@ async def admin_mark_paid(callback: CallbackQuery, state: FSMContext):
     order = await db.get_order_by_id(order_id)
     if not order or order.get("user_id") != callback.from_user.id or order.get("status") != "pending":
         await callback.answer("سفارش یافت نشد.", show_alert=True)
+        return
+    # Old "I paid" buttons must never skip first-time card verification.
+    from purchase_kyc_flow import require_checkout_kyc
+    if await require_checkout_kyc(
+        callback.message,
+        telegram_user_id=int(callback.from_user.id),
+        kind="fixed",
+        reference_id=order_id,
+        source="a",
+        edit=True,
+    ):
+        await callback.answer()
         return
     await state.update_data(order_id=order_id)
     await state.set_state(AdminPaymentStates.waiting_for_receipt)
@@ -712,23 +692,12 @@ async def admin_full_renew_plan_selected(callback: CallbackQuery):
     await db.update_order(order_id, order_type="renew", target_admin_id=admin_id, apply_as_reset=1)
     await _mirror_admin_order_created(callback.bot, order_id)
     # Show payment instructions
-    cards = await db.get_cards(only_active=True)
-    lines = [
-        f"✅ سفارش تمدید کامل ثبت شد.\n\nشناسه سفارش: {order_id}\nپلن انتخابی: {plan.name}\nقیمت: {plan.price:,} تومان\n",
-        config.MESSAGES["public_payment_instructions"],
-        "",
-        "کارت‌های فعال:",
-    ]
-    if not cards:
-        lines.append("— فعلاً کارتی ثبت نشده. لطفاً با پشتیبانی تماس بگیرید.")
-    else:
-        for c in cards:
-            lines.append(f"• {c.get('bank_name','بانک')} | {c.get('card_number','---- ---- ---- ----')} | {c.get('holder_name','')} ")
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=config.BUTTONS["mark_paid"], callback_data=f"admin_mark_paid_{order_id}")],
-        [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data=f"admin_renew_panel_{admin_id}")]
-    ])
-    await callback.message.edit_text("\n".join(lines), reply_markup=kb)
+    # Renewals use the same identity gate as new purchases: no bank details
+    # or receipt action until the numeric Telegram owner is verified.
+    from handlers.operations import render_checkout_payment
+    await render_checkout_payment(
+        callback.message, await db.get_order_by_id(order_id), source="a"
+    )
     await callback.answer()
 
 
@@ -772,23 +741,12 @@ async def admin_renew_traffic_amount(callback: CallbackQuery, state: FSMContext)
     await db.update_order(order_id, order_type="renew", target_admin_id=admin_id, delta_traffic_bytes=delta_bytes)
     await _mirror_admin_order_created(callback.bot, order_id)
     # نمایش کارت‌ها و دریافت رسید
-    cards = await db.get_cards(only_active=True)
-    lines = [
-        f"✅ سفارش تمدید ثبت شد.\n\nشناسه سفارش: {order_id}\nافزایش حجم: +{gb}GB\nقیمت: {price:,} تومان\n",
-        config.MESSAGES["public_payment_instructions"],
-        "",
-        "کارت‌های فعال:",
-    ]
-    if not cards:
-        lines.append("— فعلاً کارتی ثبت نشده. لطفاً با پشتیبانی تماس بگیرید.")
-    else:
-        for c in cards:
-            lines.append(f"• {c.get('bank_name','بانک')} | {c.get('card_number','---- ---- ---- ----')} | {c.get('holder_name','')} ")
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=config.BUTTONS["mark_paid"], callback_data=f"admin_mark_paid_{order_id}")],
-        [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data=f"admin_renew_panel_{admin_id}")]
-    ])
-    await callback.message.edit_text("\n".join(lines), reply_markup=kb)
+    # Renewals use the same identity gate as new purchases: no bank details
+    # or receipt action until the numeric Telegram owner is verified.
+    from handlers.operations import render_checkout_payment
+    await render_checkout_payment(
+        callback.message, await db.get_order_by_id(order_id), source="a"
+    )
     await callback.answer()
 
 
@@ -827,23 +785,12 @@ async def admin_renew_time_amount(callback: CallbackQuery, state: FSMContext):
     order_id = await db.add_order(callback.from_user.id, plan_id=0, price_snapshot=price, plan_name_snapshot=f"تمدید زمان +{days} روز")
     await db.update_order(order_id, order_type="renew", target_admin_id=admin_id, delta_time_seconds=delta_seconds)
     await _mirror_admin_order_created(callback.bot, order_id)
-    cards = await db.get_cards(only_active=True)
-    lines = [
-        f"✅ سفارش تمدید ثبت شد.\n\nشناسه سفارش: {order_id}\nافزایش زمان: +{days} روز\nقیمت: {price:,} تومان\n",
-        config.MESSAGES["public_payment_instructions"],
-        "",
-        "کارت‌های فعال:",
-    ]
-    if not cards:
-        lines.append("— فعلاً کارتی ثبت نشده. لطفاً با پشتیبانی تماس بگیرید.")
-    else:
-        for c in cards:
-            lines.append(f"• {c.get('bank_name','بانک')} | {c.get('card_number','---- ---- ---- ----')} | {c.get('holder_name','')} ")
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=config.BUTTONS["mark_paid"], callback_data=f"admin_mark_paid_{order_id}")],
-        [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data=f"admin_renew_panel_{admin_id}")]
-    ])
-    await callback.message.edit_text("\n".join(lines), reply_markup=kb)
+    # Renewals use the same identity gate as new purchases: no bank details
+    # or receipt action until the numeric Telegram owner is verified.
+    from handlers.operations import render_checkout_payment
+    await render_checkout_payment(
+        callback.message, await db.get_order_by_id(order_id), source="a"
+    )
     await callback.answer()
 
 
@@ -881,129 +828,12 @@ async def admin_renew_users_amount(callback: CallbackQuery, state: FSMContext):
     order_id = await db.add_order(callback.from_user.id, plan_id=0, price_snapshot=price, plan_name_snapshot=f"افزایش کاربر +{users}")
     await db.update_order(order_id, order_type="renew", target_admin_id=admin_id, delta_users=users)
     await _mirror_admin_order_created(callback.bot, order_id)
-    cards = await db.get_cards(only_active=True)
-    lines = [
-        f"✅ سفارش تمدید ثبت شد.\n\nشناسه سفارش: {order_id}\nافزایش کاربر: +{users}\nقیمت: {price:,} تومان\n",
-        config.MESSAGES["public_payment_instructions"],
-        "",
-        "کارت‌های فعال:",
-    ]
-    if not cards:
-        lines.append("— فعلاً کارتی ثبت نشده. لطفاً با پشتیبانی تماس بگیرید.")
-    else:
-        for c in cards:
-            lines.append(f"• {c.get('bank_name','بانک')} | {c.get('card_number','---- ---- ---- ----')} | {c.get('holder_name','')} ")
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=config.BUTTONS["mark_paid"], callback_data=f"admin_mark_paid_{order_id}")],
-        [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data=f"admin_renew_panel_{admin_id}")]
-    ])
-    await callback.message.edit_text("\n".join(lines), reply_markup=kb)
-    await callback.answer()
-
-
-async def show_cleanup_menu(callback: CallbackQuery, admin: AdminModel):
-    """Show cleanup confirmation for users expired over 10 days (panel-scoped)."""
-    # Allow owner admin or sudo
-    if callback.from_user.id not in (config.SUDO_ADMINS + [admin.user_id]):
-        await callback.answer("غیرمجاز", show_alert=True)
-        return
-    panel_name = admin.admin_name or admin.marzban_username
-    # Compute count for this panel only
-    try:
-        admin_api = await marzban_api.create_admin_api(admin.marzban_username, admin.marzban_password)
-        old_expired = await admin_api.get_users_expired_over_days(10)
-        count = len(old_expired)
-    except Exception as e:
-        logger.error(f"Error fetching old expired users for admin {admin.id}: {e}")
-        count = 0
-    text = (
-        f"🧹 حذف کاربران منقضی‌شده بیش از ۱۰ روز (همین پنل)\n\n"
-        f"پنل: {panel_name}\n"
-        f"تعداد شناسایی‌شده: {count} کاربر\n\n"
-        f"آیا مایل به حذف آن‌ها هستید؟"
+    # Renewals use the same identity gate as new purchases: no bank details
+    # or receipt action until the numeric Telegram owner is verified.
+    from handlers.operations import render_checkout_payment
+    await render_checkout_payment(
+        callback.message, await db.get_order_by_id(order_id), source="a"
     )
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ بله، حذف کن", callback_data=f"cleanup_confirm_panel_{admin.id}")],
-        [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="back_to_admin_main")]
-    ])
-    await callback.message.edit_text(text, reply_markup=kb)
-    await callback.answer()
-
-
-async def perform_cleanup(callback: CallbackQuery, admin: AdminModel):
-    """Delete users expired more than 10 days for this panel only."""
-    if callback.from_user.id not in (config.SUDO_ADMINS + [admin.user_id]):
-        await callback.answer("غیرمجاز", show_alert=True)
-        return
-    try:
-        admin_api = await marzban_api.create_admin_api(admin.marzban_username, admin.marzban_password)
-        old_expired = await admin_api.get_users_expired_over_days(10)
-        candidate_count = len(old_expired)
-        # Progress feedback
-        try:
-            progress_msg = await callback.message.answer(
-                f"⏳ در حال پاکسازی لطفا صبر کنید\nمنقضی‌های ۱۰+ روز...\nکاندید: {candidate_count}\nحذف‌شده: 0"
-            )
-        except Exception:
-            progress_msg = None
-        deleted = 0
-        processed = 0
-        for u in old_expired:
-            ok = await marzban_api.remove_user(u.username)
-            processed += 1
-            if ok:
-                deleted += 1
-            # Update progress every 25 items or on last
-            if progress_msg and (processed % 25 == 0 or processed == candidate_count):
-                try:
-                    await progress_msg.edit_text(
-                        f"⏳ در حال پاکسازی لطفا صبر کنید\nمنقضی‌های ۱۰+ روز...\nکاندید: {candidate_count}\nپردازش‌شده: {processed}\nحذف‌شده: {deleted}"
-                    )
-                except TelegramBadRequest as e:
-                    if "message is not modified" in str(e).lower():
-                        pass
-                    else:
-                        raise
-        msg = f"✅ {deleted} کاربر قدیمی در همین پنل حذف شد."
-    except Exception as e:
-        logger.error(f"Error performing cleanup for admin {admin.id}: {e}")
-        msg = "❌ خطا در حذف کاربران قدیمی پنل."
-    is_sudo = callback.from_user.id in config.SUDO_ADMINS
-    back_cb = "back_to_main" if is_sudo else "back_to_admin_main"
-    # Cleanup progress message if exists
-    try:
-        if progress_msg:
-            await progress_msg.delete()
-    except Exception:
-        pass
-    await callback.message.edit_text(msg, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=config.BUTTONS["back"], callback_data=back_cb)]]))
-    await callback.answer()
-
-
-async def show_cleanup_small_menu(callback: CallbackQuery, admin: AdminModel):
-    """Show confirmation for panel-scoped cleanup of <=1GB finished/time-expired users."""
-    if callback.from_user.id not in (config.SUDO_ADMINS + [admin.user_id]):
-        await callback.answer("غیرمجاز", show_alert=True)
-        return
-    panel_name = admin.admin_name or admin.marzban_username
-    try:
-        admin_api = await marzban_api.create_admin_api(admin.marzban_username, admin.marzban_password)
-        to_delete = await admin_api.get_small_quota_finished_users(1073741824)
-        count = len(to_delete)
-    except Exception as e:
-        logger.error(f"Error fetching small-quota finished users for admin {admin.id}: {e}")
-        count = 0
-    text = (
-        f"🧹 حذف کاربران ≤۱GB تمام‌شده/منقضی (پنل)\n\n"
-        f"پنل: {panel_name}\n"
-        f"تعداد شناسایی‌شده: {count} کاربر\n\n"
-        f"آیا مایل به حذف آن‌ها هستید؟"
-    )
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ بله، حذف کن", callback_data=f"cleanup_small_confirm_panel_{admin.id}")],
-        [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="back_to_admin_main")]
-    ])
-    await callback.message.edit_text(text, reply_markup=kb)
     await callback.answer()
 
 
