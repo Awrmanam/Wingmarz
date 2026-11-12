@@ -11,6 +11,8 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 import config
 from authorization import is_staff
 from premium_ui_service import PremiumUIError, premium_ui_service
+from operations_service import OperationsError, operations_service
+from ui_presentation_registry import resolve_button
 from style_engine import style_engine
 
 
@@ -166,6 +168,8 @@ async def _render_button_detail(message: Message, item_id: int) -> None:
         "متن و ایموجی روی عملکرد دکمه اثری ندارند."
     )
     preview = await style_engine.styled_button(visible, callback_data="pui:noop", icon_key=item.emoji_key or item.default_icon_key, fallback=item.default_fallback)
+    logical = resolve_button(item.callback_data, item.default_text).button
+    back = f"uiv4:screen:{logical.screen}:0" if logical else "cc:buttons"
     rows = [
         [preview],
         [await _btn("تغییر متن", f"pui:bt:{item.id}", fallback="✏️")],
@@ -174,9 +178,93 @@ async def _render_button_detail(message: Message, item_id: int) -> None:
             await _btn("ریست متن", f"pui:btr:{item.id}", fallback="♻️"),
             await _btn("ریست ایموجی", f"pui:ber:{item.id}", fallback="♻️"),
         ],
-        [await _btn("بازگشت", "cc:buttons", icon_key="back", fallback="⬅️")],
     ]
+    # Only the six explicitly configurable dashboard sections can be hidden
+    # or reordered. Destructive confirmation/payment buttons never qualify.
+    from handlers.operations import MENU_SPECS
+    editable_menu = any(
+        c == item.callback_data and default == item.default_text
+        for c,default,*_ in MENU_SPECS
+    )
+    if editable_menu:
+        shown = await operations_service.menu_is_visible(item.callback_data)
+        text += f"\nوضعیت منو: <b>{'نمایش' if shown else 'پنهان'}</b>"
+        if item.callback_data != "ops:hub:settings":
+            rows.append([
+                await _btn(
+                    "پنهان کردن از داشبورد" if shown else "نمایش در داشبورد",
+                    f"pui:bvis:{item.id}", fallback="👁",
+                ),
+            ])
+        rows.append([
+            await _btn("⬆️ یک ردیف بالاتر", f"pui:bmv:{item.id}:up", fallback="⬆️"),
+            await _btn("⬇️ یک ردیف پایین‌تر", f"pui:bmv:{item.id}:down", fallback="⬇️"),
+        ])
+    rows.append([await _btn("بازگشت به صفحه", back, icon_key="back", fallback="⬅️")])
     await message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+def _dashboard_button_allowed(item) -> bool:
+    if item is None:
+        return False
+    from handlers.operations import MENU_SPECS
+    return any(
+        item.callback_data == callback and item.default_text == default
+        for callback,default,*_ in MENU_SPECS
+    )
+
+
+@premium_ui_admin_router.callback_query(F.data.startswith("pui:bvis:"))
+async def button_toggle_dashboard_visibility(callback: CallbackQuery):
+    if await _deny(callback):
+        return
+    try:
+        item_id = int((callback.data or "").split(":")[-1])
+    except (TypeError,ValueError):
+        await callback.answer("شناسه نامعتبر", show_alert=True)
+        return
+    item = await premium_ui_service.get_button(item_id)
+    if not _dashboard_button_allowed(item) or item.callback_data == "ops:hub:settings":
+        await callback.answer("این دکمه قابل پنهان‌سازی نیست", show_alert=True)
+        return
+    current = await operations_service.menu_is_visible(item.callback_data)
+    try:
+        await operations_service.set_menu_visible(item.callback_data, not current)
+    except OperationsError as exc:
+        await callback.answer(str(exc)[:120], show_alert=True)
+        return
+    await _render_button_detail(callback.message,item_id)
+    await callback.answer("ذخیره شد")
+
+
+@premium_ui_admin_router.callback_query(F.data.startswith("pui:bmv:"))
+async def button_move_dashboard(callback: CallbackQuery):
+    if await _deny(callback):
+        return
+    parts = (callback.data or "").split(":")
+    if len(parts) != 4 or parts[-1] not in {"up","down"}:
+        await callback.answer("درخواست نامعتبر", show_alert=True)
+        return
+    try:
+        item_id = int(parts[2])
+    except (TypeError,ValueError):
+        await callback.answer("شناسه نامعتبر", show_alert=True)
+        return
+    item = await premium_ui_service.get_button(item_id)
+    if not _dashboard_button_allowed(item):
+        await callback.answer("این دکمه قابل جابه‌جایی نیست", show_alert=True)
+        return
+    from handlers.operations import MENU_SPECS
+    try:
+        await operations_service.move_menu(
+            item.callback_data, -1 if parts[-1]=="up" else 1,
+            [spec[0] for spec in MENU_SPECS],
+        )
+    except OperationsError as exc:
+        await callback.answer(str(exc)[:120], show_alert=True)
+        return
+    await _render_button_detail(callback.message,item_id)
+    await callback.answer("ترتیب ذخیره شد")
 
 
 @premium_ui_admin_router.callback_query(F.data.startswith("pui:b:"))
