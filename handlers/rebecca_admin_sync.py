@@ -83,6 +83,10 @@ async def _admin_users_snapshot(username: str, *, limit: int = 10, offset: int =
         users = []
     if not isinstance(users, list) or any(not isinstance(item, dict) for item in users):
         raise RebeccaAPIError("Rebecca returned an invalid users list")
+    for user in users:
+        remote_owner = user.get("admin")
+        if remote_owner is not None and str(remote_owner) != requested:
+            raise RebeccaAPIError("Rebecca returned users outside requested reseller scope")
     total = data.get("total")
     if total is not None and (isinstance(total, bool) or not isinstance(total, int) or total < 0):
         raise RebeccaAPIError("Rebecca returned an invalid users total")
