@@ -328,7 +328,7 @@ class RebeccaUserAlerts:
             for block in blocks:
                 # For 1-2 events preserve individual context; 3+ are grouped.
                 messages = (
-                    [block] if len(block) >= 3
+                    [block] if len(block) >= int(getattr(config, "REBECCA_USER_ALERTS_GROUP_MIN", 3))
                     else [[item] for item in block]
                 )
                 for chunk in messages:
