@@ -178,6 +178,22 @@ class BroadcastOutbox:
             await conn.commit()
         return token,rows
 
+    async def requeue_paused(
+        self, job_id: int, recipient_id: int, token: str,
+    ) -> None:
+        """Pausing a scheduled send is not a Telegram delivery failure."""
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            await conn.execute("BEGIN IMMEDIATE")
+            await conn.execute(
+                "UPDATE broadcast_deliveries SET state='pending',"
+                "lease_token=NULL,lease_until=0 WHERE job_id=? "
+                "AND recipient_telegram_id=? AND state='sending' "
+                "AND lease_token=?",
+                (int(job_id),int(recipient_id),token),
+            )
+            await conn.commit()
+
     async def finish(
         self, job_id: int, recipient_id: int, token: str,
         *, delivered: bool, now: int | None = None,
@@ -225,9 +241,9 @@ class BroadcastOutbox:
                 # before a pause can still be delivered.
                 status = await self.get_job(int(item["job_id"]))
                 if not status or status["status"] == "paused":
-                    await self.finish(
+                    await self.requeue_paused(
                         int(item["job_id"]),int(item["recipient_telegram_id"]),
-                        token,delivered=False,now=now,
+                        token,
                     )
                     continue
                 await bot.send_message(
