@@ -233,6 +233,7 @@ BUTTONS: tuple[ButtonDef, ...] = (
     ButtonDef("admin.finance.card_toggle", "admin.finance", "فعال یا غیرفعال کردن کارت", "card_toggle", rank=3),
     ButtonDef("admin.finance.billing", "admin.finance", "تعرفه تمدید", "set_billing", rank=4),
     ButtonDef("admin.finance.payg_review", "admin.finance", "بازبینی مالی PAYG", "paygaudit:root", "🧾 بازبینی مالی PAYG", 30),
+    ButtonDef("admin.finance.payg_hold_direct", "admin.finance", "بررسی و رفع تعلیق مالی", "paygaudit:holds", "🧾 بررسی و رفع تعلیق مالی", 31),
     ButtonDef("admin.finance.payg_review_resellers", "admin.reseller_management", "بازبینی و تعلیق مالی PAYG", "paygaudit:root", "🔒 بازبینی و تعلیق مالی PAYG", 30),
     ButtonDef("admin.finance.login_url", "admin.finance", "آدرس ورود", "set_login_url", rank=5),
 
