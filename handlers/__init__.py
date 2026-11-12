@@ -20,6 +20,7 @@ from .rebecca_admin_sync import rebecca_admin_sync_router
 from .payg_offers import payg_offers_router
 from .payg_entry import payg_entry_router
 from .payg import payg_router
+from .payg_counter_review import payg_counter_review_router
 from .service_marketplace import service_marketplace_router
 from .service_marketplace_settings import service_marketplace_settings_router
 from .trial_experience import trial_experience_router
@@ -56,6 +57,7 @@ if config.PANEL_PROVIDER == "rebecca":
 style_admin_router.include_router(payg_offers_router)
 style_admin_router.include_router(payg_entry_router)
 style_admin_router.include_router(payg_router)
+style_admin_router.include_router(payg_counter_review_router)
 # Provider-specific routes remain internal for discovery/provisioning/settings.
 style_admin_router.include_router(service_marketplace_router)
 style_admin_router.include_router(service_marketplace_settings_router)
