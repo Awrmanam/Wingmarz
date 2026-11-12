@@ -185,7 +185,7 @@ async def _render_admin_list(message: Message, page: int = 0) -> None:
     if nav:
         rows.append(nav)
     rows.append([InlineKeyboardButton(text="🔎 جستجوی دقیق", callback_data="gops:search")])
-    rows.append([InlineKeyboardButton(text="⬅️ پنل‌ها و ادمین‌ها", callback_data="ops:hub:panels")])
+    rows.append([InlineKeyboardButton(text="⬅️ مدیریت نمایندگان", callback_data="resellercenter:home")])
 
     text = (
         "👥 <b>لیست Adminها</b>\n\n"
