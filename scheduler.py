@@ -361,7 +361,33 @@ class MonitoringScheduler:
             # customer usage exhaustion. No credentials or payloads in logs.
             print(f"Rebecca per-user alert scan failed: {type(exc).__name__}")
 
+    async def deliver_broadcast_outbox(self):
+        """Drain persistent broadcasts regardless of panel-provider availability."""
+        try:
+            from broadcast_outbox import broadcast_outbox
+            await broadcast_outbox.process(self.bot,limit=20)
+        except Exception as exc:
+            # Never let delivery failure stop the scheduler or corrupt receipts.
+            import logging
+            logging.getLogger(__name__).warning(
+                "Broadcast delivery tick failed: %s", type(exc).__name__,
+            )
+
     def _register_group_ops_jobs(self):
+        # Leased SQLite receipts stop simultaneous scheduler instances from
+        # claiming the same recipients under normal operation.
+        self.scheduler.add_job(
+            self.deliver_broadcast_outbox,
+            trigger=IntervalTrigger(
+                seconds=15,
+                start_date=datetime.now()+timedelta(seconds=20),
+            ),
+            id="durable_broadcast_outbox",
+            name="Durable Telegram Broadcast Outbox",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
         self.scheduler.add_job(
             self.send_group_ops_daily,
             trigger=CronTrigger(hour=23, minute=55),
