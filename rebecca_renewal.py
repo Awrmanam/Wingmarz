@@ -145,6 +145,15 @@ async def apply_rebecca_renewal(order: dict, actor_id: int) -> RebeccaRenewalRes
     reserved = True
 
     try:
+        # A second paid order may have fetched an old quota before the first
+        # order finished. Re-read after reserving the panel, before mutation.
+        fresh = await rebecca_api.find_admin(username)
+        if not isinstance(fresh, dict) or any(
+            fresh.get(key) != remote.get(key) for key in payload
+        ):
+            raise RebeccaRenewalError(
+                "محدودیت پنل پس از محاسبه تمدید تغییر کرده؛ نیاز به بررسی دستی دارد."
+            )
         await rebecca_api.update_admin_fields(username, payload)
         verified = await rebecca_api.find_admin(username)
         if not isinstance(verified, dict) or any(
