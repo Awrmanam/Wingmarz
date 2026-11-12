@@ -7,6 +7,10 @@ import config
 from database import db
 from models.schemas import AdminModel
 from rebecca_api import RebeccaAPIError, rebecca_api
+from rebecca_identity_conflicts import rebecca_identity_conflicts
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def _telegram_id(remote: dict[str, Any]) -> int | None:
@@ -53,29 +57,60 @@ async def _sync_one(
         return None
 
     status = str(remote.get("status") or "").strip().lower()
-    is_active = status == "active"
-    users_limit = remote.get("users_limit")
-    max_users = max(1, _non_negative_int(users_limit, 1))
-    data_limit = _non_negative_int(remote.get("data_limit"), 0)
+    # No missing field is silently turned into a restrictive one-user quota.
+    # The local model represents Rebecca's unlimited (0) limit as 1_000_000.
+    raw_users_limit = remote.get("users_limit")
+    max_users = None
+    if raw_users_limit is not None:
+        parsed = _non_negative_int(raw_users_limit, 0)
+        max_users = parsed if parsed > 0 else 1_000_000
+    data_limit = (
+        _non_negative_int(remote.get("data_limit"))
+        if remote.get("data_limit") is not None else None
+    )
 
-    existing = await db.get_admin_by_marzban_username(username)
-    if existing:
+    async def safe_update(existing: AdminModel) -> int | None:
+        if int(existing.user_id) != user_id:
+            # A change upstream does not constitute authorization to move a
+            # customer's local panel, orders or associated Telegram access.
+            await rebecca_identity_conflicts.report(
+                username, int(existing.user_id), int(user_id)
+            )
+            logger.warning(
+                "Rebecca ownership conflict for %s: local=%s remote=%s; "
+                "ownership unchanged, operator review required",
+                username, int(existing.user_id), user_id,
+            )
+            return None
+
+        await rebecca_identity_conflicts.clear_when_matching(username, user_id)
         updates: dict[str, Any] = {
-            "user_id": user_id,
-            "is_active": 1 if is_active else 0,
-            "max_users": max_users,
-            "max_total_traffic": data_limit,
-            "validity_days": _validity_days(remote),
-            "login_url": config.REBECCA_LOGIN_URL or config.REBECCA_URL or existing.login_url,
+            "login_url": (
+                config.REBECCA_LOGIN_URL or config.REBECCA_URL or existing.login_url
+            )
         }
+        if status in {"active", "disabled"}:
+            updates["is_active"] = 1 if status == "active" else 0
+        if max_users is not None:
+            updates["max_users"] = max_users
+        if data_limit is not None:
+            updates["max_total_traffic"] = data_limit
+        if "expire" in remote:
+            updates["validity_days"] = _validity_days(remote)
         if telegram_username:
             updates["username"] = telegram_username
         if first_name:
             updates["first_name"] = first_name
         if last_name:
             updates["last_name"] = last_name
-        await db.update_admin(existing.id, **updates)
+        # Deliberately NEVER set user_id in a background sync.
+        if not await db.update_admin(existing.id, **updates):
+            return None
         return int(existing.id)
+
+    existing = await db.get_admin_by_marzban_username(username)
+    if existing:
+        return await safe_update(existing)
 
     model = AdminModel(
         user_id=user_id,
@@ -86,30 +121,20 @@ async def _sync_one(
         username=telegram_username,
         first_name=first_name,
         last_name=last_name,
-        max_users=max_users,
+        max_users=max_users if max_users is not None else 1_000_000,
         max_total_time=0,
-        max_total_traffic=data_limit,
+        max_total_traffic=data_limit if data_limit is not None else 0,
         validity_days=_validity_days(remote),
-        is_active=is_active,
+        is_active=status == "active",
     )
     if not await db.add_admin(model):
-        # A concurrent /start may have inserted it. Re-read and reconcile.
+        # Another /start may have inserted this username. Re-read and apply
+        # the exact same ownership checks rather than taking over its owner.
         existing = await db.get_admin_by_marzban_username(username)
-        if existing:
-            await db.update_admin(
-                existing.id,
-                user_id=user_id,
-                is_active=1 if is_active else 0,
-                max_users=max_users,
-                max_total_traffic=data_limit,
-                login_url=config.REBECCA_LOGIN_URL or config.REBECCA_URL or existing.login_url,
-            )
-            return int(existing.id)
-        return None
+        return await safe_update(existing) if existing else None
 
     created = await db.get_admin_by_marzban_username(username)
     return int(created.id) if created and created.id is not None else None
-
 
 async def sync_rebecca_admins_for_telegram(
     telegram_id: int,
