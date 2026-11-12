@@ -58,6 +58,7 @@ HUB_MENUS = {
         "body": "فقط تنظیمات فروش: سفارش، محصول، تست و تخفیف.",
         "items": (
             ("cc:orders:0", "سفارش‌های در انتظار", "orders", "🧾"),
+            ("sudo_renew_review", "تمدیدهای نیازمند بررسی", "orders", "⚠️"),
             ("sales_manage", "محصولات و پلن‌ها", "plan", "📦"),
             ("cc:test", "تست رایگان", "test", "🧪"),
             ("cc:discounts", "کدهای تخفیف", "discount", "🎟"),

@@ -1,0 +1,25 @@
+name: Verify Rebecca Renewal Journal
+
+on:
+  push:
+    branches:
+      - fix/rebecca-renewal-atomic-journal-20261112
+  workflow_dispatch:
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10','3.11']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install -r requirements.txt pytest
+      - run: python -m compileall -q bot.py handlers rebecca_renewal.py rebecca_renewal_journal.py tests
+      - run: timeout 330s python -m pytest -q
+      - run: git diff --check
