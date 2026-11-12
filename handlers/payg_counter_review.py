@@ -30,7 +30,8 @@ async def _show_queue(message: Message) -> None:
           f"paygaudit:item:{int(item['id'])}")]
         for item in items
     ]
-    rows.append([("◀️ بازگشت به مالی", "sudo_menu_sales")])
+    rows.append([("🔒 تعلیق‌های مالی", "paygaudit:holds")])
+    rows.append([("◀️ بازگشت به مالی", "ops:hub:finance")])
     text = (
         "🧾 <b>بازبینی شمارنده‌های PAYG</b>\n\n"
         "کاهش مصرف Rebecca تا تأیید دستی هیچ هزینه جدیدی ایجاد نمی‌کند.\n"
@@ -71,6 +72,116 @@ async def _show_item(message: Message, review_id: int, *, confirm: bool = False)
             [("↩️ بازگشت", "paygaudit:root")],
         ]
     await message.edit_text(text, reply_markup=_menu(rows))
+
+
+
+async def _show_holds(message: Message) -> None:
+    items = await payg_service.list_financial_holds(limit=30)
+    rows = [
+        [(
+            f"حساب #{int(item['id'])} · بدهی {int(item['outstanding_toman']):,} تومان",
+            f"paygaudit:hold:{int(item['id'])}",
+        )] for item in items
+    ]
+    rows.append([("↩️ صف بازبینی مصرف", "paygaudit:root")])
+    await message.edit_text(
+        "🔒 <b>حساب‌های معلق مالی</b>\n\n"
+        "رفع تعلیق فقط پس از تسویه بدهی و تأیید مدیر انجام می‌شود.\n"
+        f"تعداد نمایش‌داده‌شده: {len(items)}",
+        reply_markup=_menu(rows),
+    )
+
+
+@payg_counter_review_router.callback_query(F.data == "paygaudit:holds")
+async def audit_holds(callback: CallbackQuery) -> None:
+    if not _allowed(callback.from_user.id):
+        await callback.answer("دسترسی مجاز نیست", show_alert=True)
+        return
+    await _show_holds(callback.message)
+    await callback.answer()
+
+
+@payg_counter_review_router.callback_query(F.data.startswith("paygaudit:hold:"))
+async def audit_hold_detail(callback: CallbackQuery) -> None:
+    if not _allowed(callback.from_user.id):
+        await callback.answer("دسترسی مجاز نیست", show_alert=True)
+        return
+    try:
+        account_id = int(callback.data.rsplit(":", 1)[-1])
+    except (TypeError, ValueError):
+        await callback.answer("شناسه نامعتبر", show_alert=True)
+        return
+    holds = await payg_service.list_financial_holds(limit=100)
+    item = next((a for a in holds if int(a["id"]) == account_id), None)
+    if not item:
+        await callback.answer("حساب دیگر معلق نیست", show_alert=True)
+        return
+    await callback.message.edit_text(
+        f"🔒 <b>تعلیق حساب #{account_id}</b>\n"
+        f"مالک: <code>{int(item['user_id'])}</code>\n"
+        f"موجودی: {int(item['balance_toman']):,} تومان\n"
+        f"بدهی: {int(item['outstanding_toman']):,} تومان\n\n"
+        "رفع تعلیق پس از تأیید نهایی بررسی خواهد شد.",
+        reply_markup=_menu([
+            [("✅ بررسی و تأیید رفع تعلیق", f"paygaudit:releaseconfirm:{account_id}")],
+            [("↩️ بازگشت", "paygaudit:holds")],
+        ]),
+    )
+    await callback.answer()
+
+
+@payg_counter_review_router.callback_query(F.data.startswith("paygaudit:releaseconfirm:"))
+async def audit_release_confirm(callback: CallbackQuery) -> None:
+    if not _allowed(callback.from_user.id):
+        await callback.answer("دسترسی مجاز نیست", show_alert=True)
+        return
+    try:
+        account_id = int(callback.data.rsplit(":", 1)[-1])
+    except (TypeError, ValueError):
+        await callback.answer("شناسه نامعتبر", show_alert=True)
+        return
+    await callback.message.edit_text(
+        f"⚠️ <b>تأیید نهایی رفع تعلیق PAYG #{account_id}</b>\n\n"
+        "فقط تعلیق مالیِ تسویه‌شده قابل رفع است. تعلیق دستی مدیر "
+        "نباید از این مسیر دور زده شود.",
+        reply_markup=_menu([
+            [("✅ تأیید نهایی", f"paygaudit:release:{account_id}")],
+            [("↩️ انصراف", f"paygaudit:hold:{account_id}")],
+        ]),
+    )
+    await callback.answer()
+
+
+@payg_counter_review_router.callback_query(F.data.startswith("paygaudit:release:"))
+async def audit_release(callback: CallbackQuery) -> None:
+    if not _allowed(callback.from_user.id):
+        await callback.answer("دسترسی مجاز نیست", show_alert=True)
+        return
+    try:
+        account_id = int(callback.data.rsplit(":", 1)[-1])
+    except (TypeError, ValueError):
+        await callback.answer("شناسه نامعتبر", show_alert=True)
+        return
+    try:
+        await payg_service.release_financial_hold(account_id, callback.from_user.id)
+        # Recheck/enable Rebecca through the existing verified billing sync.
+        await payg_service.sync_account(account_id)
+    except PaygError as exc:
+        await callback.answer(str(exc)[:180], show_alert=True)
+        return
+    except Exception:
+        await callback.message.edit_text(
+            "⚠️ تصمیم مالی ثبت شد، ولی تأیید وضعیت Rebecca ناموفق بود. "
+            "وضعیت پنل را بررسی کنید؛ Scheduler در اجرای بعد دوباره همگام می‌کند.",
+            reply_markup=_menu([[("↩️ بازگشت", "paygaudit:holds")]]),
+        )
+        await callback.answer()
+        return
+    await callback.message.edit_text(
+        f"✅ حساب #{account_id} در بررسی مجدد PAYG فعال گزارش شد.",
+        reply_markup=_menu([[("↩️ بازگشت", "paygaudit:holds")]]),
+    )
+    await callback.answer()
 
 
 @payg_counter_review_router.message(Command("payg_audit"))
