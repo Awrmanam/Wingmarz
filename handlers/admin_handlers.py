@@ -470,7 +470,7 @@ async def admin_buy_reseller(callback: CallbackQuery):
 
 @admin_router.callback_query(F.data.startswith("admin_order_"))
 async def admin_order(callback: CallbackQuery, state: FSMContext):
-    """Legacy reseller order buttons must use the canonical KYC checkout."""
+    """Legacy reseller order buttons use the canonical guarded checkout."""
     try:
         plan_id = int(str(callback.data or "").rsplit("_", 1)[-1])
         if plan_id <= 0:
@@ -518,7 +518,7 @@ async def admin_receive_payment_receipt(message: Message, state: FSMContext):
     if not order_id:
         await state.clear()
         return
-    # Old receipt FSM state must never let an unverified user skip card KYC.
+    # A previously-open receipt FSM cannot bypass the card KYC gate.
     from purchase_kyc_flow import require_checkout_kyc
     if await require_checkout_kyc(
         message,
@@ -704,8 +704,7 @@ async def admin_full_renew_plan_selected(callback: CallbackQuery):
     await db.update_order(order_id, order_type="renew", target_admin_id=admin_id, apply_as_reset=1)
     await _mirror_admin_order_created(callback.bot, order_id)
     # Show payment instructions
-    # Renewals use the same identity gate as new purchases: no bank details
-    # or receipt action until the numeric Telegram owner is verified.
+    # Same checkout guard for new plans and all renewal variants.
     from handlers.operations import render_checkout_payment
     await render_checkout_payment(
         callback.message, await db.get_order_by_id(order_id), source="a"
@@ -745,9 +744,9 @@ async def admin_renew_traffic_amount(callback: CallbackQuery, state: FSMContext)
         data = await state.get_data()
         admin_id = int(data.get("current_admin_id"))
     gb = int(parts[-1])
-    # Reject forged/stale renewal buttons for panels owned by another ID.
-    admin = await db.get_admin_by_id(int(admin_id))
-    if not admin or int(admin.user_id) != int(callback.from_user.id):
+    # Avoid forged renewal callbacks targeting another Telegram account.
+    target = await db.get_admin_by_id(int(admin_id))
+    if not target or int(target.user_id) != int(callback.from_user.id):
         await callback.answer("این پنل متعلق به حساب شما نیست.", show_alert=True)
         return
     rates = await db.get_billing_rates()
@@ -758,8 +757,7 @@ async def admin_renew_traffic_amount(callback: CallbackQuery, state: FSMContext)
     await db.update_order(order_id, order_type="renew", target_admin_id=admin_id, delta_traffic_bytes=delta_bytes)
     await _mirror_admin_order_created(callback.bot, order_id)
     # نمایش کارت‌ها و دریافت رسید
-    # Renewals use the same identity gate as new purchases: no bank details
-    # or receipt action until the numeric Telegram owner is verified.
+    # Same checkout guard for new plans and all renewal variants.
     from handlers.operations import render_checkout_payment
     await render_checkout_payment(
         callback.message, await db.get_order_by_id(order_id), source="a"
@@ -796,9 +794,9 @@ async def admin_renew_time_amount(callback: CallbackQuery, state: FSMContext):
         data = await state.get_data()
         admin_id = int(data.get("current_admin_id"))
     days = int(parts[-1])
-    # Reject forged/stale renewal buttons for panels owned by another ID.
-    admin = await db.get_admin_by_id(int(admin_id))
-    if not admin or int(admin.user_id) != int(callback.from_user.id):
+    # Avoid forged renewal callbacks targeting another Telegram account.
+    target = await db.get_admin_by_id(int(admin_id))
+    if not target or int(target.user_id) != int(callback.from_user.id):
         await callback.answer("این پنل متعلق به حساب شما نیست.", show_alert=True)
         return
     rates = await db.get_billing_rates()
@@ -807,8 +805,7 @@ async def admin_renew_time_amount(callback: CallbackQuery, state: FSMContext):
     order_id = await db.add_order(callback.from_user.id, plan_id=0, price_snapshot=price, plan_name_snapshot=f"تمدید زمان +{days} روز")
     await db.update_order(order_id, order_type="renew", target_admin_id=admin_id, delta_time_seconds=delta_seconds)
     await _mirror_admin_order_created(callback.bot, order_id)
-    # Renewals use the same identity gate as new purchases: no bank details
-    # or receipt action until the numeric Telegram owner is verified.
+    # Same checkout guard for new plans and all renewal variants.
     from handlers.operations import render_checkout_payment
     await render_checkout_payment(
         callback.message, await db.get_order_by_id(order_id), source="a"
@@ -845,9 +842,9 @@ async def admin_renew_users_amount(callback: CallbackQuery, state: FSMContext):
         data = await state.get_data()
         admin_id = int(data.get("current_admin_id"))
     users = int(parts[-1])
-    # Reject forged/stale renewal buttons for panels owned by another ID.
-    admin = await db.get_admin_by_id(int(admin_id))
-    if not admin or int(admin.user_id) != int(callback.from_user.id):
+    # Avoid forged renewal callbacks targeting another Telegram account.
+    target = await db.get_admin_by_id(int(admin_id))
+    if not target or int(target.user_id) != int(callback.from_user.id):
         await callback.answer("این پنل متعلق به حساب شما نیست.", show_alert=True)
         return
     rates = await db.get_billing_rates()
@@ -855,12 +852,117 @@ async def admin_renew_users_amount(callback: CallbackQuery, state: FSMContext):
     order_id = await db.add_order(callback.from_user.id, plan_id=0, price_snapshot=price, plan_name_snapshot=f"افزایش کاربر +{users}")
     await db.update_order(order_id, order_type="renew", target_admin_id=admin_id, delta_users=users)
     await _mirror_admin_order_created(callback.bot, order_id)
-    # Renewals use the same identity gate as new purchases: no bank details
-    # or receipt action until the numeric Telegram owner is verified.
+    # Same checkout guard for new plans and all renewal variants.
     from handlers.operations import render_checkout_payment
     await render_checkout_payment(
         callback.message, await db.get_order_by_id(order_id), source="a"
     )
+    await callback.answer()
+
+
+async def show_cleanup_menu(callback: CallbackQuery, admin: AdminModel):
+    """Show cleanup confirmation for users expired over 10 days (panel-scoped)."""
+    # Allow owner admin or sudo
+    if callback.from_user.id not in (config.SUDO_ADMINS + [admin.user_id]):
+        await callback.answer("غیرمجاز", show_alert=True)
+        return
+    panel_name = admin.admin_name or admin.marzban_username
+    # Compute count for this panel only
+    try:
+        admin_api = await marzban_api.create_admin_api(admin.marzban_username, admin.marzban_password)
+        old_expired = await admin_api.get_users_expired_over_days(10)
+        count = len(old_expired)
+    except Exception as e:
+        logger.error(f"Error fetching old expired users for admin {admin.id}: {e}")
+        count = 0
+    text = (
+        f"🧹 حذف کاربران منقضی‌شده بیش از ۱۰ روز (همین پنل)\n\n"
+        f"پنل: {panel_name}\n"
+        f"تعداد شناسایی‌شده: {count} کاربر\n\n"
+        f"آیا مایل به حذف آن‌ها هستید؟"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ بله، حذف کن", callback_data=f"cleanup_confirm_panel_{admin.id}")],
+        [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="back_to_admin_main")]
+    ])
+    await callback.message.edit_text(text, reply_markup=kb)
+    await callback.answer()
+
+
+async def perform_cleanup(callback: CallbackQuery, admin: AdminModel):
+    """Delete users expired more than 10 days for this panel only."""
+    if callback.from_user.id not in (config.SUDO_ADMINS + [admin.user_id]):
+        await callback.answer("غیرمجاز", show_alert=True)
+        return
+    try:
+        admin_api = await marzban_api.create_admin_api(admin.marzban_username, admin.marzban_password)
+        old_expired = await admin_api.get_users_expired_over_days(10)
+        candidate_count = len(old_expired)
+        # Progress feedback
+        try:
+            progress_msg = await callback.message.answer(
+                f"⏳ در حال پاکسازی لطفا صبر کنید\nمنقضی‌های ۱۰+ روز...\nکاندید: {candidate_count}\nحذف‌شده: 0"
+            )
+        except Exception:
+            progress_msg = None
+        deleted = 0
+        processed = 0
+        for u in old_expired:
+            ok = await marzban_api.remove_user(u.username)
+            processed += 1
+            if ok:
+                deleted += 1
+            # Update progress every 25 items or on last
+            if progress_msg and (processed % 25 == 0 or processed == candidate_count):
+                try:
+                    await progress_msg.edit_text(
+                        f"⏳ در حال پاکسازی لطفا صبر کنید\nمنقضی‌های ۱۰+ روز...\nکاندید: {candidate_count}\nپردازش‌شده: {processed}\nحذف‌شده: {deleted}"
+                    )
+                except TelegramBadRequest as e:
+                    if "message is not modified" in str(e).lower():
+                        pass
+                    else:
+                        raise
+        msg = f"✅ {deleted} کاربر قدیمی در همین پنل حذف شد."
+    except Exception as e:
+        logger.error(f"Error performing cleanup for admin {admin.id}: {e}")
+        msg = "❌ خطا در حذف کاربران قدیمی پنل."
+    is_sudo = callback.from_user.id in config.SUDO_ADMINS
+    back_cb = "back_to_main" if is_sudo else "back_to_admin_main"
+    # Cleanup progress message if exists
+    try:
+        if progress_msg:
+            await progress_msg.delete()
+    except Exception:
+        pass
+    await callback.message.edit_text(msg, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=config.BUTTONS["back"], callback_data=back_cb)]]))
+    await callback.answer()
+
+
+async def show_cleanup_small_menu(callback: CallbackQuery, admin: AdminModel):
+    """Show confirmation for panel-scoped cleanup of <=1GB finished/time-expired users."""
+    if callback.from_user.id not in (config.SUDO_ADMINS + [admin.user_id]):
+        await callback.answer("غیرمجاز", show_alert=True)
+        return
+    panel_name = admin.admin_name or admin.marzban_username
+    try:
+        admin_api = await marzban_api.create_admin_api(admin.marzban_username, admin.marzban_password)
+        to_delete = await admin_api.get_small_quota_finished_users(1073741824)
+        count = len(to_delete)
+    except Exception as e:
+        logger.error(f"Error fetching small-quota finished users for admin {admin.id}: {e}")
+        count = 0
+    text = (
+        f"🧹 حذف کاربران ≤۱GB تمام‌شده/منقضی (پنل)\n\n"
+        f"پنل: {panel_name}\n"
+        f"تعداد شناسایی‌شده: {count} کاربر\n\n"
+        f"آیا مایل به حذف آن‌ها هستید؟"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ بله، حذف کن", callback_data=f"cleanup_small_confirm_panel_{admin.id}")],
+        [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="back_to_admin_main")]
+    ])
+    await callback.message.edit_text(text, reply_markup=kb)
     await callback.answer()
 
 
