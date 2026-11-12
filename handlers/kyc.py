@@ -14,6 +14,8 @@ import config
 from database import db
 from kyc_service import kyc_service
 from group_ops_service import group_ops_service
+from authorization import OWNER_IDS
+import logging
 from order_kyc_gate import order_kyc_gate
 from payg_kyc_gate import payg_kyc_gate
 from payg_service import payg_service
@@ -22,6 +24,7 @@ from utils.rebecca import credential_message
 
 
 kyc_router = Router(name="kyc")
+logger = logging.getLogger(__name__)
 
 
 class KycStates(StatesGroup):
@@ -301,22 +304,41 @@ async def kyc_document(message: Message, state: FSMContext):
         + (f"💳 کارت: <code>{escape(str(data.get('kyc_first4')))} •••• •••• {escape(str(data.get('kyc_last4')))}</code>\n" if level == 1 else "")
         + "⚠️ برای کارت، مطمئن شوید ارقام وسط، CVV2 و انقضا پوشیده‌اند."
     )
-    try:
-        await group_ops_service.send_photo(
-            message.bot, "kyc", photo.file_id, caption=caption, reply_markup=review_kb
-        )
-    except Exception:
-        pass
-    for sudo_id in config.SUDO_ADMINS:
+    # KYC media can contain sensitive unmasked card/document details.
+    # Never forward photographs to Group Ops: send_photo() can fall back to
+    # the entire supergroup when topic permissions change. Only immutable
+    # server-configured owners can receive the media in a private chat.
+    delivered_to_owner = False
+    for owner_id in OWNER_IDS:
         try:
             await message.bot.send_photo(
-                sudo_id,
-                photo.file_id,
+                chat_id=int(owner_id),
+                photo=photo.file_id,
                 caption=caption,
                 reply_markup=review_kb,
             )
+            delivered_to_owner = True
         except Exception:
-            pass
+            logger.warning(
+                "Failed to deliver KYC photo privately to owner ID %s",
+                int(owner_id),
+            )
+    # Group Ops gets metadata only. Never attach the KYC image or card
+    # fingerprint here, including in the group-topic fallback path.
+    try:
+        await group_ops_service.send_text(
+            message.bot, "kyc",
+            "🪪 <b>درخواست احراز هویت جدید</b>\n"
+            f"🆔 Telegram ID: <code>{int(message.from_user.id)}</code>\n"
+            "🔒 تصویر مدرک فقط در گفتگوی خصوصی مالک اصلی ارسال می‌شود.\n"
+            + ("✅ ارسال خصوصی انجام شد." if delivered_to_owner
+               else "⚠️ ارسال خصوصی ناموفق بود؛ مالک از فهرست KYC در انتظار بررسی کند."),
+        )
+    except Exception:
+        logger.warning(
+            "Could not publish non-sensitive KYC queue alert for Telegram ID %s",
+            int(message.from_user.id),
+        )
 
 
 async def _notify_review_result(callback: CallbackQuery, user_id: int, approved: bool) -> None:
