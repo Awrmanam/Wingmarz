@@ -123,6 +123,8 @@ def _message_category(key: str) -> str:
         return "trial"
     if key.startswith("backup_"):
         return "backup"
+    if key.startswith("rebecca_user_"):
+        return "system"
     if key in {"welcome_sudo", "welcome_admin", "unauthorized"}:
         return "start"
     if key.startswith("public_") or key.startswith("order_"):
