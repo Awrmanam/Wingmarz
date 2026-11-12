@@ -344,6 +344,23 @@ class MonitoringScheduler:
             except Exception:
                 pass
 
+    async def sync_rebecca_user_alerts(self):
+        """Read-only per-user monitoring; separate from PAYG billing."""
+        if config.PANEL_PROVIDER != "rebecca" or not config.REBECCA_USER_ALERTS_ENABLED:
+            return
+        try:
+            from rebecca_user_alerts import rebecca_user_alerts
+            result = await rebecca_user_alerts.tick(self.bot)
+            print(
+                "Rebecca per-user alert scan: "
+                f"panels={result['polled']} "
+                f"new_events={result['events']} delivered={result['delivered']}"
+            )
+        except Exception as exc:
+            # The scheduler stays alive; do not treat a failed API request as
+            # customer usage exhaustion. No credentials or payloads in logs.
+            print(f"Rebecca per-user alert scan failed: {type(exc).__name__}")
+
     def _register_group_ops_jobs(self):
         self.scheduler.add_job(
             self.send_group_ops_daily,
@@ -379,6 +396,19 @@ class MonitoringScheduler:
                 replace_existing=True,
                 max_instances=1,
             )
+            if config.REBECCA_USER_ALERTS_ENABLED:
+                self.scheduler.add_job(
+                    self.sync_rebecca_user_alerts,
+                    trigger=IntervalTrigger(
+                        seconds=config.REBECCA_USER_ALERTS_INTERVAL,
+                        start_date=datetime.now() + timedelta(seconds=35),
+                    ),
+                    id="rebecca_per_user_alerts",
+                    name="Rebecca Per-User Quota and Expiry Alerts",
+                    replace_existing=True,
+                    max_instances=1,
+                    coalesce=True,
+                )
 
     async def start(self):
         if self.is_running:
