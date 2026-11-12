@@ -315,7 +315,14 @@ async def _create_order_and_render(
     from handlers.operations import _CheckoutMessage, render_checkout_payment
     await render_checkout_payment(
         _CheckoutMessage(message),
-        await db.get_order_by_id(order_id),
+        {
+            "id": int(order_id),
+            "user_id": customer_id,
+            "status": "pending",
+            "order_type": "purchase",
+            "plan_name_snapshot": str(plan.name),
+            "price_snapshot": int(final_price),
+        },
         source=source,
     )
 
