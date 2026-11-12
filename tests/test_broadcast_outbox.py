@@ -128,3 +128,26 @@ def test_expired_claim_is_released_after_crash_and_old_ack_is_ignored(tmp_path,m
         assert (await newer.get_job(job_id))["status"] == "completed"
 
     asyncio.run(scenario())
+
+
+def test_pause_after_claim_requeues_without_consuming_retry_budget(tmp_path,monkeypatch):
+    monkeypatch.setattr(config,"SUDO_ADMINS",[9001])
+    queue=BroadcastOutbox(str(tmp_path/"inflight.sqlite"))
+
+    async def scenario():
+        job_id=await _seed(queue,users=[102])
+        token,claimed=await queue.claim_due(now=1000)
+        assert len(claimed)==1
+        assert await queue.set_paused(job_id,9001,True)
+        await queue.requeue_paused(job_id,102,token)
+        async with aiosqlite.connect(queue.db_path) as conn:
+            async with conn.execute(
+                "SELECT attempts,state FROM broadcast_deliveries "
+                "WHERE job_id=?",(job_id,),
+            ) as cursor:
+                assert await cursor.fetchone()==(0,"pending")
+        assert len((await queue.claim_due(now=1000))[1])==0
+        assert await queue.set_paused(job_id,9001,False)
+        assert len((await queue.claim_due(now=1000))[1])==1
+
+    asyncio.run(scenario())
