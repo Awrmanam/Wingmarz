@@ -45,10 +45,7 @@ HUB_MENUS = {
         "title": "👥 پنل‌ها و ادمین‌ها",
         "body": "همه کارهای مربوط به پنل و ادمین از همین بخش انجام می‌شود.",
         "items": (
-            ("gops:admins:0", "مرکز مدیریت نمایندگان", "admin", "👥"),
-            ("add_admin", "افزودن ادمین", "admin", "➕"),
-            ("import_admin", "واردکردن ادمین موجود", "admin", "⬇️"),
-            ("auto_import_admins", "کشف ادمین‌های پنل", "search", "🔎"),
+            ("resellercenter:home", "مدیریت نمایندگان", "admin", "👥"),
             ("rebecca_services", "سرویس‌های Rebecca", "plan", "🔌"),
             ("set_login_url", "آدرس ورود پنل", "settings", "🌐"),
         ),
