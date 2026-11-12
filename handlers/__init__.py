@@ -37,6 +37,7 @@ from .tariffs import tariffs_router
 from .control_center import control_center_router
 
 style_admin_router.include_router(group_ops_router)
+style_admin_router.include_router(reseller_management_router)
 style_admin_router.include_router(kyc_router)
 style_admin_router.include_router(checkout_kyc_router)
 style_admin_router.include_router(operations_bootstrap_router)
