@@ -50,14 +50,12 @@ def _bytes(value: int) -> str:
     return f"{n} B"
 
 
-async def _send_admin_alert(bot, admin, title: str, body: str) -> bool:
-    group_kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="⚙️ مدیریت کامل", callback_data=f"gops:admin:{admin.id}")
-    ]])
-    private_kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="🔄 تمدید / افزایش", callback_data=f"admin_renew_panel_{admin.id}"),
-        InlineKeyboardButton(text="ℹ️ اطلاعات", callback_data=f"info_panel_{admin.id}"),
-    ]])
+async def _send_admin_alert(
+    bot, admin, title: str, body: str, *, destination: str
+) -> bool:
+    """Attempt one destination only; never let group success mask private failure."""
+    if destination not in {"private", "group"}:
+        raise ValueError("Unsupported alert destination")
     panel_name = escape(str(admin.admin_name or admin.marzban_username or admin.id))
     username = escape(str(admin.marzban_username or "-"))
     common = (
@@ -67,75 +65,108 @@ async def _send_admin_alert(bot, admin, title: str, body: str) -> bool:
         f"🔐 Rebecca: <code>{username}</code>\n\n"
         f"{body}"
     )
-    group_ok = await group_ops_service.send_text(bot, "admins", common, reply_markup=group_kb)
-    private_ok = False
+    if destination == "group":
+        group_kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="⚙️ مدیریت کامل", callback_data=f"gops:admin:{admin.id}")
+        ]])
+        return bool(await group_ops_service.send_text(
+            bot, "admins", common, reply_markup=group_kb
+        ))
+    private_kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🔄 تمدید / افزایش", callback_data=f"admin_renew_panel_{admin.id}"),
+        InlineKeyboardButton(text="ℹ️ اطلاعات", callback_data=f"info_panel_{admin.id}"),
+    ]])
     try:
         await bot.send_message(int(admin.user_id), common, reply_markup=private_kb)
-        private_ok = True
+        return True
     except Exception:
-        pass
-    return group_ok or private_ok
+        return False
+
+
+_DESTINATIONS = ("private", "group")
+
+
+def _metric_key(metric: str, destination: str) -> str:
+    return f"{metric}:{destination}"
 
 
 async def _maybe_percent_alert(bot, admin, metric: str, percent: float, title: str, body: str) -> None:
     percent = max(0.0, float(percent))
-    state = await group_ops_service.get_alert_state(int(admin.id), metric)
-    previous_value = float((state or {}).get("last_value") or 0.0)
-    previous_rank = int((state or {}).get("last_rank") or 0)
-    if state and percent + 5 < previous_value:
-        previous_rank = 0
     rank = _percent_rank(percent)
-    if rank > previous_rank:
-        if await _send_admin_alert(bot, admin, title, body):
-            await group_ops_service.mark_alert_state(int(admin.id), metric, percent, rank)
-    elif not state or abs(percent - previous_value) >= 1:
-        await group_ops_service.mark_alert_state(int(admin.id), metric, percent, previous_rank)
+    for destination in _DESTINATIONS:
+        key = _metric_key(metric, destination)
+        state = await group_ops_service.get_alert_state(int(admin.id), key)
+        previous_value = float((state or {}).get("last_value") or 0.0)
+        previous_rank = int((state or {}).get("last_rank") or 0)
+        if state and percent + 5 < previous_value:
+            previous_rank = 0
+        if rank > previous_rank:
+            if await _send_admin_alert(
+                bot, admin, title, body, destination=destination
+            ):
+                await group_ops_service.mark_alert_state(int(admin.id), key, percent, rank)
+        elif not state or abs(percent - previous_value) >= 1:
+            await group_ops_service.mark_alert_state(
+                int(admin.id), key, percent, previous_rank
+            )
 
 
 async def _maybe_time_alert(bot, admin, remaining: float, body: str) -> None:
-    state = await group_ops_service.get_alert_state(int(admin.id), "time")
-    previous_value = float((state or {}).get("last_value") or remaining)
-    previous_rank = int((state or {}).get("last_rank") or 0)
-    # A meaningful increase means the admin was renewed; allow the threshold
-    # sequence to start over for the new validity window.
-    if state and remaining > previous_value + 12 * 3600:
-        previous_rank = 0
     rank = _time_rank(remaining)
-    if rank > previous_rank:
-        if await _send_admin_alert(bot, admin, "⏰ <b>هشدار زمان Admin</b>", body):
-            await group_ops_service.mark_alert_state(int(admin.id), "time", remaining, rank)
-    elif not state or abs(remaining - previous_value) >= 3600:
-        await group_ops_service.mark_alert_state(int(admin.id), "time", remaining, previous_rank)
+    for destination in _DESTINATIONS:
+        key = _metric_key("time", destination)
+        state = await group_ops_service.get_alert_state(int(admin.id), key)
+        previous_value = float((state or {}).get("last_value") or remaining)
+        previous_rank = int((state or {}).get("last_rank") or 0)
+        if state and remaining > previous_value + 12 * 3600:
+            previous_rank = 0
+        if rank > previous_rank:
+            if await _send_admin_alert(
+                bot, admin, "⏰ <b>هشدار زمان Admin</b>", body,
+                destination=destination
+            ):
+                await group_ops_service.mark_alert_state(
+                    int(admin.id), key, remaining, rank
+                )
+        elif not state or abs(remaining - previous_value) >= 3600:
+            await group_ops_service.mark_alert_state(
+                int(admin.id), key, remaining, previous_rank
+            )
 
 
 async def _maybe_status_alert(bot, admin, remote_status: str) -> None:
-    """Notify on each distinct Rebecca deactivation/reactivation episode."""
+    """Keep distinct notification episodes and delivery state per recipient."""
     status = str(remote_status).strip().lower()
     if status not in {"active", "disabled"}:
         return
-    state = await group_ops_service.get_alert_state(int(admin.id), "remote_status")
-    previous = int(state["last_rank"]) if state else 0
     current = 1 if status == "disabled" else 0
-    if state is None and current == 0:
-        # Baseline healthy state; do not spam everyone on first scheduler tick.
-        await group_ops_service.mark_alert_state(int(admin.id), "remote_status", 0, 0)
-        return
-    if state is not None and current == previous:
-        return
-    if current:
-        sent = await _send_admin_alert(
-            bot, admin, "🔴 <b>پنل نمایندگی غیرفعال شد</b>",
-            "وضعیت Rebecca: <b>غیرفعال</b>\n"
-            "برای بررسی و تمدید، اطلاعات پنل را باز کنید.",
-        )
-    else:
-        sent = await _send_admin_alert(
-            bot, admin, "🟢 <b>پنل نمایندگی مجدداً فعال شد</b>",
-            "وضعیت Rebecca: <b>فعال</b>\n"
-            "وضعیت حجم و اعتبار خود را بررسی کنید.",
-        )
-    if sent:
-        await group_ops_service.mark_alert_state(int(admin.id), "remote_status", current, current)
+    for destination in _DESTINATIONS:
+        key = _metric_key("remote_status", destination)
+        state = await group_ops_service.get_alert_state(int(admin.id), key)
+        previous = int(state["last_rank"]) if state else 0
+        if state is None and current == 0:
+            await group_ops_service.mark_alert_state(int(admin.id), key, 0, 0)
+            continue
+        if state is not None and current == previous:
+            continue
+        if current:
+            sent = await _send_admin_alert(
+                bot, admin, "🔴 <b>پنل نمایندگی غیرفعال شد</b>",
+                "وضعیت Rebecca: <b>غیرفعال</b>\n"
+                "برای بررسی و تمدید، اطلاعات پنل را باز کنید.",
+                destination=destination,
+            )
+        else:
+            sent = await _send_admin_alert(
+                bot, admin, "🟢 <b>پنل نمایندگی مجدداً فعال شد</b>",
+                "وضعیت Rebecca: <b>فعال</b>\n"
+                "وضعیت حجم و اعتبار خود را بررسی کنید.",
+                destination=destination,
+            )
+        if sent:
+            await group_ops_service.mark_alert_state(
+                int(admin.id), key, current, current
+            )
 
 
 async def _payg_admin_ids() -> set[int]:
@@ -216,11 +247,13 @@ async def sync_rebecca_admin_alerts(bot) -> None:
                         f"زمان باقی‌مانده: <b>{escape(label)}</b>",
                     )
                 else:
-                    state = await group_ops_service.get_alert_state(int(admin.id), "time")
-                    prev_rank = int((state or {}).get("last_rank") or 0)
-                    prev_value = float((state or {}).get("last_value") or remaining)
-                    rank = 0 if remaining > prev_value + 12 * 3600 else prev_rank
-                    await group_ops_service.mark_alert_state(int(admin.id), "time", remaining, rank)
+                    for destination in _DESTINATIONS:
+                        key = _metric_key("time", destination)
+                        state = await group_ops_service.get_alert_state(int(admin.id), key)
+                        prev_rank = int((state or {}).get("last_rank") or 0)
+                        prev_value = float((state or {}).get("last_value") or remaining)
+                        rank = 0 if remaining > prev_value + 12 * 3600 else prev_rank
+                        await group_ops_service.mark_alert_state(int(admin.id), key, remaining, rank)
         except RebeccaAPIError:
             continue
         except Exception as exc:
