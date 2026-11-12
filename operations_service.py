@@ -88,6 +88,7 @@ class OperationsService:
                 CREATE TABLE IF NOT EXISTS menu_settings (
                     callback_data TEXT PRIMARY KEY,
                     is_visible INTEGER NOT NULL DEFAULT 1,
+                    position INTEGER,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
 
@@ -117,6 +118,10 @@ class OperationsService:
                 columns = {row[1] for row in await cur.fetchall()}
             if "starts_at" not in columns:
                 await conn.execute("ALTER TABLE discount_codes ADD COLUMN starts_at INTEGER")
+            async with conn.execute("PRAGMA table_info(menu_settings)") as cur:
+                menu_cols = {row[1] for row in await cur.fetchall()}
+            if "position" not in menu_cols:
+                await conn.execute("ALTER TABLE menu_settings ADD COLUMN position INTEGER")
             async with conn.execute("PRAGMA table_info(bot_admins)") as cur:
                 admin_columns = {row[1] for row in await cur.fetchall()}
             if "role" not in admin_columns:
@@ -437,6 +442,57 @@ class OperationsService:
             config.SUDO_ADMINS[:] = merged
         else:
             config.SUDO_ADMINS = merged
+
+    async def get_menu_order(self, defaults: list[str]) -> list[str]:
+        """Stable display order; original order until an operator moves an item."""
+        keys = list(dict.fromkeys(str(key) for key in defaults if key))
+        if not keys:
+            return []
+        await self.ensure_schema()
+        placeholders = ",".join("?" for _ in keys)
+        async with aiosqlite.connect(self.db_path) as conn:
+            async with conn.execute(
+                f"SELECT callback_data,position FROM menu_settings "
+                f"WHERE callback_data IN ({placeholders}) AND position IS NOT NULL",
+                keys,
+            ) as cur:
+                ranks = {str(key):int(rank) for key,rank in await cur.fetchall()}
+        return sorted(keys, key=lambda key: (ranks.get(key, keys.index(key)), keys.index(key)))
+
+    async def move_menu(
+        self, callback_data: str, direction: int, defaults: list[str],
+    ) -> list[str]:
+        """Move only approved dashboard buttons in one serialized transaction."""
+        keys = list(dict.fromkeys(str(key) for key in defaults if key))
+        target = str(callback_data)
+        if target not in keys or direction not in {-1,1}:
+            raise OperationsError("دکمه یا جهت جابه‌جایی نامعتبر است.")
+        await self.ensure_schema()
+        placeholders = ",".join("?" for _ in keys)
+        async with aiosqlite.connect(self.db_path) as conn:
+            await conn.execute("BEGIN IMMEDIATE")
+            async with conn.execute(
+                f"SELECT callback_data,position FROM menu_settings "
+                f"WHERE callback_data IN ({placeholders}) AND position IS NOT NULL",
+                keys,
+            ) as cur:
+                ranks = {str(key):int(rank) for key,rank in await cur.fetchall()}
+            ordered = sorted(keys,key=lambda k:(ranks.get(k,keys.index(k)),keys.index(k)))
+            old_idx = ordered.index(target)
+            new_idx = old_idx + int(direction)
+            if not 0 <= new_idx < len(ordered):
+                await conn.rollback()
+                return ordered
+            ordered[old_idx],ordered[new_idx] = ordered[new_idx],ordered[old_idx]
+            for pos,key in enumerate(ordered):
+                await conn.execute(
+                    "INSERT INTO menu_settings(callback_data,position) VALUES(?,?) "
+                    "ON CONFLICT(callback_data) DO UPDATE SET "
+                    "position=excluded.position,updated_at=CURRENT_TIMESTAMP",
+                    (key,pos),
+                )
+            await conn.commit()
+        return ordered
 
     async def set_menu_visible(self, callback_data: str, visible: bool) -> None:
         await self.ensure_schema()
