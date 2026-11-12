@@ -45,7 +45,7 @@ HUB_MENUS = {
         "title": "👥 پنل‌ها و ادمین‌ها",
         "body": "همه کارهای مربوط به پنل و ادمین از همین بخش انجام می‌شود.",
         "items": (
-            ("gops:admins:0", "مدیریت ادمین‌ها", "admin", "👥"),
+            ("gops:admins:0", "مرکز مدیریت نمایندگان", "admin", "👥"),
             ("add_admin", "افزودن ادمین", "admin", "➕"),
             ("import_admin", "واردکردن ادمین موجود", "admin", "⬇️"),
             ("auto_import_admins", "کشف ادمین‌های پنل", "search", "🔎"),
@@ -103,9 +103,7 @@ HUB_MENUS = {
         "items": (
             ("sudo_menu_backup", "بکاپ و ریستور", "tools", "🗄"),
             ("sudo_menu_cleanup", "پاکسازی و نگهداری", "tools", "🧹"),
-            ("style:menu", "ایموجی و استایل", "style", "✨"),
-            ("cc:texts", "مدیریت متن‌ها", "text", "📝"),
-            ("cc:buttons", "دکمه‌ها و منوها", "buttons", "🔘"),
+            ("ops:ui:home", "مرکز یکپارچه متن، دکمه و ایموجی", "style", "🎨"),
         ),
     },
 }
@@ -255,6 +253,8 @@ async def _render_hub(message: Message, key: str) -> None:
 
     items = []
     for callback_data, title, icon_key, fallback in spec["items"]:
+        if key == "panels" and config.PANEL_PROVIDER == "rebecca" and callback_data == "import_admin":
+            continue  # Legacy password-based Marzban import is not a Rebecca binding flow.
         items.append(
             await _button(title, callback_data, icon_key=icon_key, fallback=fallback)
         )
@@ -1295,3 +1295,23 @@ async def menu_label_reset(callback: CallbackQuery):
         await style_engine.remove_text_override(target.id)
     await _render_buttons_menu(callback.message)
     await callback.answer("بازگردانی شد")
+
+
+@operations_router.callback_query(F.data == "ops:ui:home")
+async def unified_ui_settings(callback: CallbackQuery) -> None:
+    """Single entry point; existing specialized editors remain functional."""
+    if await _deny(callback):
+        return
+    rows = [
+        [await _button("📝 متن پیام‌ها و اعلان‌ها", "cc:texts", fallback="📝")],
+        [await _button("🔘 متن و عملکرد ظاهری دکمه‌ها", "cc:buttons", fallback="🔘")],
+        [await _button("✨ ایموجی پرمیوم و استایل", "style:menu", fallback="✨")],
+        [await _button("بازگشت به تنظیمات", "ops:hub:settings", fallback="↩️")],
+    ]
+    await callback.message.edit_text(
+        "🎨 <b>مرکز شخصی‌سازی Wingmarz</b>\n\n"
+        "از همین صفحه متن‌ها، دکمه‌ها و ایموجی‌ها را مدیریت کنید. "
+        "تغییر ظاهر هیچ شناسه فنی، پرداخت یا عملکرد دکمه را تغییر نمی‌دهد.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+    await callback.answer()
