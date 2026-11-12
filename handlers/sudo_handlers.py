@@ -943,11 +943,15 @@ async def broadcast_receive_text(message: Message, state: FSMContext):
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="sudo_menu_broadcast")]])
         )
         return
-    await state.update_data(broadcast_text=message.text.strip())
+    proposed = (message.text or "").strip()
+    if not 1 <= len(proposed) <= 3500:
+        await message.answer("❌ متن باید بین ۱ تا ۳۵۰۰ کاراکتر باشد.")
+        return
+    await state.update_data(broadcast_text=proposed)
     audience_txt = ("فقط پنل‌های فعال" if only_active else "همه ادمین‌ها")
     preview = (
         "📣 پیش‌نمایش پیام:\n\n"
-        f"{message.text}\n\n"
+        f"{escape(proposed)}\n\n"
         f"👥 گیرندگان: {count} نفر ({audience_txt})\n\n"
         "برای ارسال تایید کنید."
     )
@@ -997,12 +1001,8 @@ async def broadcast_confirm(callback: CallbackQuery, state: FSMContext):
         )
         return
     await state.clear()
-    # One small immediate batch; the scheduler owns the remaining queue.
-    # If Telegram is down all pending receipts survive the restart.
-    try:
-        await broadcast_outbox.process(callback.bot,limit=8)
-    except Exception:
-        logger.exception("Initial broadcast delivery deferred to scheduler")
+    # Acknowledge immediately: the scheduler drains the persistent queue
+    # in bounded batches without blocking a Telegram callback for minutes.
     await _broadcast_show_job(callback.message,job_id)
     await callback.answer("صف ارسال ثبت شد")
 
