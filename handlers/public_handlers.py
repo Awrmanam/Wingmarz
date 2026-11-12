@@ -139,14 +139,16 @@ async def public_mark_paid(callback: CallbackQuery, state: FSMContext):
     if not order or order.get("user_id") != callback.from_user.id or order.get("status") != "pending":
         await callback.answer("سفارش یافت نشد.", show_alert=True)
         return
-    if await order_kyc_gate.requires_kyc(order):
-        from purchase_kyc_flow import require_checkout_kyc
-        if await require_checkout_kyc(
-            callback.message, telegram_user_id=int(callback.from_user.id),
-            kind="fixed", reference_id=order_id, edit=True,
-        ):
-            await callback.answer()
-            return
+    # A stale payment button cannot bypass card verification, including
+    # renewal orders that may be exempt from panel-management KYC.
+    from purchase_kyc_flow import require_checkout_kyc
+    if await require_checkout_kyc(
+        callback.message,
+        telegram_user_id=int(callback.from_user.id),
+        kind="fixed", reference_id=order_id, edit=True,
+    ):
+        await callback.answer()
+        return
     await state.update_data(order_id=order_id)
     await state.set_state(PublicPaymentStates.waiting_for_receipt)
     await callback.message.edit_text(config.MESSAGES["public_send_receipt"], reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 بازگشت", callback_data="public_back_main")]]))
