@@ -91,5 +91,6 @@ def test_deprecated_keyboards_only_link_to_canonical_home():
     buttons = admin_handlers.get_admin_keyboard().inline_keyboard
     assert [b.callback_data for row in buttons for b in row] == ["back_to_admin_main"]
     buttons = public_handlers.get_public_main_keyboard().inline_keyboard
-    assert [b.callback_data for row in buttons for b in row] == ["public_back_main"]
+    callbacks = [b.callback_data for row in buttons for b in row]
+    assert callbacks == ["public_buy_reseller", "tariffs:home", "svcmarket:trial", "kyc:status", "support:home"]
     assert "back_to_main" in Path("handlers/home_navigation.py").read_text(encoding="utf-8")
