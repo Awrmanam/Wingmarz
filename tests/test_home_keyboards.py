@@ -81,6 +81,10 @@ def test_kyc_emoji_is_separate_from_account_info_for_both_home_roles(monkeypatch
 def test_shared_kyc_button_is_searchable_in_editor():
     from ui_presentation_registry import resolve_button, buttons_for_screen
     resolved = resolve_button("kyc:status", "وضعیت احراز هویت")
-    assert resolved.button is not None
+    assert resolved.button is not None, (
+        [(x.key, x.title, x.default_text) for x in
+         __import__("ui_presentation_registry")._BY_CALLBACK.get("kyc:status", [])],
+        __import__("ui_presentation_registry")._clean("وضعیت احراز هویت"),
+    )
     assert resolved.button.screen == "home.shared"
     assert any(button.callback_data == "kyc:status" for button in buttons_for_screen("home.shared"))
