@@ -363,6 +363,12 @@ def resolve_button(callback_data: str, default_text: str | None = None) -> Butto
         for candidate in candidates:
             if candidate.default_text and _clean(candidate.default_text) == wanted:
                 return ButtonResolution(candidate, None)
+        # When a callback has multiple declared screen entries, match the
+        # human-facing title before falling back to ambiguous generic entries.
+        # This keeps shared identity/KYC navigation discoverable in the editor.
+        title_matches = [candidate for candidate in candidates if _clean(candidate.title) == wanted]
+        if len(title_matches) == 1:
+            return ButtonResolution(title_matches[0], None)
         generic = [candidate for candidate in candidates if candidate.default_text is None]
         if len(generic) == 1:
             return ButtonResolution(generic[0], None)
