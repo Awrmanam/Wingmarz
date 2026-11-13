@@ -81,3 +81,57 @@ def test_admin_scoped_query_does_not_use_another_resellers_account(tmp_path):
         assert await svc.get_admin_account(999) is None
 
     asyncio.run(scenario())
+
+
+def test_old_activate_panel_keyboard_cannot_bypass_payg_hold(monkeypatch):
+    """A stale 'activate_panel_<id>' button uses the protected path."""
+    monkeypatch.setattr(config, "SUDO_ADMINS", [9001])
+    monkeypatch.setattr(config, "PANEL_PROVIDER", "rebecca")
+    monkeypatch.setattr(
+        sudo.db, "get_admin_by_id",
+        AsyncMock(return_value=SimpleNamespace(
+            id=77, user_id=321, is_active=False,
+            marzban_username="owner", deactivated_reason="PAYG balance exhausted",
+        )),
+    )
+    monkeypatch.setattr(
+        sudo.payg_service, "get_admin_account",
+        AsyncMock(return_value={"id":12,"admin_id":77,"status":"suspended"}),
+    )
+    legacy_credential_restore=AsyncMock()
+    monkeypatch.setattr(sudo, "restore_admin_password_and_update_db", legacy_credential_restore)
+    local_activation=AsyncMock()
+    monkeypatch.setattr(sudo.db, "reactivate_admin", local_activation)
+    remote_activation=AsyncMock()
+    monkeypatch.setattr(sudo.rebecca_api, "enable_admin", remote_activation)
+    cb=_callback()
+    cb.data="activate_panel_77"
+    asyncio.run(sudo.activate_panel_selected(cb))
+    local_activation.assert_not_awaited()
+    remote_activation.assert_not_awaited()
+    legacy_credential_restore.assert_not_awaited()
+    cb.message.edit_text.assert_awaited_once()
+    assert "PAYG" in cb.message.edit_text.await_args.args[0]
+
+
+def test_old_activate_panel_keyboard_fails_closed_on_finance_error(monkeypatch):
+    monkeypatch.setattr(config, "SUDO_ADMINS", [9001])
+    monkeypatch.setattr(config, "PANEL_PROVIDER", "rebecca")
+    monkeypatch.setattr(
+        sudo.db,"get_admin_by_id",AsyncMock(return_value=SimpleNamespace(
+            id=77,user_id=321,is_active=False,marzban_username="owner",
+        )),
+    )
+    monkeypatch.setattr(
+        sudo.payg_service,"get_admin_account",AsyncMock(side_effect=OSError("db down")),
+    )
+    remote_activation=AsyncMock()
+    monkeypatch.setattr(sudo.rebecca_api,"enable_admin",remote_activation)
+    local_activation=AsyncMock()
+    monkeypatch.setattr(sudo.db,"reactivate_admin",local_activation)
+    cb=_callback()
+    cb.data="activate_panel_77"
+    asyncio.run(sudo.activate_panel_selected(cb))
+    local_activation.assert_not_awaited()
+    remote_activation.assert_not_awaited()
+    assert cb.answer.await_args.kwargs["show_alert"] is True
