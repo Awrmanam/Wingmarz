@@ -75,7 +75,8 @@ def test_admin_management_has_single_entry():
     quick = [item[0] for item in operations.QUICK_ACTIONS]
     panels = [item[0] for item in operations.HUB_MENUS["panels"]["items"]]
     assert "gops:admins:0" not in quick
-    assert panels.count("gops:admins:0") == 1
+    assert panels.count("resellercenter:home") == 1
+    assert panels.count("gops:admins:0") == 0
 
 
 class TopicBot:

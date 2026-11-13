@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import math
+from html import escape
 
 from aiogram import F, Router
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 from authorization import is_staff
 from handlers.premium_ui_clean_buttons import _canonical_label, _load_clean_buttons
@@ -20,6 +22,10 @@ from ui_presentation_registry import (
 
 
 button_editor_context_router = Router(name="button_editor_context")
+
+
+class UIButtonSearchStates(StatesGroup):
+    query = State()
 
 
 async def _btn(text: str, callback_data: str, *, fallback: str | None = None):
@@ -60,8 +66,9 @@ async def _render_root(message) -> None:
         if count:
             rows.append([await _btn(f"{emoji} {title}", f"uiv4:scope:{scope}")])
     rows.extend([
+        [await _btn("🔎 جستجوی دکمه", "uiv4:search", fallback="🔎")],
         [await _btn("Premium Emojiها", "style:emojis", fallback="✨")],
-        [await _btn("خانه", "back_to_main", fallback="🏠")],
+        [await _btn("بازگشت به مرکز ظاهر و محتوا", "ops:ui:home", fallback="⬅️")],
     ])
     await message.edit_text(
         "🔘 <b>مدیریت دکمه‌ها</b>\n\n"
@@ -81,6 +88,74 @@ async def global_button_editor(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await _render_root(callback.message)
     await callback.answer()
+
+
+def search_registered_buttons(
+    items: list[tuple[ButtonDef, ScreenDef, object]], query: str,
+) -> list[tuple[ButtonDef, ScreenDef, object]]:
+    """Search visible button labels and page titles, not callbacks or IDs."""
+    needle = str(query or "").replace("\u200c"," ").casefold().strip()
+    if not needle:
+        return []
+    matches = []
+    for logical, screen, item in items:
+        haystack = " ".join([
+            logical.title, screen.title, _current_label(item),
+            str(getattr(item,"default_text","")),
+        ]).replace("\u200c"," ").casefold()
+        if needle in haystack:
+            matches.append((logical,screen,item))
+    return sorted(matches, key=lambda row: (row[1].rank,row[0].rank,row[0].title))
+
+
+@button_editor_context_router.callback_query(F.data == "uiv4:search")
+async def button_search_start(callback: CallbackQuery, state: FSMContext):
+    if not is_staff(callback.from_user.id):
+        await callback.answer("غیرمجاز", show_alert=True)
+        return
+    await state.clear()
+    await state.set_state(UIButtonSearchStates.query)
+    await callback.message.answer(
+        "🔎 <b>جستجوی دکمه</b>\n\n"
+        "نام دکمه یا صفحه آن را بنویسید (۲ تا ۶۰ کاراکتر).",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [await _btn("انصراف و بازگشت", "cc:buttons", fallback="⬅️")],
+        ]),
+    )
+    await callback.answer()
+
+
+@button_editor_context_router.message(UIButtonSearchStates.query, F.text)
+async def button_search_result(message: Message, state: FSMContext):
+    if not message.from_user or not is_staff(message.from_user.id):
+        return
+    query = (message.text or "").strip()
+    if not 2 <= len(query) <= 60:
+        await message.answer("عبارت جستجو باید ۲ تا ۶۰ کاراکتر باشد.")
+        return
+    results = search_registered_buttons(await _classified_items(),query)
+    await state.clear()
+    rows = [
+        [await _btn(
+            f"{screen.title} | {_current_label(item)}"[:60],
+            f"pui:b:{item.id}",
+        )]
+        for logical,screen,item in results[:12]
+    ]
+    rows.extend([
+        [await _btn("جستجوی دوباره", "uiv4:search", fallback="🔎")],
+        [await _btn("بازگشت به بخش‌های دکمه", "cc:buttons", fallback="⬅️")],
+    ])
+    await message.answer(
+        "🔎 <b>نتیجه جستجوی دکمه‌ها</b>\n"
+        f"عبارت: <b>{escape(query)}</b>\n"
+        f"تعداد نتیجه: <b>{len(results)}</b>\n"
+        + ("برای نتایج بیشتر عبارت دقیق‌تری وارد کنید."
+           if len(results)>12 else
+           "دکمه موردنظر را انتخاب کنید." if results else
+           "دکمه‌ای پیدا نشد."),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
 
 
 @button_editor_context_router.callback_query(F.data.startswith("uiv4:scope:"))

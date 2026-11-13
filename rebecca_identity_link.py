@@ -89,7 +89,11 @@ async def _sync_one(
                 config.REBECCA_LOGIN_URL or config.REBECCA_URL or existing.login_url
             )
         }
-        if status in {"active", "disabled"}:
+        # Preserve locally enforced suspensions (PAYG/manual/operator).
+        # Rebecca status is operational telemetry, not authorization to
+        # clear a local suspension reason during an identity sync.
+        local_reason = str(getattr(existing, "deactivated_reason", "") or "").strip()
+        if status in {"active", "disabled"} and not local_reason:
             updates["is_active"] = 1 if status == "active" else 0
         if max_users is not None:
             updates["max_users"] = max_users

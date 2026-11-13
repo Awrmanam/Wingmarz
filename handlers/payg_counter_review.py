@@ -1,0 +1,261 @@
+"""Telegram operator interface for explicit, audited PAYG counter decisions."""
+from __future__ import annotations
+
+from aiogram import F, Router
+from aiogram.filters import Command
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+
+import config
+from payg_service import PaygError, payg_service
+
+payg_counter_review_router = Router(name="payg_counter_review")
+
+
+def _allowed(user_id: int) -> bool:
+    return int(user_id) in config.SUDO_ADMINS
+
+
+def _menu(rows: list[list[tuple[str, str]]]) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=title, callback_data=callback)
+         for title, callback in row]
+        for row in rows
+    ])
+
+
+async def _show_queue(message: Message) -> None:
+    items = await payg_service.list_counter_reviews(limit=30)
+    rows = [
+        [(f"🔎 بررسی #{int(item['id'])} · حساب {int(item['account_id'])}",
+          f"paygaudit:item:{int(item['id'])}")]
+        for item in items
+    ]
+    rows.append([("🔒 تعلیق‌های مالی", "paygaudit:holds")])
+    rows.append([("◀️ بازگشت به مالی", "ops:hub:finance")])
+    text = (
+        "🧾 <b>بازبینی شمارنده‌های PAYG</b>\n\n"
+        "کاهش مصرف Rebecca تا تأیید دستی هیچ هزینه جدیدی ایجاد نمی‌کند.\n"
+        f"پرونده‌های در انتظار: <b>{len(items)}</b>\n\n"
+        "برای تصمیم‌گیری، مقدار زنده مجدداً از Rebecca بررسی می‌شود."
+    )
+    await message.edit_text(text, reply_markup=_menu(rows))
+
+
+async def _show_item(message: Message, review_id: int, *, confirm: bool = False) -> None:
+    items = await payg_service.list_counter_reviews(limit=100)
+    item = next((row for row in items if int(row["id"]) == review_id), None)
+    if item is None:
+        await message.edit_text(
+            "این بررسی قبلاً رسیدگی شده یا دیگر در صف نیست.",
+            reply_markup=_menu([[("بازگشت", "paygaudit:root")]]),
+        )
+        return
+    text = (
+        f"🧾 <b>بررسی شمارنده #{review_id}</b>\n"
+        f"حساب: <code>{int(item['account_id'])}</code>\n"
+        f"آخرین شمارنده معتبر: <code>{int(item['previous_raw_bytes'])}</code> بایت\n"
+        f"نمونه کاهش‌یافته: <code>{int(item['observed_raw_bytes'])}</code> بایت\n\n"
+        "⚠️ تنها در صورتی ریست را تأیید کنید که علت آن را بررسی کرده‌اید. "
+        "در تأیید ریست، نمونه زنده به‌عنوان مبنای دوره جدید قرار می‌گیرد؛ "
+        "داده مبهم قبض نمی‌شود."
+    )
+    if confirm:
+        text += "\n\n<b>تأیید نهایی:</b> این تصمیم در تاریخچه مالی ثبت می‌شود."
+        rows = [
+            [("✅ تأیید ریست و دوره جدید", f"paygaudit:applyreset:{review_id}")],
+            [("↩️ انصراف", f"paygaudit:item:{review_id}")],
+        ]
+    else:
+        rows = [
+            [("♻️ بررسی و تأیید ریست", f"paygaudit:confirm:{review_id}")],
+            [("✅ رد هشدار پس از بازیابی شمارنده", f"paygaudit:dismiss:{review_id}")],
+            [("↩️ بازگشت", "paygaudit:root")],
+        ]
+    await message.edit_text(text, reply_markup=_menu(rows))
+
+
+
+async def _show_holds(message: Message) -> None:
+    items = await payg_service.list_financial_holds(limit=30)
+    rows = [
+        [(
+            f"حساب #{int(item['id'])} · بدهی {int(item['outstanding_toman']):,} تومان",
+            f"paygaudit:hold:{int(item['id'])}",
+        )] for item in items
+    ]
+    rows.append([("↩️ صف بازبینی مصرف", "paygaudit:root")])
+    await message.edit_text(
+        "🔒 <b>حساب‌های معلق مالی</b>\n\n"
+        "رفع تعلیق فقط پس از تسویه بدهی و تأیید مدیر انجام می‌شود.\n"
+        f"تعداد نمایش‌داده‌شده: {len(items)}",
+        reply_markup=_menu(rows),
+    )
+
+
+@payg_counter_review_router.callback_query(F.data == "paygaudit:holds")
+async def audit_holds(callback: CallbackQuery) -> None:
+    if not _allowed(callback.from_user.id):
+        await callback.answer("دسترسی مجاز نیست", show_alert=True)
+        return
+    await _show_holds(callback.message)
+    await callback.answer()
+
+
+@payg_counter_review_router.callback_query(F.data.startswith("paygaudit:hold:"))
+async def audit_hold_detail(callback: CallbackQuery) -> None:
+    if not _allowed(callback.from_user.id):
+        await callback.answer("دسترسی مجاز نیست", show_alert=True)
+        return
+    try:
+        account_id = int(callback.data.rsplit(":", 1)[-1])
+    except (TypeError, ValueError):
+        await callback.answer("شناسه نامعتبر", show_alert=True)
+        return
+    holds = await payg_service.list_financial_holds(limit=100)
+    item = next((a for a in holds if int(a["id"]) == account_id), None)
+    if not item:
+        await callback.answer("حساب دیگر معلق نیست", show_alert=True)
+        return
+    await callback.message.edit_text(
+        f"🔒 <b>تعلیق حساب #{account_id}</b>\n"
+        f"مالک: <code>{int(item['user_id'])}</code>\n"
+        f"موجودی: {int(item['balance_toman']):,} تومان\n"
+        f"بدهی: {int(item['outstanding_toman']):,} تومان\n\n"
+        "رفع تعلیق پس از تأیید نهایی بررسی خواهد شد.",
+        reply_markup=_menu([
+            [("✅ بررسی و تأیید رفع تعلیق", f"paygaudit:releaseconfirm:{account_id}")],
+            [("↩️ بازگشت", "paygaudit:holds")],
+        ]),
+    )
+    await callback.answer()
+
+
+@payg_counter_review_router.callback_query(F.data.startswith("paygaudit:releaseconfirm:"))
+async def audit_release_confirm(callback: CallbackQuery) -> None:
+    if not _allowed(callback.from_user.id):
+        await callback.answer("دسترسی مجاز نیست", show_alert=True)
+        return
+    try:
+        account_id = int(callback.data.rsplit(":", 1)[-1])
+    except (TypeError, ValueError):
+        await callback.answer("شناسه نامعتبر", show_alert=True)
+        return
+    await callback.message.edit_text(
+        f"⚠️ <b>تأیید نهایی رفع تعلیق PAYG #{account_id}</b>\n\n"
+        "فقط تعلیق مالیِ تسویه‌شده قابل رفع است. تعلیق دستی مدیر "
+        "نباید از این مسیر دور زده شود.",
+        reply_markup=_menu([
+            [("✅ تأیید نهایی", f"paygaudit:release:{account_id}")],
+            [("↩️ انصراف", f"paygaudit:hold:{account_id}")],
+        ]),
+    )
+    await callback.answer()
+
+
+@payg_counter_review_router.callback_query(F.data.startswith("paygaudit:release:"))
+async def audit_release(callback: CallbackQuery) -> None:
+    if not _allowed(callback.from_user.id):
+        await callback.answer("دسترسی مجاز نیست", show_alert=True)
+        return
+    try:
+        account_id = int(callback.data.rsplit(":", 1)[-1])
+    except (TypeError, ValueError):
+        await callback.answer("شناسه نامعتبر", show_alert=True)
+        return
+    try:
+        await payg_service.release_financial_hold(account_id, callback.from_user.id)
+        # Recheck/enable Rebecca through the existing verified billing sync.
+        await payg_service.sync_account(account_id)
+    except PaygError as exc:
+        await callback.answer(str(exc)[:180], show_alert=True)
+        return
+    except Exception:
+        await callback.message.edit_text(
+            "⚠️ تصمیم مالی ثبت شد، ولی تأیید وضعیت Rebecca ناموفق بود. "
+            "وضعیت پنل را بررسی کنید؛ Scheduler در اجرای بعد دوباره همگام می‌کند.",
+            reply_markup=_menu([[("↩️ بازگشت", "paygaudit:holds")]]),
+        )
+        await callback.answer()
+        return
+    await callback.message.edit_text(
+        f"✅ حساب #{account_id} در بررسی مجدد PAYG فعال گزارش شد.",
+        reply_markup=_menu([[("↩️ بازگشت", "paygaudit:holds")]]),
+    )
+    await callback.answer()
+
+
+@payg_counter_review_router.message(Command("payg_audit"))
+async def audit_command(message: Message) -> None:
+    if not message.from_user or not _allowed(message.from_user.id):
+        return
+    sent = await message.answer("🧾 در حال خواندن صف بررسی PAYG ...")
+    await _show_queue(sent)
+
+
+@payg_counter_review_router.callback_query(F.data == "paygaudit:root")
+async def audit_root(callback: CallbackQuery) -> None:
+    if not _allowed(callback.from_user.id):
+        await callback.answer("دسترسی مجاز نیست", show_alert=True)
+        return
+    await _show_queue(callback.message)
+    await callback.answer()
+
+
+@payg_counter_review_router.callback_query(F.data.startswith("paygaudit:item:"))
+async def audit_item(callback: CallbackQuery) -> None:
+    if not _allowed(callback.from_user.id):
+        await callback.answer("دسترسی مجاز نیست", show_alert=True)
+        return
+    try:
+        review_id = int(callback.data.rsplit(":", 1)[-1])
+    except (TypeError, ValueError):
+        await callback.answer("شناسه نامعتبر", show_alert=True)
+        return
+    await _show_item(callback.message, review_id)
+    await callback.answer()
+
+
+@payg_counter_review_router.callback_query(F.data.startswith("paygaudit:confirm:"))
+async def audit_confirm(callback: CallbackQuery) -> None:
+    if not _allowed(callback.from_user.id):
+        await callback.answer("دسترسی مجاز نیست", show_alert=True)
+        return
+    try:
+        review_id = int(callback.data.rsplit(":", 1)[-1])
+    except (TypeError, ValueError):
+        await callback.answer("شناسه نامعتبر", show_alert=True)
+        return
+    await _show_item(callback.message, review_id, confirm=True)
+    await callback.answer()
+
+
+@payg_counter_review_router.callback_query(
+    F.data.startswith("paygaudit:applyreset:")
+    | F.data.startswith("paygaudit:dismiss:")
+)
+async def audit_resolve(callback: CallbackQuery) -> None:
+    if not _allowed(callback.from_user.id):
+        await callback.answer("دسترسی مجاز نیست", show_alert=True)
+        return
+    try:
+        review_id = int(callback.data.rsplit(":", 1)[-1])
+    except (TypeError, ValueError):
+        await callback.answer("شناسه نامعتبر", show_alert=True)
+        return
+    approve = callback.data.startswith("paygaudit:applyreset:")
+    try:
+        result = await payg_service.resolve_counter_review(
+            review_id, callback.from_user.id, approve_reset=approve,
+            note="Approved in Telegram by privileged operator",
+        )
+    except PaygError as exc:
+        await callback.answer(str(exc)[:180], show_alert=True)
+        return
+    except Exception:
+        await callback.answer("خطا در اتصال Rebecca؛ هیچ تغییری ثبت نشد.", show_alert=True)
+        return
+    await callback.answer("✅ تصمیم ثبت شد")
+    await callback.message.edit_text(
+        f"✅ بررسی #{review_id} با نتیجه <code>{result['status']}</code> ثبت شد.",
+        reply_markup=_menu([[("بازگشت به صف", "paygaudit:root")]]),
+    )

@@ -47,6 +47,10 @@ UI_MESSAGES = {
         '{count} رویداد جدید ثبت شد:\n{users_list}\n\n'
         'برای مدیریت، از بخش کاربران پنل استفاده کنید.'
     ),
+    'rebecca_user_group_digest': (
+        '📣 <b>اعلان کاربران نماینده</b>\n'
+        'پنل: <code>{panel_name}</code>\n\n{users_summary}'
+    ),
 }
 UI_TITLES = {
     'home_public_title': 'شروع مشتری — عنوان',
@@ -72,6 +76,7 @@ UI_TITLES = {
     'rebecca_user_quota_single': 'Rebecca — اتمام حجم یک کاربر',
     'rebecca_user_expired_single': 'Rebecca — پایان اعتبار یک کاربر',
     'rebecca_user_smart_digest': 'Rebecca — گزارش هوشمند گروهی کاربران',
+    'rebecca_user_group_digest': 'Rebecca — اعلان گروه مدیریت',
 }
 
 TRIAL_UI_DEFAULTS: dict[str, str] = {

@@ -151,6 +151,48 @@ class PaygService:
                 );
                 CREATE INDEX IF NOT EXISTS idx_payg_migrations_account
                     ON payg_migrations(account_id, id DESC);
+
+                -- Additive only: existing financial records remain untouched.
+                CREATE TABLE IF NOT EXISTS payg_counter_reviews (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    account_id INTEGER NOT NULL,
+                    previous_raw_bytes INTEGER NOT NULL,
+                    observed_raw_bytes INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending'
+                        CHECK(status IN ('pending','approved','dismissed')),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    resolved_at TIMESTAMP,
+                    actor_id INTEGER,
+                    resolution_note TEXT
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_payg_one_pending_counter_review
+                    ON payg_counter_reviews(account_id) WHERE status='pending';
+                CREATE INDEX IF NOT EXISTS idx_payg_counter_review_history
+                    ON payg_counter_reviews(account_id,id DESC);
+
+                CREATE TABLE IF NOT EXISTS payg_usage_epochs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    account_id INTEGER NOT NULL,
+                    epoch INTEGER NOT NULL,
+                    baseline_raw_bytes INTEGER NOT NULL,
+                    reason TEXT NOT NULL,
+                    actor_id INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(account_id,epoch)
+                );
+                CREATE TABLE IF NOT EXISTS payg_usage_audit (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    account_id INTEGER NOT NULL,
+                    event_type TEXT NOT NULL,
+                    previous_raw_bytes INTEGER NOT NULL,
+                    observed_raw_bytes INTEGER NOT NULL,
+                    charged_toman INTEGER NOT NULL DEFAULT 0,
+                    actor_id INTEGER,
+                    note TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE INDEX IF NOT EXISTS idx_payg_usage_audit_account
+                    ON payg_usage_audit(account_id,id DESC);
                 """
             )
             await conn.execute(
@@ -547,6 +589,20 @@ class PaygService:
                 row = await cur.fetchone()
         return dict(row) if row else None
 
+    async def get_admin_account(self, admin_id: int) -> dict[str, Any] | None:
+        """Read a panel-scoped PAYG hold, not another panel owned by that user."""
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            async with conn.execute(
+                "SELECT * FROM payg_accounts WHERE admin_id=? "
+                "AND provider='rebecca' AND status!='migrated' "
+                "ORDER BY id DESC LIMIT 1",
+                (int(admin_id),),
+            ) as cur:
+                row = await cur.fetchone()
+        return dict(row) if row else None
+
     async def get_user_account(
         self, user_id: int, provider: str = "rebecca", *, include_migrated: bool = False
     ) -> dict[str, Any] | None:
@@ -672,7 +728,9 @@ class PaygService:
             raise
 
     async def settle_usage(self, account_id: int, raw_usage_bytes: int) -> BillingResult:
-        raw = max(0, int(raw_usage_bytes))
+        raw = int(raw_usage_bytes)
+        if raw < 0:
+            raise PaygError("Rebecca usage counter is negative; billing refused")
         await self.ensure_schema()
         async with aiosqlite.connect(self.db_path) as conn:
             conn.row_factory = aiosqlite.Row
@@ -693,7 +751,51 @@ class PaygService:
                     await self.get_balance(int(account["user_id"])),
                 )
             last_raw = int(account["last_raw_usage_bytes"] or 0)
-            delta_bytes = (raw - last_raw) if raw >= last_raw else raw
+            async with conn.execute(
+                "SELECT id,observed_raw_bytes FROM payg_counter_reviews "
+                "WHERE account_id=? AND status='pending'",
+                (int(account_id),),
+            ) as cur:
+                pending = await cur.fetchone()
+            if raw < last_raw:
+                # A lower counter may be a reset OR a stale/incomplete API
+                # response. Neither is billable without operator reconciliation.
+                if pending is None:
+                    await conn.execute(
+                        "INSERT INTO payg_counter_reviews"
+                        "(account_id,previous_raw_bytes,observed_raw_bytes)"
+                        " VALUES(?,?,?)",
+                        (int(account_id),last_raw,raw),
+                    )
+                    await conn.execute(
+                        "INSERT INTO payg_usage_audit"
+                        "(account_id,event_type,previous_raw_bytes,observed_raw_bytes,note)"
+                        " VALUES(?,'counter_regression',?,?,'awaiting operator review')",
+                        (int(account_id),last_raw,raw),
+                    )
+                elif raw < int(pending["observed_raw_bytes"]):
+                    await conn.execute(
+                        "UPDATE payg_counter_reviews SET observed_raw_bytes=? "
+                        "WHERE id=? AND status='pending'",
+                        (raw,int(pending["id"])),
+                    )
+                await conn.commit()
+                raise PaygError(
+                    "Rebecca usage counter decreased; manual reconciliation required "
+                    f"(account={int(account_id)}, previous={last_raw}, current={raw})"
+                )
+            if pending is not None:
+                await conn.rollback()
+                raise PaygError(
+                    f"PAYG counter review pending for account {int(account_id)}; "
+                    "billing paused until operator reconciliation"
+                )
+            await conn.execute(
+                "INSERT OR IGNORE INTO payg_usage_epochs"
+                "(account_id,epoch,baseline_raw_bytes,reason) VALUES(?,0,?,'legacy_or_initial')",
+                (int(account_id),last_raw),
+            )
+            delta_bytes = raw - last_raw
             cumulative = int(account["cumulative_usage_bytes"] or 0) + max(0, delta_bytes)
             rate = int(account["price_per_gb_toman"])
             target_charge = cumulative * rate // GIB
@@ -705,7 +807,12 @@ class PaygService:
             new_balance = balance - charged_now
             new_charged_total = charged_total + charged_now
             outstanding = max(0, target_charge - new_charged_total)
-            new_status = "active" if outstanding == 0 and new_balance > 0 else "suspended"
+            # Financial holds require an explicit operator release, even after
+            # the owner tops up. Ordinary billing must never reactivate them.
+            new_status = (
+                "suspended" if old_status == "suspended" or outstanding > 0
+                or new_balance <= 0 else "active"
+            )
 
             if charged_now:
                 await self._write_balance_in_conn(conn, user_id, new_balance)
@@ -730,6 +837,13 @@ class PaygService:
                 """,
                 (raw, cumulative, new_charged_total, new_status, int(account_id)),
             )
+            if delta_bytes or charged_now or new_status != old_status:
+                await conn.execute(
+                    "INSERT INTO payg_usage_audit"
+                    "(account_id,event_type,previous_raw_bytes,observed_raw_bytes,"
+                    "charged_toman,note) VALUES(?,'settled',?,?,?,'atomic wallet settlement')",
+                    (int(account_id),last_raw,raw,charged_now),
+                )
             await conn.commit()
 
         return BillingResult(
@@ -739,6 +853,199 @@ class PaygService:
             charged_total_toman=new_charged_total, outstanding_toman=outstanding,
             balance_toman=new_balance,
         )
+
+
+    async def list_counter_reviews(
+        self, *, pending_only: bool = True, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        """Operator review queue; never includes secrets or remote credentials."""
+        await self.ensure_schema()
+        condition = "WHERE status='pending'" if pending_only else ""
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            async with conn.execute(
+                f"SELECT * FROM payg_counter_reviews {condition} "
+                "ORDER BY id DESC LIMIT ?",
+                (max(1,min(int(limit),100)),),
+            ) as cur:
+                return [dict(row) for row in await cur.fetchall()]
+
+    async def list_financial_holds(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Read-only finance queue with calculated outstanding debt."""
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            async with conn.execute(
+                "SELECT a.id,a.user_id,a.admin_id,a.cumulative_usage_bytes,"
+                "a.price_per_gb_toman,a.charged_toman_total,"
+                "COALESCE(w.balance_toman,0) AS balance_toman "
+                "FROM payg_accounts a LEFT JOIN wallets w ON w.user_id=a.user_id "
+                "WHERE a.status='suspended' ORDER BY a.id DESC LIMIT ?",
+                (max(1,min(int(limit),100)),),
+            ) as cur:
+                items = [dict(row) for row in await cur.fetchall()]
+        for item in items:
+            item["outstanding_toman"] = max(
+                0,
+                int(item["cumulative_usage_bytes"]) *
+                int(item["price_per_gb_toman"]) // GIB
+                - int(item["charged_toman_total"]),
+            )
+        return items
+
+    async def resolve_counter_review(
+        self, review_id: int, actor_id: int, *, approve_reset: bool,
+        note: str = "Reviewed in Telegram",
+    ) -> dict[str, Any]:
+        """Explicit operator decision after a fresh Rebecca sample.
+
+        A reset starts a new accounting epoch at the CURRENT remote counter.
+        No ambiguous bytes are charged. Dismissal requires the old monotonic
+        counter to have recovered, ruling out accidental under-billing.
+        """
+        if int(actor_id) not in config.SUDO_ADMINS:
+            raise PaygError("operator permission required")
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            async with conn.execute(
+                "SELECT r.*,a.admin_id FROM payg_counter_reviews r "
+                "JOIN payg_accounts a ON a.id=r.account_id WHERE r.id=?",
+                (int(review_id),),
+            ) as cur:
+                row = await cur.fetchone()
+        if row is None or str(row["status"]) != "pending":
+            raise PaygError("counter review is no longer pending")
+        admin = await db.get_admin_by_id(int(row["admin_id"]))
+        if not admin or not admin.marzban_username:
+            raise PaygError("Rebecca admin is missing; cannot review counter")
+        current_raw = int(await rebecca_api.get_admin_usage(admin.marzban_username))
+        if current_raw < 0:
+            raise PaygError("invalid Rebecca usage counter")
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("BEGIN IMMEDIATE")
+            async with conn.execute(
+                "SELECT r.*,a.last_raw_usage_bytes FROM payg_counter_reviews r "
+                "JOIN payg_accounts a ON a.id=r.account_id WHERE r.id=?",
+                (int(review_id),),
+            ) as cur:
+                current = await cur.fetchone()
+            if current is None or str(current["status"]) != "pending":
+                await conn.rollback()
+                raise PaygError("counter review has already been resolved")
+            previous = int(current["last_raw_usage_bytes"])
+            observed = int(current["observed_raw_bytes"])
+            if approve_reset:
+                if current_raw >= previous or current_raw < observed:
+                    await conn.rollback()
+                    raise PaygError("fresh Rebecca counter does not confirm this reset")
+                await conn.execute(
+                    "INSERT OR IGNORE INTO payg_usage_epochs"
+                    "(account_id,epoch,baseline_raw_bytes,reason) "
+                    "VALUES(?,0,?,'legacy_or_initial')",
+                    (int(current["account_id"]),previous),
+                )
+                await conn.execute(
+                    "INSERT INTO payg_usage_epochs"
+                    "(account_id,epoch,baseline_raw_bytes,reason,actor_id) "
+                    "SELECT ?,COALESCE(MAX(epoch),-1)+1,?,'verified_reset',? "
+                    "FROM payg_usage_epochs WHERE account_id=?",
+                    (int(current["account_id"]),current_raw,int(actor_id),
+                     int(current["account_id"])),
+                )
+                await conn.execute(
+                    "UPDATE payg_accounts SET last_raw_usage_bytes=?,"
+                    "updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                    (current_raw,int(current["account_id"])),
+                )
+                decision = "approved"
+            else:
+                if current_raw < previous:
+                    await conn.rollback()
+                    raise PaygError("counter still regressed; cannot dismiss unresolved reset")
+                decision = "dismissed"
+            await conn.execute(
+                "UPDATE payg_counter_reviews SET status=?,actor_id=?,"
+                "resolution_note=?,resolved_at=CURRENT_TIMESTAMP WHERE id=?",
+                (decision,int(actor_id),str(note)[:500],int(review_id)),
+            )
+            await conn.execute(
+                "INSERT INTO payg_usage_audit"
+                "(account_id,event_type,previous_raw_bytes,observed_raw_bytes,actor_id,note)"
+                " VALUES(?,?,?,?,?,?)",
+                (int(current["account_id"]),f"counter_{decision}",
+                 previous,current_raw,int(actor_id),str(note)[:500]),
+            )
+            await conn.commit()
+        return {
+            "review_id":int(review_id),"account_id":int(current["account_id"]),
+            "status":decision,"baseline_raw_bytes":current_raw,
+        }
+
+    async def release_financial_hold(self, account_id: int, actor_id: int) -> bool:
+        """Authorize financial reactivation without bypassing unpaid usage."""
+        if int(actor_id) not in config.SUDO_ADMINS:
+            raise PaygError("operator permission required")
+        # Validate external/operator hold ownership BEFORE making a local
+        # financial state transition. A manually disabled Rebecca admin must
+        # not be reactivated by this payment-specific workflow.
+        before = await self.get_account(account_id)
+        if not before or before["status"] != "suspended":
+            raise PaygError("account does not have a financial hold")
+        admin = await db.get_admin_by_id(int(before["admin_id"]))
+        if not admin or not getattr(admin, "marzban_username", None):
+            raise PaygError("PAYG admin is missing")
+        reason = str(getattr(admin, "deactivated_reason", "") or "")
+        if not bool(getattr(admin, "is_active", True)) and reason != "PAYG balance exhausted":
+            raise PaygError("manual panel suspension cannot be released by PAYG")
+        remote = await rebecca_api.find_admin(admin.marzban_username)
+        if not isinstance(remote, dict):
+            raise PaygError("Rebecca status cannot be verified")
+        remote_status = str(remote.get("status") or "").strip().lower()
+        if remote_status not in {"active", "disabled"}:
+            raise PaygError("Rebecca status cannot be verified")
+        if remote_status == "disabled" and reason != "PAYG balance exhausted":
+            raise PaygError("manually disabled Rebecca admin cannot be reactivated")
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("BEGIN IMMEDIATE")
+            async with conn.execute(
+                "SELECT * FROM payg_accounts WHERE id=?", (int(account_id),)
+            ) as cur:
+                account = await cur.fetchone()
+            if not account or account["status"] != "suspended":
+                await conn.rollback()
+                raise PaygError("account does not have a financial hold")
+            async with conn.execute(
+                "SELECT 1 FROM payg_counter_reviews WHERE account_id=? "
+                "AND status='pending'",
+                (int(account_id),),
+            ) as cur:
+                if await cur.fetchone():
+                    await conn.rollback()
+                    raise PaygError("resolve the counter review before releasing this account")
+            balance = await self._balance_in_conn(conn,int(account["user_id"]))
+            due = (int(account["cumulative_usage_bytes"]) *
+                   int(account["price_per_gb_toman"]) // GIB
+                   - int(account["charged_toman_total"]))
+            if due > 0 or balance <= 0:
+                await conn.rollback()
+                raise PaygError("outstanding usage debt or empty wallet")
+            await conn.execute(
+                "UPDATE payg_accounts SET status='active',"
+                "updated_at=CURRENT_TIMESTAMP WHERE id=?", (int(account_id),)
+            )
+            raw = int(account["last_raw_usage_bytes"])
+            await conn.execute(
+                "INSERT INTO payg_usage_audit"
+                "(account_id,event_type,previous_raw_bytes,observed_raw_bytes,actor_id,note)"
+                " VALUES(?,'financial_hold_released',?,?,?,'operator authorized')",
+                (int(account_id),raw,raw,int(actor_id)),
+            )
+            await conn.commit()
+        return True
 
     async def sync_account(self, account_id: int) -> BillingResult:
         account = await self.get_account(account_id)

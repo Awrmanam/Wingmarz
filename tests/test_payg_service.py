@@ -72,7 +72,7 @@ def test_usage_billing_is_cumulative_and_rounding_safe(tmp_path):
     run(scenario())
 
 
-def test_usage_counter_reset_is_added_not_subtracted(tmp_path):
+def test_usage_counter_regression_is_quarantined_not_charged(tmp_path):
     path = str(tmp_path / "payg.db")
     service = PaygService(path)
 
@@ -89,13 +89,23 @@ def test_usage_counter_reset_is_added_not_subtracted(tmp_path):
                 """,
                 (2 * GIB, 2 * GIB, 20_000),
             )
-            account_id = cur.lastrowid
+            account_id = int(cur.lastrowid)
             await conn.commit()
 
-        # Provider counter reset to 0.5 GiB: cumulative must become 2.5 GiB.
-        result = await service.settle_usage(account_id, GIB // 2)
-        assert result.cumulative_usage_bytes == (5 * GIB) // 2
-        assert result.charged_now_toman == 5_000
+        with pytest.raises(Exception, match="manual reconciliation"):
+            await service.settle_usage(account_id, GIB // 2)
+
+        after = await service.get_account(account_id)
+        assert after["last_raw_usage_bytes"] == 2 * GIB
+        assert after["cumulative_usage_bytes"] == 2 * GIB
+        assert after["charged_toman_total"] == 20_000
+        assert await service.get_balance(9) == 100_000
+        reviews = await service.list_counter_reviews()
+        assert len(reviews) == 1
+        assert reviews[0]["account_id"] == account_id
+        with pytest.raises(Exception, match="review pending"):
+            await service.settle_usage(account_id, 2 * GIB + 1)
+        assert await service.get_balance(9) == 100_000
 
     run(scenario())
 

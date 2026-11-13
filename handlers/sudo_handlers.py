@@ -22,6 +22,8 @@ from group_ops_service import group_ops_service
 from order_kyc_gate import order_kyc_gate
 from forced_join_service import inspect_channel_access
 from database import db
+from broadcast_outbox import BroadcastError, broadcast_outbox
+from payg_service import payg_service
 from models.schemas import AdminModel, LogModel
 from utils.notify import (
     notify_admin_added, notify_admin_removed, notify_admin_deactivated, format_traffic_size, format_time_duration,
@@ -888,6 +890,7 @@ async def sudo_menu_broadcast(callback: CallbackQuery, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=config.BUTTONS["broadcast_all"], callback_data="broadcast_all")],
         [InlineKeyboardButton(text=config.BUTTONS["broadcast_active"], callback_data="broadcast_active")],
+        [InlineKeyboardButton(text="📊 وضعیت و مدیریت ارسال‌های همگانی", callback_data="broadcastq:list")],
         [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="ops:hub:customers")]
     ])
     await callback.message.edit_text("📣 پیام‌رسانی:", reply_markup=kb)
@@ -941,11 +944,15 @@ async def broadcast_receive_text(message: Message, state: FSMContext):
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="sudo_menu_broadcast")]])
         )
         return
-    await state.update_data(broadcast_text=message.text.strip())
+    proposed = (message.text or "").strip()
+    if not 1 <= len(proposed) <= 3500:
+        await message.answer("❌ متن باید بین ۱ تا ۳۵۰۰ کاراکتر باشد.")
+        return
+    await state.update_data(broadcast_text=proposed)
     audience_txt = ("فقط پنل‌های فعال" if only_active else "همه ادمین‌ها")
     preview = (
         "📣 پیش‌نمایش پیام:\n\n"
-        f"{message.text}\n\n"
+        f"{escape(proposed)}\n\n"
         f"👥 گیرندگان: {count} نفر ({audience_txt})\n\n"
         "برای ارسال تایید کنید."
     )
@@ -962,40 +969,165 @@ async def broadcast_confirm(callback: CallbackQuery, state: FSMContext):
         await callback.answer("غیرمجاز", show_alert=True)
         return
     data = await state.get_data()
-    text = (data or {}).get("broadcast_text")
-    target = (data or {}).get("broadcast_target", "all")
+    text = str((data or {}).get("broadcast_text") or "").strip()
+    target = (data or {}).get("broadcast_target","all")
     if not text:
         await callback.answer("متن پیام یافت نشد.", show_alert=True)
         return
-    only_active = (target == "active")
+    if target not in {"all","active"}:
+        await callback.answer("نوع گیرنده نامعتبر است.", show_alert=True)
+        return
     try:
-        recipients = await db.get_distinct_admin_user_ids(only_active=only_active)
+        recipients = await db.get_distinct_admin_user_ids(
+            only_active=target=="active",
+        )
+        # This stable request identity prevents a replayed inline-keyboard
+        # confirmation from enqueueing a second identical broadcast.
+        request_key = (
+            f"broadcast_confirm:{callback.from_user.id}:"
+            f"{callback.message.chat.id}:{callback.message.message_id}"
+        )
+        job_id = await broadcast_outbox.create_job(
+            actor_id=callback.from_user.id,request_key=request_key,
+            audience=target,text=text,recipient_ids=list(recipients),
+        )
+    except BroadcastError as exc:
+        await callback.answer(str(exc)[:180],show_alert=True)
+        return
     except Exception:
-        recipients = []
-    success = 0
-    failed = 0
-    for uid in recipients:
-        try:
-            await callback.bot.send_message(chat_id=uid, text=text)
-            success += 1
-            await asyncio.sleep(0.03)
-        except Exception:
-            failed += 1
-    # Log the broadcast
-    try:
-        log = LogModel(admin_user_id=None, action="broadcast_sent", details=f"target={target}, recipients={len(recipients)}, success={success}, failed={failed}")
-        await db.add_log(log)
-    except Exception:
-        pass
+        logger.exception("Durable broadcast enqueue failed")
+        await callback.answer(
+            "خطا در ثبت صف؛ هیچ ارسال همگانی شروع نشده است.",
+            show_alert=True,
+        )
+        return
     await state.clear()
-    summary = (
-        "📣 ارسال انجام شد.\n\n"
-        f"✅ موفق: {success}\n"
-        f"❌ ناموفق: {failed}\n"
-        f"👥 کل: {len(recipients)}"
+    # Acknowledge immediately: the scheduler drains the persistent queue
+    # in bounded batches without blocking a Telegram callback for minutes.
+    await _broadcast_show_job(callback.message,job_id)
+    await callback.answer("صف ارسال ثبت شد")
+
+
+async def _broadcast_show_job(message: Message, job_id: int) -> None:
+    item = await broadcast_outbox.get_job(job_id)
+    if not item:
+        await message.edit_text(
+            "این ارسال در صف پیدا نشد.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="بازگشت",callback_data="broadcastq:list")
+            ]]),
+        )
+        return
+    state_labels = {
+        "running":"در حال ارسال","paused":"متوقف‌شده",
+        "completed":"پایان‌یافته",
+    }
+    rows=[]
+    if item["status"] == "running":
+        rows.append([InlineKeyboardButton(
+            text="⏸ توقف موقت",
+            callback_data=f"broadcastq:pause:{job_id}",
+        )])
+    elif item["status"] == "paused":
+        rows.append([InlineKeyboardButton(
+            text="▶️ ادامه ارسال",
+            callback_data=f"broadcastq:resume:{job_id}",
+        )])
+    rows.extend([
+        [InlineKeyboardButton(
+            text="🔄 به‌روزرسانی وضعیت",
+            callback_data=f"broadcastq:show:{job_id}",
+        )],
+        [InlineKeyboardButton(
+            text="⬅️ تاریخچه ارسال همگانی",
+            callback_data="broadcastq:list",
+        )],
+    ])
+    await message.edit_text(
+        f"📣 <b>صف پیام همگانی #{int(item['id'])}</b>\n\n"
+        f"وضعیت: <b>{state_labels.get(item['status'],'نامشخص')}</b>\n"
+        f"👥 گیرنده‌ها: <b>{int(item['total'])}</b>\n"
+        f"✅ ارسال شده: <b>{int(item['sent'])}</b>\n"
+        f"⏳ در انتظار: <b>{int(item['queued'])}</b>\n"
+        f"❌ شکست نهایی: <b>{int(item['failed'])}</b>\n\n"
+        "پس از قطع ربات، ارسال‌های در انتظار در شروع مجدد ادامه می‌یابند. "
+        "ممکن است در صورت قطع ارتباط پس از پذیرش پیام توسط تلگرام "
+        "و قبل از ثبت رسید، یک پیام تکرار شود.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
     )
-    await callback.message.edit_text(summary, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="ops:hub:customers")]]))
+
+
+@sudo_router.callback_query(F.data == "broadcastq:list")
+async def broadcast_queue_list(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in config.SUDO_ADMINS:
+        await callback.answer("غیرمجاز",show_alert=True)
+        return
+    await state.clear()
+    jobs = await broadcast_outbox.list_jobs(limit=12)
+    rows = [
+        [InlineKeyboardButton(
+            text=(
+                f"📣 #{int(item['id'])} · "
+                f"{int(item['sent'])}/{int(item['total'])} · {item['status']}"
+            ),
+            callback_data=f"broadcastq:show:{int(item['id'])}",
+        )] for item in jobs
+    ]
+    rows.append([InlineKeyboardButton(
+        text="⬅️ بازگشت به ارسال همگانی",callback_data="sudo_menu_broadcast",
+    )])
+    await callback.message.edit_text(
+        "📣 <b>تاریخچه و مدیریت ارسال همگانی</b>\n\n"
+        "روی یک ارسال بزنید تا جزئیات و کنترل توقف/ادامه را ببینید. "
+        "ارسال‌های در انتظار در دیتابیس نگهداری می‌شوند.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
     await callback.answer()
+
+
+@sudo_router.callback_query(F.data.startswith("broadcastq:show:"))
+async def broadcast_queue_show(callback: CallbackQuery):
+    if callback.from_user.id not in config.SUDO_ADMINS:
+        await callback.answer("غیرمجاز",show_alert=True)
+        return
+    try:
+        job_id=int((callback.data or "").rsplit(":",1)[-1])
+    except (TypeError,ValueError):
+        await callback.answer("شناسه نامعتبر",show_alert=True)
+        return
+    await _broadcast_show_job(callback.message,job_id)
+    await callback.answer()
+
+
+@sudo_router.callback_query(
+    F.data.startswith("broadcastq:pause:")
+    | F.data.startswith("broadcastq:resume:")
+)
+async def broadcast_queue_toggle(callback: CallbackQuery):
+    if callback.from_user.id not in config.SUDO_ADMINS:
+        await callback.answer("غیرمجاز",show_alert=True)
+        return
+    try:
+        job_id=int((callback.data or "").rsplit(":",1)[-1])
+    except (TypeError,ValueError):
+        await callback.answer("شناسه نامعتبر",show_alert=True)
+        return
+    paused=(callback.data or "").startswith("broadcastq:pause:")
+    try:
+        changed=await broadcast_outbox.set_paused(
+            job_id,callback.from_user.id,paused,
+        )
+    except BroadcastError as exc:
+        await callback.answer(str(exc)[:180],show_alert=True)
+        return
+    if not changed:
+        await callback.answer(
+            "ارسال تمام شده یا شناسه معتبر نیست.",show_alert=True,
+        )
+        return
+    await _broadcast_show_job(callback.message,job_id)
+    await callback.answer("⏸ متوقف شد" if paused else "▶️ ادامه یافت")
+
 
 @sudo_router.callback_query(F.data == "sudo_menu_backup")
 async def sudo_menu_backup(callback: CallbackQuery):
@@ -3532,6 +3664,13 @@ async def activate_panel_selected(callback: CallbackQuery):
     if not admin or admin.is_active:
         await callback.answer("پنل یافت نشد یا فعال است.", show_alert=True)
         return
+    # Reuse the canonical Rebecca activation guard even for old Telegram
+    # keyboards (activate_panel_<id>). The legacy Marzban-only code below
+    # must never reactivate a financially held Rebecca reseller or mutate
+    # its users through the wrong provider API.
+    if config.PANEL_PROVIDER == "rebecca":
+        await manage_action_activate(callback)
+        return
     user_id = admin.user_id
     try:
         db_success = await db.reactivate_admin(admin.id)
@@ -4217,11 +4356,45 @@ async def manage_action_activate(callback: CallbackQuery):
     if callback.from_user.id not in config.SUDO_ADMINS:
         await callback.answer("غیرمجاز", show_alert=True)
         return
-    admin_id = int(callback.data.split("_")[-1])
+    try:
+        admin_id = int((callback.data or "").split("_")[-1])
+    except (TypeError,ValueError):
+        await callback.answer("شناسه پنل نامعتبر", show_alert=True)
+        return
     admin = await db.get_admin_by_id(admin_id)
     if not admin:
         await callback.answer("پنل یافت نشد.", show_alert=True)
         return
+    if config.PANEL_PROVIDER == "rebecca":
+        try:
+            account = await payg_service.get_admin_account(admin_id)
+        except Exception:
+            # A financial lookup error must never become permission to
+            # reactivate an account whose money status cannot be verified.
+            logger.exception("PAYG hold check unavailable for activation")
+            await callback.answer(
+                "وضعیت مالی قابل بررسی نیست؛ فعال‌سازی متوقف شد.",
+                show_alert=True,
+            )
+            return
+        if account and account["status"] == "suspended":
+            await callback.message.edit_text(
+                "🔒 این نماینده به‌دلیل وضعیت مالی PAYG معلق است.\n"
+                "فعال‌سازی عادی مجاز نیست؛ بدهی را در مرکز PAYG تسویه "
+                "و رفع تعلیق را از مسیر تأیید دستی انجام دهید.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(
+                        text="🧾 بررسی و رفع تعلیق مالی",
+                        callback_data="paygaudit:holds",
+                    )],
+                    [InlineKeyboardButton(
+                        text="↩️ بازگشت به نماینده",
+                        callback_data=f"gops:admin:{admin_id}",
+                    )],
+                ]),
+            )
+            await callback.answer()
+            return
     try:
         if config.PANEL_PROVIDER == "rebecca":
             remote = await rebecca_api.find_admin(admin.marzban_username)
@@ -4468,23 +4641,46 @@ async def manage_action_quota(callback: CallbackQuery):
 
 @sudo_router.callback_query(F.data.startswith("manage_action_quota_add_"))
 async def manage_action_quota_add(callback: CallbackQuery):
+    """Retire unsafe legacy quota edits; hand off to verified limits flow.
+
+    Old inline buttons may be replayed. Do not interpret their numeric suffix
+    as authorization for a second provider-side or local quota mutation.
+    """
     if callback.from_user.id not in config.SUDO_ADMINS:
         await callback.answer("غیرمجاز", show_alert=True)
         return
-    admin = await db.get_admin_by_id(admin_id)
     try:
-        if not admin:
-            await callback.message.edit_text("❌ پنل یافت نشد.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="gops:admins:0")]]))
-            await callback.answer()
-            return
-        add_bytes = gb_to_bytes(gb)
-        new_total = (admin.max_total_traffic or 0) + add_bytes
-        await db.update_admin(admin_id, max_total_traffic=new_total)
-        text = f"✅ حجم پنل {gb}GB افزایش یافت. ظرفیت جدید: {await format_traffic_size(new_total)}"
-    except Exception as e:
-        text = f"❌ خطا در افزایش حجم: {e}"
-    await callback.message.edit_text(text, reply_markup=_manage_back_keyboard(admin_id))
+        raw_id, raw_gb = (callback.data or "").removeprefix(
+            "manage_action_quota_add_"
+        ).split("_", 1)
+        admin_id, gb = int(raw_id), int(raw_gb)
+        if admin_id <= 0 or gb not in {1, 5, 10}:
+            raise ValueError("unsupported legacy quota increment")
+    except (ValueError, TypeError):
+        await callback.answer("درخواست نامعتبر است.", show_alert=True)
+        return
+    admin = await db.get_admin_by_id(admin_id)
+    if not admin:
+        await callback.answer("پنل پیدا نشد.", show_alert=True)
+        return
+    await callback.message.edit_text(
+        "⚠️ <b>دکمه قدیمی افزایش حجم</b>\n\n"
+        f"درخواست قبلی: +{gb} GB برای پنل #{admin_id}.\n"
+        "برای جلوگیری از افزایش تکراری و اختلاف حجم، از مرکز محدودیت‌های "
+        "نماینده اقدام کنید. هیچ تغییری در سهمیه انجام نشد.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text="📊 مدیریت امن محدودیت‌ها",
+                callback_data=f"gops:limits:{admin_id}",
+            )],
+            [InlineKeyboardButton(
+                text="🔙 بازگشت به نماینده",
+                callback_data=f"gops:admin:{admin_id}",
+            )],
+        ]),
+    )
     await callback.answer()
+
 
 
 def _sales_menu_keyboard() -> InlineKeyboardMarkup:

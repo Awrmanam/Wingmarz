@@ -86,6 +86,11 @@ class PremiumUIService:
                     body TEXT NOT NULL,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
+
+                CREATE TABLE IF NOT EXISTS ui_presentation_migration_meta (
+                    key TEXT PRIMARY KEY,
+                    applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
                 """
             )
             await conn.commit()
@@ -93,9 +98,85 @@ class PremiumUIService:
     async def init(self) -> None:
         await self.ensure_schema()
         await self.seed_static_buttons()
+        await self.migrate_legacy_menu_aliases()
         await self.reload_button_overrides()
         await self.apply_message_overrides()
         self.patch_styled_buttons()
+
+    async def migrate_legacy_menu_aliases(self) -> int:
+        """Migrate former dashboard-label aliases into the one button store.
+
+        The old rows are left untouched for rollback compatibility, but the
+        production dashboard reads only styled_button_overrides afterwards.
+        A durable marker prevents a reset button from resurrecting old aliases.
+        """
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            async with conn.execute(
+                "SELECT 1 FROM ui_presentation_migration_meta WHERE key=?",
+                ("dashboard_menu_aliases_v1",),
+            ) as cur:
+                if await cur.fetchone():
+                    return 0
+            async with conn.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type='table' AND name='styled_text_overrides'"
+            ) as cur:
+                if not await cur.fetchone():
+                    # style_engine must initialize legacy storage before migration
+                    return 0
+            async with conn.execute(
+                "SELECT raw_identity,display_text FROM styled_text_overrides "
+                "WHERE scope='menu'"
+            ) as cur:
+                aliases = {str(key): str(label) for key,label in await cur.fetchall()}
+        # Import lazily: handlers import this service during router registration.
+        from handlers.operations import MENU_SPECS, QUICK_ACTIONS
+        specs = tuple(MENU_SPECS) + tuple(QUICK_ACTIONS)
+        migrated = 0
+        async with aiosqlite.connect(self.db_path) as conn:
+            await conn.execute("BEGIN IMMEDIATE")
+            async with conn.execute(
+                "SELECT 1 FROM ui_presentation_migration_meta WHERE key=?",
+                ("dashboard_menu_aliases_v1",),
+            ) as cur:
+                if await cur.fetchone():
+                    await conn.rollback()
+                    return 0
+            for callback_data, default, icon_key, fallback in specs:
+                label = aliases.get(str(callback_data))
+                if label is None:
+                    continue
+                try:
+                    label = self.validate_button_text(label)
+                except PremiumUIError:
+                    # Keep the legacy row for operator review rather than
+                    # importing an invalid Telegram button.
+                    continue
+                await conn.execute(
+                    "INSERT OR IGNORE INTO styled_button_catalog "
+                    "(callback_data,default_text,default_icon_key,default_fallback) "
+                    "VALUES(?,?,?,?)",
+                    (callback_data,default,icon_key,fallback),
+                )
+                async with conn.execute(
+                    "SELECT id FROM styled_button_catalog "
+                    "WHERE callback_data=? AND default_text=?",
+                    (callback_data,default),
+                ) as cur:
+                    item_id = int((await cur.fetchone())[0])
+                cur = await conn.execute(
+                    "INSERT OR IGNORE INTO styled_button_overrides "
+                    "(button_id,display_text) VALUES(?,?)",
+                    (item_id,label),
+                )
+                migrated += max(0,cur.rowcount)
+            await conn.execute(
+                "INSERT OR IGNORE INTO ui_presentation_migration_meta(key) VALUES(?)",
+                ("dashboard_menu_aliases_v1",),
+            )
+            await conn.commit()
+        return migrated
 
     async def seed_static_buttons(self):
         import ast
@@ -319,6 +400,32 @@ class PremiumUIService:
             ) as cur:
                 row = await cur.fetchone()
         return self._row_to_button(row) if row else None
+
+    async def get_button_by_identity(
+        self, callback_data: str, default_text: str,
+    ) -> ButtonCatalogItem | None:
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            async with conn.execute(
+                "SELECT c.id,c.callback_data,c.default_text,c.default_icon_key,"
+                "c.default_fallback,o.display_text,o.emoji_key "
+                "FROM styled_button_catalog c "
+                "LEFT JOIN styled_button_overrides o ON o.button_id=c.id "
+                "WHERE c.callback_data=? AND c.default_text=?",
+                (str(callback_data),str(default_text)),
+            ) as cur:
+                row = await cur.fetchone()
+        return self._row_to_button(row) if row else None
+
+    async def set_button_text_by_identity(
+        self, callback_data: str, default_text: str, value: str,
+    ) -> None:
+        await self.catalog_button(callback_data,default_text,None,None)
+        item = await self.get_button_by_identity(callback_data,default_text)
+        if item is None:
+            raise PremiumUIError("دکمه پیدا نشد.")
+        await self.set_button_text(item.id,value)
 
     async def _save_button_override(
         self,

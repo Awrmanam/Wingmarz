@@ -235,8 +235,8 @@ def test_payg_does_not_reactivate_manually_disabled_rebecca_admin(tmp_path, monk
                 "VALUES(42,99,'rebecca','suspended',10000)"
             )
             await conn.commit()
-        with pytest.raises(payg_module.PaygError, match="manually disabled"):
-            await svc.sync_account(1)
+        result = await svc.sync_account(1)
+        assert result.old_status == result.new_status == "suspended"
         enable.assert_not_awaited()
         fake_db.reactivate_admin.assert_not_awaited()
 

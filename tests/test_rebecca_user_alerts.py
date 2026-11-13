@@ -98,9 +98,9 @@ def test_grouped_delivery_aggregates_by_owner_and_respects_window(tmp_path, monk
         await svc.observe_panel("panel-a", 42, [
             user(f"u{i}", used=100) for i in range(5)
         ], now=1100)
-        assert await svc.deliver(bot, now=1159) == 0
-        assert await svc.deliver(bot, now=1160) == 5
-        assert await svc.deliver(bot, now=1170) == 0
+        assert await svc.deliver(bot, now=1159, owner_map={"panel-a": 42}) == 0
+        assert await svc.deliver(bot, now=1160, owner_map={"panel-a": 42}) == 5
+        assert await svc.deliver(bot, now=1170, owner_map={"panel-a": 42}) == 0
 
     run(scenario())
     bot.send_message.assert_awaited_once()
@@ -120,7 +120,7 @@ def test_single_alert_sends_to_correct_owner_with_escaped_username(tmp_path, mon
     async def scenario():
         await svc.observe_panel("panel-a", 42, [user("ali<&")], now=1000)
         await svc.observe_panel("panel-a", 42, [user("ali<&", used=100)], now=1100)
-        await svc.deliver(bot, now=1100)
+        await svc.deliver(bot, now=1100, owner_map={"panel-a": 42})
 
     run(scenario())
     assert bot.send_message.await_args.args[0] == 42
@@ -136,10 +136,10 @@ def test_failed_private_delivery_is_retried_without_marking_sent(tmp_path, monke
     async def scenario():
         await svc.observe_panel("panel-a", 42, [user()], now=1000)
         await svc.observe_panel("panel-a", 42, [user(used=100)], now=1100)
-        assert await svc.deliver(bot, now=1100) == 0
-        assert await svc.deliver(bot, now=1101) == 0
+        assert await svc.deliver(bot, now=1100, owner_map={"panel-a": 42}) == 0
+        assert await svc.deliver(bot, now=1101, owner_map={"panel-a": 42}) == 0
         bot.send_message.side_effect = None
-        assert await svc.deliver(bot, now=1130) == 5-4
+        assert await svc.deliver(bot, now=1130, owner_map={"panel-a": 42}) == 5-4
 
     run(scenario())
     state = run(rows(path, "SELECT delivery_state,attempts FROM rebecca_user_alert_events"))

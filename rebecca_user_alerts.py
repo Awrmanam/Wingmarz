@@ -17,6 +17,7 @@ import aiosqlite
 
 import config
 from database import db
+from group_ops_service import group_ops_service
 from premium_ui_service import premium_ui_service
 from rebecca_api import rebecca_api
 
@@ -163,6 +164,27 @@ class RebeccaUserAlerts:
                     panel_username TEXT PRIMARY KEY,
                     last_attempt INTEGER NOT NULL DEFAULT 0
                 );
+                -- A single event may have independently acknowledged
+                -- delivery to the reseller AND the configured management
+                -- forum. The original event row retains the owner receipt.
+                CREATE TABLE IF NOT EXISTS rebecca_user_alert_group_queue (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_id INTEGER NOT NULL,
+                    chat_id INTEGER NOT NULL,
+                    thread_id INTEGER,
+                    delivery_state TEXT NOT NULL DEFAULT 'pending'
+                        CHECK(delivery_state IN ('pending','sending','sent','cancelled')),
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    retry_at INTEGER NOT NULL DEFAULT 0,
+                    lease_token TEXT,
+                    lease_until INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT,
+                    created_at INTEGER NOT NULL,
+                    delivered_at INTEGER,
+                    UNIQUE(event_id,chat_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_rebecca_alert_group_outbox
+                    ON rebecca_user_alert_group_queue(delivery_state,retry_at,id);
             """)
             await conn.commit()
 
@@ -203,6 +225,7 @@ class RebeccaUserAlerts:
     async def observe_panel(
         self, panel_username: str, owner_id: int,
         users: list[dict[str, Any]], now: int | None = None,
+        *, group_destination: tuple[int, int] | None = None,
     ) -> int:
         """Persist transitions only after a complete provider snapshot arrives."""
         now = int(now if now is not None else time.time())
@@ -249,7 +272,7 @@ class RebeccaUserAlerts:
                 episode = old_episode
                 if old_state != new_state and new_state in {"quota_full", "expired"}:
                     episode += 1
-                    await conn.execute("""
+                    cur = await conn.execute("""
                         INSERT OR IGNORE INTO rebecca_user_alert_events(
                           event_key,owner_telegram_id,panel_username,user_username,
                           event_type,episode,used_bytes,limit_bytes,occurred_at
@@ -259,7 +282,16 @@ class RebeccaUserAlerts:
                         owner_id, panel_username, username, new_state,
                         episode, used, limit, now,
                     ))
-                    new_events += 1
+                    if cur.rowcount:
+                        new_events += 1
+                        if group_destination:
+                            chat_id, thread_id = group_destination
+                            await conn.execute(
+                                "INSERT OR IGNORE INTO rebecca_user_alert_group_queue"
+                                "(event_id,chat_id,thread_id,created_at) "
+                                "VALUES(?,?,?,?)",
+                                (int(cur.lastrowid),int(chat_id),int(thread_id),now),
+                            )
                 await conn.execute("""
                     UPDATE rebecca_user_alert_watch SET
                       user_state=?,episode=?,used_bytes=?,limit_bytes=?,last_seen_at=?
@@ -323,14 +355,44 @@ class RebeccaUserAlerts:
                     """, (int(now), int(event_id), token))
             await conn.commit()
 
-    async def deliver(self, bot, now: int | None = None) -> int:
+    async def deliver(
+        self, bot, now: int | None = None,
+        *, owner_map: dict[str, int] | None = None,
+    ) -> int:
+        """Deliver only to the current, unambiguously linked Telegram owner.
+
+        A queued event may outlive a reseller ownership transfer. Revalidating
+        at delivery avoids leaking old customers to a former owner.
+        """
         now = int(now if now is not None else time.time())
+        if owner_map is None:
+            local = await db.get_all_admins()
+            owners: dict[str, set[int]] = defaultdict(set)
+            for admin in local:
+                if admin.marzban_username and int(admin.user_id) > 0:
+                    owners[str(admin.marzban_username)].add(int(admin.user_id))
+            owner_map = {
+                panel: next(iter(ids)) for panel, ids in owners.items()
+                if len(ids) == 1
+            }
         token, rows = await self.claim_due(
             now, window=int(getattr(config, "REBECCA_USER_ALERTS_GROUP_WINDOW", 60))
         )
         groups: dict[int, list[dict]] = defaultdict(list)
+        rejected: list[int] = []
         for item in rows:
+            remote_owner = owner_map.get(str(item["panel_username"]))
+            if remote_owner != int(item["owner_telegram_id"]):
+                rejected.append(int(item["id"]))
+                continue
             groups[int(item["owner_telegram_id"])].append(item)
+        if rejected:
+            logger.warning(
+                "Rebecca alert delivery quarantined %s stale/unlinked owner events",
+                len(rejected),
+            )
+            # Keep events durable, never reassign them to a different owner.
+            await self.retry_later(rejected, token, now)
         delivered = 0
         for owner_id, events in groups.items():
             blocks = [events[i:i+MAX_ITEMS_PER_DIGEST] for i in range(0, len(events), MAX_ITEMS_PER_DIGEST)]
@@ -351,7 +413,131 @@ class RebeccaUserAlerts:
                     else:
                         await self.mark_sent(ids, token, now)
                         delivered += len(ids)
+        await self.deliver_group(bot, owner_map=owner_map, now=now)
         return delivered
+
+    async def claim_group_due(
+        self, now: int, *, window: int = 60,
+    ) -> tuple[str, list[dict[str, Any]]]:
+        """Atomically lease independent group deliveries across restarts."""
+        await self.ensure_schema()
+        token = uuid.uuid4().hex
+        cutoff = int(now) - max(0, int(window))
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("BEGIN IMMEDIATE")
+            async with conn.execute(
+                "SELECT q.*,e.panel_username,e.owner_telegram_id,"
+                "e.user_username,e.event_type,e.used_bytes,e.limit_bytes "
+                "FROM rebecca_user_alert_group_queue q "
+                "JOIN rebecca_user_alert_events e ON e.id=q.event_id "
+                "WHERE q.created_at<=? AND q.retry_at<=? AND "
+                "(q.delivery_state='pending' OR "
+                "(q.delivery_state='sending' AND q.lease_until<?)) "
+                "ORDER BY q.chat_id,e.panel_username,q.id LIMIT ?",
+                (cutoff,int(now),int(now),MAX_EVENTS_PER_DELIVERY),
+            ) as cur:
+                rows = [dict(item) for item in await cur.fetchall()]
+            for item in rows:
+                await conn.execute(
+                    "UPDATE rebecca_user_alert_group_queue SET "
+                    "delivery_state='sending',lease_token=?,lease_until=? "
+                    "WHERE id=?",
+                    (token,int(now)+300,int(item["id"])),
+                )
+            await conn.commit()
+        return token,rows
+
+    async def finish_group(
+        self, ids: list[int], token: str, now: int,
+        *, status: str,
+    ) -> None:
+        if status not in {"sent","retry","cancelled"}:
+            raise ValueError("invalid group delivery result")
+        if not ids:
+            return
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            await conn.execute("BEGIN IMMEDIATE")
+            for receipt_id in ids:
+                if status == "sent":
+                    await conn.execute(
+                        "UPDATE rebecca_user_alert_group_queue SET "
+                        "delivery_state='sent',delivered_at=?,last_error=NULL,"
+                        "lease_token=NULL,lease_until=0 "
+                        "WHERE id=? AND delivery_state='sending' AND lease_token=?",
+                        (int(now),int(receipt_id),token),
+                    )
+                elif status == "cancelled":
+                    await conn.execute(
+                        "UPDATE rebecca_user_alert_group_queue SET "
+                        "delivery_state='cancelled',last_error='group destination changed',"
+                        "lease_token=NULL,lease_until=0 "
+                        "WHERE id=? AND delivery_state='sending' AND lease_token=?",
+                        (int(receipt_id),token),
+                    )
+                else:
+                    await conn.execute(
+                        "UPDATE rebecca_user_alert_group_queue SET "
+                        "delivery_state='pending',attempts=attempts+1,"
+                        "retry_at=?+MIN(3600,30*(1 << MIN(attempts,7))),"
+                        "last_error='delivery failed or owner mismatch',"
+                        "lease_token=NULL,lease_until=0 "
+                        "WHERE id=? AND delivery_state='sending' AND lease_token=?",
+                        (int(now),int(receipt_id),token),
+                    )
+            await conn.commit()
+
+    async def deliver_group(
+        self, bot, *, owner_map: dict[str,int], now: int,
+    ) -> int:
+        """Management forum gets an independent durable per-recipient receipt."""
+        token, rows = await self.claim_group_due(
+            now, window=int(getattr(config,"REBECCA_USER_ALERTS_GROUP_WINDOW",60)),
+        )
+        if not rows:
+            return 0
+        try:
+            config_row = await group_ops_service.get_config()
+            active_chat = (
+                int(config_row["chat_id"]) if config_row and
+                int(config_row.get("enabled") or 0) else None
+            )
+        except Exception:
+            active_chat = None
+        buckets: dict[tuple[int,str], list[dict]] = defaultdict(list)
+        for item in rows:
+            receipt_id = int(item["id"])
+            if active_chat is not None and int(item["chat_id"]) != active_chat:
+                await self.finish_group([receipt_id],token,now,status="cancelled")
+                continue
+            if (active_chat is None or owner_map.get(str(item["panel_username"]))
+                != int(item["owner_telegram_id"])):
+                await self.finish_group([receipt_id],token,now,status="retry")
+                continue
+            buckets[(active_chat,str(item["panel_username"]))].append(item)
+        sent = 0
+        for (_,panel), items in buckets.items():
+            for start in range(0,len(items),MAX_ITEMS_PER_DIGEST):
+                chunk = items[start:start+MAX_ITEMS_PER_DIGEST]
+                ids = [int(item["id"]) for item in chunk]
+                try:
+                    text = config.MESSAGES["rebecca_user_group_digest"].format(
+                        panel_name=escape(panel),
+                        users_summary=await self.render_alert(chunk),
+                    )
+                    text = await premium_ui_service.render_placeholders(str(text))
+                    if not await group_ops_service.send_text(
+                        bot, "admins", text,
+                    ):
+                        raise RuntimeError("Group Ops delivery failed")
+                except Exception:
+                    logger.exception("Rebecca alert management group delivery failed")
+                    await self.finish_group(ids,token,now,status="retry")
+                else:
+                    await self.finish_group(ids,token,now,status="sent")
+                    sent += len(ids)
+        return sent
 
     async def render_alert(self, events: list[dict]) -> str:
         def size(n: Any) -> str:
@@ -380,35 +566,61 @@ class RebeccaUserAlerts:
         return await premium_ui_service.render_placeholders(str(rendered))
 
     async def tick(self, bot, now: int | None = None) -> dict[str, int]:
-        """All network reads are scoped by Rebecca panel and immutable owner."""
+        """Poll read-only Rebecca state and independently drain queued alerts."""
         now = int(now if now is not None else time.time())
         if config.PANEL_PROVIDER != "rebecca":
             return {"polled": 0, "events": 0, "delivered": 0}
         local = await db.get_all_admins()
-        remotes = await rebecca_api.list_admins()
-        by_name = {
-            str(a.get("username")): a for a in remotes
-            if isinstance(a, dict) and a.get("username")
+        owners: dict[str, set[int]] = defaultdict(set)
+        for admin in local:
+            if admin.marzban_username and int(admin.user_id) > 0:
+                owners[str(admin.marzban_username)].add(int(admin.user_id))
+        owner_map = {
+            panel: next(iter(ids)) for panel, ids in owners.items()
+            if len(ids) == 1
         }
-        chosen = await self.poll_candidates(local)
-        emitted = 0
-        successful = 0
-        for admin in chosen:
-            panel = str(admin.marzban_username)
-            remote = by_name.get(panel)
-            if not remote or str(remote.get("role") or "").lower() != "standard":
-                continue
-            remote_id = _nonneg(remote.get("telegram_id"))
-            if remote_id and remote_id != int(admin.user_id):
-                logger.warning("Skipping Rebecca user scan for panel with ownership mismatch %s", panel)
-                continue
-            try:
-                users = await _all_scoped_users(panel)
-                emitted += await self.observe_panel(panel, int(admin.user_id), users, now)
-                successful += 1
-            except Exception:
-                logger.exception("Rebecca user alert scan failed for panel %s", panel)
-        delivered = await self.deliver(bot, now)
+        by_name: dict[str, dict] = {}
+        api_ok = False
+        try:
+            remotes = await rebecca_api.list_admins()
+            api_ok = True
+            by_name = {
+                str(a.get("username")): a for a in remotes
+                if isinstance(a, dict) and a.get("username")
+            }
+        except Exception:
+            logger.exception("Rebecca alert polling failed; draining queued Telegram events")
+        group_destination = None
+        try:
+            group_destination = await group_ops_service.ensure_topic(bot, "admins")
+        except Exception:
+            logger.exception("Could not resolve Group Ops destination for Rebecca alert outbox")
+        emitted, successful = 0, 0
+        if api_ok:
+            # A detected provider ownership discrepancy blocks delivery of
+            # already-queued data too, not just new scans.
+            for panel, owner in tuple(owner_map.items()):
+                remote = by_name.get(panel)
+                remote_id = _nonneg(remote.get("telegram_id")) if remote else None
+                if (remote is None
+                    or str(remote.get("role") or "").lower() != "standard"
+                    or (remote_id and remote_id != owner)):
+                    owner_map.pop(panel, None)
+            chosen = await self.poll_candidates(local)
+            for admin in chosen:
+                panel = str(admin.marzban_username)
+                if owner_map.get(panel) != int(admin.user_id):
+                    continue
+                try:
+                    users = await _all_scoped_users(panel)
+                    emitted += await self.observe_panel(
+                        panel, int(admin.user_id), users, now,
+                        group_destination=group_destination,
+                    )
+                    successful += 1
+                except Exception:
+                    logger.exception("Rebecca user alert scan failed for panel %s", panel)
+        delivered = await self.deliver(bot, now, owner_map=owner_map)
         return {"polled": successful, "events": emitted, "delivered": delivered}
 
 

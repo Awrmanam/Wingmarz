@@ -61,7 +61,7 @@ def _status_count(snapshot: dict[str, Any], *names: str) -> int:
     return sum(breakdown.get(name.lower(), 0) for name in names)
 
 
-async def _admin_users_snapshot(username: str, *, limit: int = 100) -> dict[str, Any]:
+async def _admin_users_snapshot(username: str, *, limit: int = 10, offset: int = 0) -> dict[str, Any]:
     """Read Rebecca's official admin-scoped users endpoint.
 
     The bearer token used by Wingmarz is a global admin token, so the explicit
@@ -74,7 +74,7 @@ async def _admin_users_snapshot(username: str, *, limit: int = 100) -> dict[str,
     data = await rebecca_api._request(
         "GET",
         "/api/users",
-        params={"admin": requested, "limit": max(1, min(int(limit), 500)), "sort": "username"},
+        params={"admin": requested, "limit": max(1, min(int(limit), 100)), "offset": max(0, int(offset)), "sort": "username"},
     )
     if not isinstance(data, dict):
         raise RebeccaAPIError("Rebecca returned an invalid users response")
@@ -83,6 +83,10 @@ async def _admin_users_snapshot(username: str, *, limit: int = 100) -> dict[str,
         users = []
     if not isinstance(users, list) or any(not isinstance(item, dict) for item in users):
         raise RebeccaAPIError("Rebecca returned an invalid users list")
+    for user in users:
+        remote_owner = user.get("admin")
+        if remote_owner is not None and str(remote_owner) != requested:
+            raise RebeccaAPIError("Rebecca returned users outside requested reseller scope")
     total = data.get("total")
     if total is not None and (isinstance(total, bool) or not isinstance(total, int) or total < 0):
         raise RebeccaAPIError("Rebecca returned an invalid users total")
@@ -223,9 +227,11 @@ def _user_status_label(user: dict[str, Any]) -> str:
     }.get(status, f"ℹ️ {status or 'نامشخص'}")
 
 
-async def _render_users(callback: CallbackQuery, admin: Any) -> None:
+async def _render_users(callback: CallbackQuery, admin: Any, page: int = 0) -> None:
     try:
-        snapshot = await _admin_users_snapshot(str(admin.marzban_username or ""), limit=100)
+        page = max(0, min(int(page), 100000))
+        page_size = 10
+        snapshot = await _admin_users_snapshot(str(admin.marzban_username or ""), limit=page_size, offset=page * page_size)
         users = snapshot["users"]
         total = _as_non_negative_int(snapshot.get("total"), len(users))
         panel_name = escape(str(admin.admin_name or admin.marzban_username or "-"))
@@ -233,7 +239,7 @@ async def _render_users(callback: CallbackQuery, admin: Any) -> None:
         if not users:
             lines.append("• هیچ کاربری در Rebecca برای این ادمین یافت نشد.")
         else:
-            for user in users[:20]:
+            for user in users:
                 username = escape(str(user.get("username") or "-"))
                 used = await format_traffic_size(_as_non_negative_int(user.get("used_traffic")))
                 data_limit = user.get("data_limit")
@@ -248,10 +254,15 @@ async def _render_users(callback: CallbackQuery, admin: Any) -> None:
                     f"  ↳ مصرف: <b>{escape(used)}</b> / {escape(limit_text)}",
                     f"  ↳ اعتبار: <b>{escape(remaining)}</b>" if expires_at != "—" else "  ↳ اعتبار: نامحدود/نامشخص",
                 ])
-            if total > len(users[:20]):
-                lines.append(f"\n… و <b>{total - len(users[:20])}</b> کاربر دیگر.")
+            lines.append(f"\nصفحه <b>{page + 1}</b> از <b>{max(1, (total + page_size - 1) // page_size)}</b>")
         lines.append(f"\nمجموع کاربران Rebecca: <b>{total}</b>")
-        await callback.message.edit_text("\n".join(lines), reply_markup=_back_keyboard())
+        buttons = []
+        if page > 0:
+            buttons.append(InlineKeyboardButton(text="◀️ قبلی", callback_data=f"rebecca_users_page:{int(admin.id)}:{page-1}"))
+        if (page + 1) * page_size < total:
+            buttons.append(InlineKeyboardButton(text="بعدی ▶️", callback_data=f"rebecca_users_page:{int(admin.id)}:{page+1}"))
+        keyboard = ([buttons] if buttons else []) + _back_keyboard().inline_keyboard
+        await callback.message.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     except Exception:
         await callback.message.edit_text(
             "⚠️ دریافت لیست کاربران Rebecca موقتاً ناموفق بود. دوباره تلاش کنید.",
@@ -261,14 +272,15 @@ async def _render_users(callback: CallbackQuery, admin: Any) -> None:
 
 
 async def _owned_active_admins(user_id: int) -> list[Any]:
-    admins = await db.get_admins_for_user(int(user_id))
-    return [admin for admin in admins if bool(admin.is_active)]
+    # Read-only panel information remains available after expiry/suspension.
+    # This does not authorize provisioning or any state-changing operation.
+    return await db.get_admins_for_user(int(user_id))
 
 
 async def _select_or_render(callback: CallbackQuery, action: str) -> None:
     admins = await _owned_active_admins(callback.from_user.id)
     if not admins:
-        await callback.answer("شما هیچ پنل فعالی ندارید.", show_alert=True)
+        await callback.answer("هیچ پنل متصل‌شده‌ای برای شما یافت نشد.", show_alert=True)
         return
     renderers = {"info": _render_info, "report": _render_report, "users": _render_users}
     if len(admins) == 1:
@@ -278,11 +290,11 @@ async def _select_or_render(callback: CallbackQuery, action: str) -> None:
     for admin in admins:
         name = str(admin.admin_name or admin.marzban_username or f"Panel {admin.id}")
         rows.append([InlineKeyboardButton(
-            text=f"✅ {name}", callback_data=f"{action}_panel_{int(admin.id)}"
+            text=f"{'✅' if admin.is_active else '⏸'} {name}", callback_data=f"{action}_panel_{int(admin.id)}"
         )])
     rows.append([InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="back_to_admin_main")])
     await callback.message.edit_text(
-        f"🔹 شما {len(admins)} پنل فعال دارید. لطفاً یکی را برای ادامه انتخاب کنید:",
+        f"🔹 شما {len(admins)} پنل متصل دارید. لطفاً یکی را برای مشاهده انتخاب کنید:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
     )
     await callback.answer()
@@ -335,3 +347,21 @@ async def rebecca_users_panel(callback: CallbackQuery):
     admin = await _selected_admin(callback, "users_panel_")
     if admin:
         await _render_users(callback, admin)
+
+
+@rebecca_admin_sync_router.callback_query(F.data.startswith("rebecca_users_page:"))
+async def rebecca_users_page(callback: CallbackQuery) -> None:
+    """Page through only the panels owned by the requesting Telegram user."""
+    try:
+        _, raw_id, raw_page = (callback.data or "").split(":")
+        admin_id, page = int(raw_id), int(raw_page)
+        if page < 0 or page > 100000:
+            raise ValueError("invalid page")
+    except (ValueError, TypeError):
+        await callback.answer("صفحه نامعتبر است.", show_alert=True)
+        return
+    admin = await db.get_admin_by_id(admin_id)
+    if not admin or int(admin.user_id) != int(callback.from_user.id):
+        await callback.answer("دسترسی به این پنل مجاز نیست.", show_alert=True)
+        return
+    await _render_users(callback, admin, page=page)
