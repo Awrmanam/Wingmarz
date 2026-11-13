@@ -35,11 +35,10 @@ class PublicPaymentStates(StatesGroup):
 
 
 def get_public_main_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🛒 خرید پنل نمایندگی", callback_data="public_buy_reseller")],
-        [InlineKeyboardButton(text="🧪 تست رایگان", callback_data="svcmarket:trial")],
-        [InlineKeyboardButton(text="🎧 پشتیبانی", callback_data="support:home")],
-    ])
+    """Legacy synchronous compatibility: link to the canonical editable home."""
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🏠 صفحه اصلی", callback_data="public_back_main")
+    ]])
 
 
 @public_router.callback_query(F.data == "public_buy_reseller")
