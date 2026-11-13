@@ -289,9 +289,10 @@ async def screen_menu(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-# Previously sent editor keyboards must remain harmless. They all converge to
-# the new registry-driven root instead of reopening an obsolete taxonomy.
-@button_editor_context_router.callback_query(F.data.startswith("uiv2:"))
+# Redirect only retired *button* editor callbacks. The uiv2:mc:, uiv2:m:,
+# uiv2:me:, uiv2:save, etc. namespace is still used by the live TEXT editor;
+# catching every uiv2: callback here hijacks the message editor into buttons.
+@button_editor_context_router.callback_query(F.data.startswith("uiv2:bc:"))
 @button_editor_context_router.callback_query(F.data.startswith("uiv3:"))
 async def legacy_editor_redirect(callback: CallbackQuery, state: FSMContext):
     if not is_staff(callback.from_user.id):
