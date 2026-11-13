@@ -369,6 +369,13 @@ def resolve_button(callback_data: str, default_text: str | None = None) -> Butto
         title_matches = [candidate for candidate in candidates if _clean(candidate.title) == wanted]
         if len(title_matches) == 1:
             return ButtonResolution(title_matches[0], None)
+        # A shared home button can also appear in older customer/reseller
+        # declarations with the same callback and title. Keep one owner in
+        # the common home editor instead of hiding every duplicate as ambiguous.
+        if len(title_matches) > 1:
+            shared = [candidate for candidate in title_matches if candidate.screen == "home.shared"]
+            if len(shared) == 1:
+                return ButtonResolution(shared[0], None)
         generic = [candidate for candidate in candidates if candidate.default_text is None]
         if len(generic) == 1:
             return ButtonResolution(generic[0], None)
