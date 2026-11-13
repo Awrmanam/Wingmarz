@@ -1,4 +1,5 @@
 """Regression: old button routes must not hijack the active message editor."""
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,22 +13,24 @@ from handlers.ui_editor_v2 import (
     message_save_draft,
     message_detail,
     message_search_start,
+    UIMessageEditStates,
 )
 
 
 def _matching_handlers(router, callback_data):
-    event = SimpleNamespace(data=callback_data)
-    result = []
-    for handler in router.callback_query.handlers:
-        if all(
-            bool(getattr(filter_obj.callback, "resolve")(event))
-            for filter_obj in handler.filters
-            if hasattr(filter_obj.callback, "resolve")
-        ):
-            # No handler-specific non-magic filters in the routes checked here.
-            if all(hasattr(f.callback, "resolve") for f in handler.filters):
+    """Ask aiogram's registered filters which handlers accept the callback."""
+    async def check():
+        event = SimpleNamespace(data=callback_data)
+        result = []
+        for handler in router.callback_query.handlers:
+            ok, _ = await handler.check(
+                event, raw_state=UIMessageEditStates.body.state
+            )
+            if ok:
                 result.append(handler.callback)
-    return result
+        return result
+
+    return asyncio.run(check())
 
 
 def test_live_text_editor_callbacks_are_not_redirected_to_button_editor():
