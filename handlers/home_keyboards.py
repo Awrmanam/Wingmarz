@@ -42,7 +42,7 @@ async def public_home_keyboard() -> InlineKeyboardMarkup:
             await _button("تست رایگان", "svcmarket:trial", icon_key="test", fallback="🧪"),
         ],
         [
-            await _button("وضعیت احراز هویت", "kyc:status", icon_key="info", fallback="🪪"),
+            await _button("وضعیت احراز هویت", "kyc:status", icon_key="kyc", fallback="🪪"),
             await _button("پشتیبانی", "support:home", icon_key="support", fallback="🎧"),
         ],
     ])
@@ -72,7 +72,7 @@ async def reseller_home_keyboard() -> InlineKeyboardMarkup:
             await _button("تست رایگان", "svcmarket:trial", icon_key="test", fallback="🧪"),
         ],
         [
-            await _button("وضعیت احراز هویت", "kyc:status", icon_key="info", fallback="🪪"),
+            await _button("وضعیت احراز هویت", "kyc:status", icon_key="kyc", fallback="🪪"),
             await _button("پشتیبانی", "support:home", icon_key="support", fallback="🎧"),
         ],
     ])

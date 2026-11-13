@@ -59,3 +59,14 @@ def test_home_renderer_no_longer_uses_legacy_direct_keyboard_builders():
     assert "await reseller_home_keyboard()" in source
     assert "await public_home_keyboard()" in source
     assert '@home_navigation_router.message(CommandStart(), F.chat.type == "private")' in source
+
+
+def test_kyc_button_has_own_editable_premium_emoji_key_and_registry():
+    from ui_presentation_registry import resolve_button
+    from pathlib import Path
+    source = Path("handlers/home_keyboards.py").read_text(encoding="utf-8")
+    assert source.count('"kyc:status", icon_key="kyc", fallback="🪪"') == 2
+    resolved = resolve_button("kyc:status", "وضعیت احراز هویت")
+    assert resolved.button is not None
+    assert resolved.button.screen == "home.shared"
+    assert resolved.button.title == "وضعیت احراز هویت"
