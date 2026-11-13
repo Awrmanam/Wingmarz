@@ -35,10 +35,18 @@ class PublicPaymentStates(StatesGroup):
 
 
 def get_public_main_keyboard() -> InlineKeyboardMarkup:
-    """Legacy synchronous compatibility: link to the canonical editable home."""
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="🏠 صفحه اصلی", callback_data="public_back_main")
-    ]])
+    """Legacy synchronous compatibility mirrors public-home actions.
+
+    Actual message rendering uses async public_home_keyboard(), which applies
+    the user's edited labels and premium emoji settings.
+    """
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🛒 خرید پنل نمایندگی", callback_data="public_buy_reseller")],
+        [InlineKeyboardButton(text="💰 تعرفه‌ها", callback_data="tariffs:home"),
+         InlineKeyboardButton(text="🧪 تست رایگان", callback_data="svcmarket:trial")],
+        [InlineKeyboardButton(text="🪪 وضعیت احراز هویت", callback_data="kyc:status"),
+         InlineKeyboardButton(text="🎧 پشتیبانی", callback_data="support:home")],
+    ])
 
 
 @public_router.callback_query(F.data == "public_buy_reseller")
