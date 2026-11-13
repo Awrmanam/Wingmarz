@@ -3507,8 +3507,8 @@ async def admin_status_detail(callback: CallbackQuery):
 async def add_admin_command(message: Message, state: FSMContext):
     """Handle /add_admin text command."""
     if message.from_user.id not in config.SUDO_ADMINS:
-        from handlers.public_handlers import get_public_main_keyboard
-        await message.answer("به ربات خوش آمدید!", reply_markup=get_public_main_keyboard())
+        from handlers.home_navigation import render_home
+        await render_home(message, message.from_user.id, edit=False)
         return
     
     # Clear any existing state first
@@ -3539,8 +3539,8 @@ async def add_admin_command(message: Message, state: FSMContext):
 async def show_admins_command(message: Message):
     """Handle /show_admins or /list_admins text command."""
     if message.from_user.id not in config.SUDO_ADMINS:
-        from handlers.public_handlers import get_public_main_keyboard
-        await message.answer("به ربات خوش آمدید!", reply_markup=get_public_main_keyboard())
+        from handlers.home_navigation import render_home
+        await render_home(message, message.from_user.id, edit=False)
         return
     
     text = await get_admin_list_text()
@@ -3551,8 +3551,8 @@ async def show_admins_command(message: Message):
 async def remove_admin_command(message: Message):
     """Handle /remove_admin text command."""
     if message.from_user.id not in config.SUDO_ADMINS:
-        from handlers.public_handlers import get_public_main_keyboard
-        await message.answer("به ربات خوش آمدید!", reply_markup=get_public_main_keyboard())
+        from handlers.home_navigation import render_home
+        await render_home(message, message.from_user.id, edit=False)
         return
     
     # Get only active admins for deactivation
@@ -3576,8 +3576,8 @@ async def remove_admin_command(message: Message):
 async def edit_panel_command(message: Message):
     """Handle /edit_panel text command."""
     if message.from_user.id not in config.SUDO_ADMINS:
-        from handlers.public_handlers import get_public_main_keyboard
-        await message.answer("به ربات خوش آمدید!", reply_markup=get_public_main_keyboard())
+        from handlers.home_navigation import render_home
+        await render_home(message, message.from_user.id, edit=False)
         return
     
     # Get all admins for editing
@@ -3600,8 +3600,8 @@ async def edit_panel_command(message: Message):
 async def admin_status_command(message: Message):
     """Handle /admin_status text command."""
     if message.from_user.id not in config.SUDO_ADMINS:
-        from handlers.public_handlers import get_public_main_keyboard
-        await message.answer("به ربات خوش آمدید!", reply_markup=get_public_main_keyboard())
+        from handlers.home_navigation import render_home
+        await render_home(message, message.from_user.id, edit=False)
         return
     await show_admin_status_page(message, 1)
 
