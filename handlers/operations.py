@@ -294,7 +294,8 @@ async def operational_back(callback: CallbackQuery, state: FSMContext):
     if await _deny(callback):
         return
     await state.clear()
-    await _edit_dashboard(callback.message)
+    from handlers.home_navigation import render_home
+    await render_home(callback.message, callback.from_user.id, edit=True)
     await callback.answer()
 
 

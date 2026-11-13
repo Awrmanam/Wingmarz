@@ -9,6 +9,7 @@ from database import db
 from utils.notify import format_traffic_size, seconds_to_days
 from group_ops_service import group_ops_service
 from group_ops_events import mirror_order_receipt
+from handlers.home_keyboards import public_home_keyboard
 from order_kyc_gate import order_kyc_gate
 from trust_service import trust_service
 from forced_join_service import ForcedJoinState, check_membership
@@ -25,7 +26,8 @@ async def public_catch_all(message: Message, cmd: str):
     if await db.is_admin_authorized(message.from_user.id):
         return
     if cmd.startswith('/start'):
-        await message.answer(config.MESSAGES["customer_home"], reply_markup=get_public_main_keyboard())
+        from handlers.home_navigation import render_home
+        await render_home(message, message.from_user.id, edit=False)
 
 
 class PublicPaymentStates(StatesGroup):
@@ -33,10 +35,17 @@ class PublicPaymentStates(StatesGroup):
 
 
 def get_public_main_keyboard() -> InlineKeyboardMarkup:
+    """Legacy synchronous compatibility mirrors public-home actions.
+
+    Actual message rendering uses async public_home_keyboard(), which applies
+    the user's edited labels and premium emoji settings.
+    """
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🛒 خرید پنل نمایندگی", callback_data="public_buy_reseller")],
-        [InlineKeyboardButton(text="🧪 تست رایگان", callback_data="svcmarket:trial")],
-        [InlineKeyboardButton(text="🎧 پشتیبانی", callback_data="support:home")],
+        [InlineKeyboardButton(text="💰 تعرفه‌ها", callback_data="tariffs:home"),
+         InlineKeyboardButton(text="🧪 تست رایگان", callback_data="svcmarket:trial")],
+        [InlineKeyboardButton(text="🪪 وضعیت احراز هویت", callback_data="kyc:status"),
+         InlineKeyboardButton(text="🎧 پشتیبانی", callback_data="support:home")],
     ])
 
 
@@ -46,7 +55,7 @@ async def public_buy_reseller(callback: CallbackQuery):
     if not plans:
         await callback.message.edit_text(
             "در حال حاضر پلنی برای خرید موجود نیست.",
-            reply_markup=get_public_main_keyboard()
+            reply_markup=await public_home_keyboard()
         )
         await callback.answer()
         return
@@ -91,7 +100,8 @@ async def public_order(callback: CallbackQuery, state: FSMContext):
 @public_router.callback_query(F.data == "public_back_main")
 async def public_back_main(callback: CallbackQuery, state: FSMContext):
     await state.clear()
-    await callback.message.edit_text(config.MESSAGES["customer_home"], reply_markup=get_public_main_keyboard())
+    from handlers.home_navigation import render_home
+    await render_home(callback.message, callback.from_user.id, edit=True)
     await callback.answer()
 
 
@@ -110,7 +120,7 @@ async def forced_join_refresh(callback: CallbackQuery):
     if not not_joined and not errors:
         await callback.message.edit_text(
             "✅ عضویت تأیید شد. حالا می‌توانید از ربات استفاده کنید.",
-            reply_markup=get_public_main_keyboard(),
+            reply_markup=await public_home_keyboard(),
         )
         await callback.answer("عضویت تأیید شد ✅")
         return
@@ -213,5 +223,5 @@ async def public_receive_payment_receipt(message: Message, state: FSMContext):
     except Exception:
         pass
     await state.clear()
-    await message.answer(config.MESSAGES["order_submitted_to_admin"], reply_markup=get_public_main_keyboard())
+    await message.answer(config.MESSAGES["order_submitted_to_admin"], reply_markup=await public_home_keyboard())
 

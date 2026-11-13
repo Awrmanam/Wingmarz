@@ -277,7 +277,11 @@ def test_order_filters_match_existing_states_without_rewriting_them(isolated):
 
 def test_customer_back_clears_active_fsm(monkeypatch):
     state=SimpleNamespace(clear=AsyncMock())
-    callback=SimpleNamespace(message=SimpleNamespace(edit_text=AsyncMock()),answer=AsyncMock())
+    callback=SimpleNamespace(
+        from_user=SimpleNamespace(id=42),
+        message=SimpleNamespace(edit_text=AsyncMock()),
+        answer=AsyncMock(),
+    )
     run(public.public_back_main(callback,state))
     state.clear.assert_awaited_once()
 

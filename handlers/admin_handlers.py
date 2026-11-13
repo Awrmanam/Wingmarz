@@ -15,6 +15,7 @@ from marzban_api import marzban_api
 from rebecca_api import rebecca_api, RebeccaAPIError
 from group_ops_service import group_ops_service
 from group_ops_events import mirror_order_receipt
+from handlers.home_keyboards import public_home_keyboard, reseller_home_keyboard
 from order_kyc_gate import order_kyc_gate
 from trust_service import trust_service
 from datetime import datetime
@@ -49,29 +50,13 @@ async def _mirror_admin_order_created(bot, order_id: int) -> None:
 
 
 def get_admin_keyboard() -> InlineKeyboardMarkup:
-    """Get admin main keyboard."""
-    buttons = [
-        [
-            InlineKeyboardButton(text=config.BUTTONS["my_info"], callback_data="my_info"),
-            InlineKeyboardButton(text=config.BUTTONS["my_report"], callback_data="my_report")
-        ],
-        [
-            InlineKeyboardButton(text=config.BUTTONS["my_users"], callback_data="my_users"),
-            InlineKeyboardButton(text=config.BUTTONS["reactivate_users"], callback_data="reactivate_users")
-        ],
-        [
-            InlineKeyboardButton(text="🛒 خرید پنل نمایندگی", callback_data="admin_buy_reseller")
-        ],
-        [
-            InlineKeyboardButton(text=config.BUTTONS["renew"], callback_data="admin_renew")
-        ]
-    ]
-    buttons.extend([
-        [InlineKeyboardButton(text="🪪 وضعیت احراز هویت", callback_data="kyc:status")],
-        [InlineKeyboardButton(text="🧪 تست رایگان", callback_data="svcmarket:trial")],
-        [InlineKeyboardButton(text="🎧 پشتیبانی", callback_data="support:home")],
-    ])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+    """Compatibility for callers not yet async: never render the retired menu.
+
+    All in-tree handlers use the async reseller_home_keyboard() now.
+    """
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🏠 صفحه اصلی نماینده", callback_data="back_to_admin_main")
+    ]])
 
 
 def get_panel_selection_keyboard(admins: List[AdminModel], action_type: str) -> InlineKeyboardMarkup:
@@ -128,12 +113,9 @@ async def show_panel_selection_or_execute(message_or_callback: Message | Callbac
 
 @admin_router.message(Command("start"))
 async def admin_start(message: Message):
-    """Start regular admins, auto-linking Rebecca identities by telegram_id."""
+    """Legacy fallback: render the same role-aware home as /start everywhere."""
     if message.from_user.id in config.SUDO_ADMINS:
         return
-
-    # Rebecca is the source of truth for ownership. A panel whose telegram_id
-    # matches this Telegram account becomes available without a manual bot import.
     if config.PANEL_PROVIDER == "rebecca":
         try:
             from rebecca_identity_link import sync_rebecca_admins_for_telegram
@@ -143,67 +125,10 @@ async def admin_start(message: Message):
                 first_name=message.from_user.first_name,
                 last_name=message.from_user.last_name,
             )
-        except Exception as exc:
-            logger.warning("Rebecca identity auto-link failed for %s: %s", message.from_user.id, exc)
-
-    admins = await db.get_admins_for_user(message.from_user.id)
-    active_admins = [admin for admin in admins if admin.is_active]
-
-    from kyc_service import kyc_service
-    from trust_service import trust_service
-
-    if not active_admins:
-        from handlers.public_handlers import get_public_main_keyboard
-        await message.answer("به ربات خوش آمدید!", reply_markup=get_public_main_keyboard())
-        return
-
-    approved = await trust_service.is_identity_approved(message.from_user.id)
-    required_admins = [
-        admin for admin in active_admins
-        if await kyc_service.is_required(int(admin.id))
-    ]
-    exempt_admins = [
-        admin for admin in active_admins
-        if not await kyc_service.is_required(int(admin.id))
-    ]
-
-    # If every active panel requires KYC, do not expose the admin dashboard until
-    # the identity review is approved. Mixed accounts can still use exempt panels.
-    if required_admins and not approved and not exempt_admins:
-        profile = await kyc_service.get_profile(message.from_user.id)
-        status = str((profile or {}).get("status") or "not_submitted")
-        if status == "pending":
-            text = (
-                "🪪 <b>احراز هویت شما در انتظار بررسی است.</b>\n\n"
-                "بعد از تأیید، دسترسی پنل‌ها خودکار باز می‌شود."
-            )
-        elif status == "rejected":
-            text = (
-                "🔴 <b>احراز هویت قبلی تأیید نشد.</b>\n\n"
-                "برای دسترسی به پنل، مدرک را دوباره ارسال کنید."
-            )
-        else:
-            text = (
-                "🪪 <b>احراز هویت برای دسترسی به پنل الزامی است.</b>\n\n"
-                "ثبت KYC فقط یک بار انجام می‌شود و پس از تأیید برای تمام پنل‌های "
-                "نیازمند احراز همین حساب معتبر خواهد بود."
-            )
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🪪 شروع/ارسال مجدد KYC", callback_data="kyc:start")],
-            [InlineKeyboardButton(text="📋 وضعیت احراز هویت", callback_data="kyc:status")],
-        ])
-        await message.answer(text, reply_markup=kb)
-        return
-
-    welcome_message = config.MESSAGES["welcome_admin"]
-    if len(active_admins) > 1:
-        welcome_message += f"\n\n🔹 شما {len(active_admins)} پنل فعال دارید."
-    if required_admins and not approved:
-        welcome_message += (
-            "\n\n🟡 KYC شما هنوز تأیید نشده؛ فعلاً فقط پنل‌های معاف از KYC در دسترس‌اند."
-        )
-
-    await message.answer(welcome_message, reply_markup=get_admin_keyboard())
+        except Exception:
+            logger.exception("Rebecca identity auto-link failed for %s", message.from_user.id)
+    from handlers.home_navigation import render_home
+    await render_home(message, message.from_user.id, edit=False)
 
 
 async def show_admin_info(message_or_callback: Message | CallbackQuery, admin: AdminModel):
@@ -264,7 +189,7 @@ async def show_admin_info(message_or_callback: Message | CallbackQuery, admin: A
         await message_or_callback.message.edit_text(text, **kwargs)
         await message_or_callback.answer()
     else:
-        kwargs["reply_markup"] = get_admin_keyboard()
+        kwargs["reply_markup"] = await reseller_home_keyboard()
         await message_or_callback.answer(text, **kwargs)
 
 
@@ -362,7 +287,7 @@ async def show_admin_report(message_or_callback: Message | CallbackQuery, admin:
         await message_or_callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="back_to_admin_main")]]))
         await message_or_callback.answer()
     else:
-        await message_or_callback.answer(text, reply_markup=get_admin_keyboard())
+        await message_or_callback.answer(text, reply_markup=await reseller_home_keyboard())
 
 
 async def show_admin_users(message_or_callback: Message | CallbackQuery, admin: AdminModel):
@@ -406,7 +331,7 @@ async def show_admin_users(message_or_callback: Message | CallbackQuery, admin: 
             await message_or_callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="back_to_admin_main")]]))
         await message_or_callback.answer()
     else:
-        await message_or_callback.answer(text, reply_markup=get_admin_keyboard())
+        await message_or_callback.answer(text, reply_markup=await reseller_home_keyboard())
 
 
 async def show_admin_reactivate(message_or_callback: Message | CallbackQuery, admin: AdminModel):
@@ -418,7 +343,7 @@ async def show_admin_reactivate(message_or_callback: Message | CallbackQuery, ad
         await message_or_callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="back_to_admin_main")]]))
         await message_or_callback.answer()
     else:
-        await message_or_callback.answer(text, reply_markup=get_admin_keyboard())
+        await message_or_callback.answer(text, reply_markup=await reseller_home_keyboard())
 
 
 # ===== Admin - Buy Reseller Panel Flow =====
@@ -569,7 +494,7 @@ async def admin_receive_payment_receipt(message: Message, state: FSMContext):
     except Exception:
         pass
     await state.clear()
-    await message.answer(config.MESSAGES["order_submitted_to_admin"], reply_markup=get_admin_keyboard())
+    await message.answer(config.MESSAGES["order_submitted_to_admin"], reply_markup=await reseller_home_keyboard())
 
 
 # ===== Admin Renew/Extend Flow =====
@@ -1239,9 +1164,10 @@ async def reactivate_panel_selected(callback: CallbackQuery):
 # Back to main menu
 @admin_router.callback_query(F.data == "back_to_admin_main")
 async def back_to_admin_main(callback: CallbackQuery, state: FSMContext):
+    """Deprecated back callback uses the same source as the role-aware /start."""
     await state.clear()
-    """Return to admin main menu."""
-    await callback.message.edit_text(config.MESSAGES["welcome_admin"], reply_markup=get_admin_keyboard())
+    from handlers.home_navigation import render_home
+    await render_home(callback.message, callback.from_user.id, edit=True)
     await callback.answer()
 
 
@@ -1374,5 +1300,5 @@ async def admin_unhandled_text(message: Message):
 
     await message.answer(
         "دستور نا مشخص است. لطفاً از دکمه‌های زیر یا دستورات موجود استفاده کنید.",
-        reply_markup=get_admin_keyboard()
+        reply_markup=await reseller_home_keyboard()
     )
