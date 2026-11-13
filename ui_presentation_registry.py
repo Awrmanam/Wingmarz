@@ -126,7 +126,8 @@ BUTTONS: tuple[ButtonDef, ...] = (
     ButtonDef("reseller.home.renew", "reseller.home", "تمدید/افزایش", "admin_renew", rank=5),
     ButtonDef("home.shared.tariffs", "home.shared", "تعرفه‌ها", "tariffs:home", rank=0),
     ButtonDef("home.shared.trial", "home.shared", "تست رایگان", "svcmarket:trial", rank=1),
-    ButtonDef("home.shared.support", "home.shared", "پشتیبانی", "support:home", rank=2),
+    ButtonDef("home.shared.kyc", "home.shared", "وضعیت احراز هویت", "kyc:status", rank=2),
+    ButtonDef("home.shared.support", "home.shared", "پشتیبانی", "support:home", rank=3),
     ButtonDef("access.forced_join.refresh", "access.forced_join", "بررسی مجدد عضویت", "forced_join_refresh", rank=0),
     ButtonDef("reseller.navigation.back", "reseller.navigation", "بازگشت", "back_to_admin_main", rank=0, navigation_type="back"),
     ButtonDef("trial.home.config", "trial.home", "کانفیگ تست", "trialv2:choose:config", rank=0),
@@ -362,6 +363,19 @@ def resolve_button(callback_data: str, default_text: str | None = None) -> Butto
         for candidate in candidates:
             if candidate.default_text and _clean(candidate.default_text) == wanted:
                 return ButtonResolution(candidate, None)
+        # When a callback has multiple declared screen entries, match the
+        # human-facing title before falling back to ambiguous generic entries.
+        # This keeps shared identity/KYC navigation discoverable in the editor.
+        title_matches = [candidate for candidate in candidates if _clean(candidate.title) == wanted]
+        if len(title_matches) == 1:
+            return ButtonResolution(title_matches[0], None)
+        # A shared home button can also appear in older customer/reseller
+        # declarations with the same callback and title. Keep one owner in
+        # the common home editor instead of hiding every duplicate as ambiguous.
+        if len(title_matches) > 1:
+            shared = [candidate for candidate in title_matches if candidate.screen == "home.shared"]
+            if len(shared) == 1:
+                return ButtonResolution(shared[0], None)
         generic = [candidate for candidate in candidates if candidate.default_text is None]
         if len(generic) == 1:
             return ButtonResolution(generic[0], None)
