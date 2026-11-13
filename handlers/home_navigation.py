@@ -150,7 +150,7 @@ async def role_aware_start(message: Message, state: FSMContext):
 
 
 @home_navigation_router.callback_query(
-    F.data.in_({"back_to_admin_main", "public_back_main", "svcmarket:home"})
+    F.data.in_({"back_to_main", "back_to_admin_main", "public_back_main", "svcmarket:home"})
 )
 async def role_aware_back(callback: CallbackQuery, state: FSMContext):
     """All home/back aliases converge on the same role-aware home screen."""
