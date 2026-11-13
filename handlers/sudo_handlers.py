@@ -3664,6 +3664,13 @@ async def activate_panel_selected(callback: CallbackQuery):
     if not admin or admin.is_active:
         await callback.answer("پنل یافت نشد یا فعال است.", show_alert=True)
         return
+    # Reuse the canonical Rebecca activation guard even for old Telegram
+    # keyboards (activate_panel_<id>). The legacy Marzban-only code below
+    # must never reactivate a financially held Rebecca reseller or mutate
+    # its users through the wrong provider API.
+    if config.PANEL_PROVIDER == "rebecca":
+        await manage_action_activate(callback)
+        return
     user_id = admin.user_id
     try:
         db_success = await db.reactivate_admin(admin.id)
