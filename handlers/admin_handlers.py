@@ -50,29 +50,13 @@ async def _mirror_admin_order_created(bot, order_id: int) -> None:
 
 
 def get_admin_keyboard() -> InlineKeyboardMarkup:
-    """Get admin main keyboard."""
-    buttons = [
-        [
-            InlineKeyboardButton(text=config.BUTTONS["my_info"], callback_data="my_info"),
-            InlineKeyboardButton(text=config.BUTTONS["my_report"], callback_data="my_report")
-        ],
-        [
-            InlineKeyboardButton(text=config.BUTTONS["my_users"], callback_data="my_users"),
-            InlineKeyboardButton(text=config.BUTTONS["reactivate_users"], callback_data="reactivate_users")
-        ],
-        [
-            InlineKeyboardButton(text="🛒 خرید پنل نمایندگی", callback_data="admin_buy_reseller")
-        ],
-        [
-            InlineKeyboardButton(text=config.BUTTONS["renew"], callback_data="admin_renew")
-        ]
-    ]
-    buttons.extend([
-        [InlineKeyboardButton(text="🪪 وضعیت احراز هویت", callback_data="kyc:status")],
-        [InlineKeyboardButton(text="🧪 تست رایگان", callback_data="svcmarket:trial")],
-        [InlineKeyboardButton(text="🎧 پشتیبانی", callback_data="support:home")],
-    ])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+    """Compatibility for callers not yet async: never render the retired menu.
+
+    All in-tree handlers use the async reseller_home_keyboard() now.
+    """
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🏠 صفحه اصلی نماینده", callback_data="back_to_admin_main")
+    ]])
 
 
 def get_panel_selection_keyboard(admins: List[AdminModel], action_type: str) -> InlineKeyboardMarkup:
