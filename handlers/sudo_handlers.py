@@ -3712,8 +3712,8 @@ async def back_to_main(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id not in config.SUDO_ADMINS:
         await callback.answer("غیرمجاز", show_alert=True)
         return
-    from handlers.operations import _edit_dashboard
-    await _edit_dashboard(callback.message)
+    from handlers.home_navigation import render_home
+    await render_home(callback.message, callback.from_user.id, edit=True)
     await callback.answer()
 
 
