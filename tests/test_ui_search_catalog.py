@@ -46,3 +46,16 @@ def test_searches_visible_button_labels_not_callback_or_runtime_ids():
     assert search_registered_buttons(rows,"پرداخت") == rows
     assert not search_registered_buttons(rows,"finance:secret")
     assert not search_registered_buttons(rows,"99999")
+
+
+def test_customer_and_reseller_home_texts_live_under_start_and_access():
+    from handlers.ui_editor_v2 import _message_category
+
+    for key in (
+        "home_public_title", "home_public_body", "home_public_footer",
+        "home_reseller_title", "home_reseller_body", "home_reseller_footer",
+        "customer_home", "welcome_sudo", "welcome_admin",
+    ):
+        assert _message_category(key) == "start", key
+    assert _message_category("support_home") == "support"
+    assert _message_category("sales_plan_summary") == "sales"

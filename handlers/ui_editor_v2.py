@@ -111,7 +111,7 @@ def _message_title(key: str) -> str:
 def _message_category(key: str) -> str:
     if key.startswith("support_"):
         return "support"
-    if key == "customer_home":
+    if key == "customer_home" or key.startswith(("home_public_", "home_reseller_")):
         return "start"
     if key.startswith("sales_"):
         return "sales"
