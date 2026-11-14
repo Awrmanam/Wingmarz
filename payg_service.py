@@ -966,6 +966,92 @@ class PaygService:
                 results[account_id] = "applied"
         return results
 
+    async def resolve_discount_boundary_without_charge(
+        self, account_id: int, actor_id: int, *, reason: str,
+    ) -> None:
+        """Owner-authorized write-off of ambiguous bytes, never silent repricing.
+
+        Requires a live Rebecca counter. Existing accrued debt is preserved.
+        The skipped raw interval and chosen effective rate are audit logged.
+        """
+        import os
+        owner = os.getenv("PAYG_OWNER_ID", "").strip()
+        if not owner.isdecimal() or int(actor_id) != int(owner):
+            raise PaygError("owner permission required")
+        if len(reason.strip()) < 12:
+            raise PaygError("a meaningful reconciliation reason is required")
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            async with conn.execute(
+                "SELECT a.admin_id,a.last_raw_usage_bytes,t.base_rate,"
+                "t.desired_rate,t.last_error,d.mode,d.value,d.starts_at,d.expires_at "
+                "FROM payg_accounts a JOIN payg_discount_targets t "
+                "ON t.account_id=a.id LEFT JOIN payg_customer_discounts d "
+                "ON d.account_id=a.id WHERE a.id=? AND a.status!='migrated'",
+                (int(account_id),),
+            ) as cur:
+                row = await cur.fetchone()
+        if row is None or row["last_error"] is None:
+            raise PaygError("no disputed discount boundary to resolve")
+        admin = await db.get_admin_by_id(int(row["admin_id"]))
+        if not admin or not admin.marzban_username:
+            raise PaygError("Rebecca admin missing")
+        raw = int(await rebecca_api.get_admin_usage(admin.marzban_username))
+        if raw < int(row["last_raw_usage_bytes"]):
+            raise PaygError("Rebecca counter regression requires separate review")
+        now = int(time.time())
+        active = (row["mode"] is not None and now >= int(row["starts_at"])
+                  and (row["expires_at"] is None or now < int(row["expires_at"])))
+        target = (self.discount_rate(int(row["base_rate"]),str(row["mode"]),int(row["value"]))
+                  if active else int(row["base_rate"]))
+        if row["desired_rate"] is not None:
+            target = int(row["desired_rate"])
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("BEGIN IMMEDIATE")
+            async with conn.execute(
+                "SELECT last_raw_usage_bytes,price_per_gb_toman FROM payg_accounts WHERE id=?",
+                (int(account_id),),
+            ) as cur:
+                current = await cur.fetchone()
+            if current is None or int(current["last_raw_usage_bytes"]) != int(row["last_raw_usage_bytes"]):
+                await conn.rollback()
+                raise PaygError("counter changed during reconciliation")
+            async with conn.execute(
+                "SELECT 1 FROM payg_rate_switches WHERE account_id=?",
+                (int(account_id),),
+            ) as cur:
+                switch = await cur.fetchone()
+            if switch:
+                await conn.rollback()
+                raise PaygError("another rate switch is in progress")
+            await conn.execute(
+                "UPDATE payg_accounts SET last_raw_usage_bytes=?,"
+                "price_per_gb_toman=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (raw,target,int(account_id)),
+            )
+            await conn.execute(
+                "INSERT INTO payg_usage_audit"
+                "(account_id,event_type,previous_raw_bytes,observed_raw_bytes,note)"
+                "VALUES(?,'discount_boundary_writeoff',?,?,?)",
+                (int(account_id),int(row["last_raw_usage_bytes"]),raw,
+                 f"owner={actor_id}; {reason.strip()[:300]}"),
+            )
+            await conn.execute(
+                "INSERT INTO payg_rate_history"
+                "(account_id,actor_id,previous_rate,new_rate,"
+                "boundary_raw_bytes,boundary_cumulative_bytes) "
+                "SELECT id,?,?,?, ?,cumulative_usage_bytes FROM payg_accounts WHERE id=?",
+                (int(actor_id),int(current["price_per_gb_toman"]),target,raw,int(account_id)),
+            )
+            await conn.execute(
+                "UPDATE payg_discount_targets SET last_error=NULL,desired_rate=NULL,"
+                "updated_at=CURRENT_TIMESTAMP WHERE account_id=?",
+                (int(account_id),),
+            )
+            await conn.commit()
+
     async def switch_rate_after_rebecca_sync(
         self, account_id: int, actor_id: int, new_rate: int,
     ) -> None:
