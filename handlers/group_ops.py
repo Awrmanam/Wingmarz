@@ -1138,6 +1138,9 @@ async def toggle_manual_trust(callback: CallbackQuery):
 async def toggle_auto_approve(callback: CallbackQuery):
     if await _deny_event(callback):
         return
+    if int(callback.from_user.id) not in config.SUDO_ADMINS:
+        await callback.answer("تنظیم تأیید خودکار فقط برای مالک مجاز است", show_alert=True)
+        return
     admin_id = int((callback.data or "").rsplit(":", 1)[-1])
     admin = await db.get_admin_by_id(admin_id)
     if not admin:
@@ -1145,7 +1148,7 @@ async def toggle_auto_approve(callback: CallbackQuery):
         return
     before = await trust_service.auto_approve_enabled(admin.user_id)
     try:
-        await trust_service.set_auto_approve(admin.user_id, not before)
+        await trust_service.set_auto_approve(admin.user_id, not before, actor_id=callback.from_user.id)
     except ValueError:
         await callback.answer("اول KYC را تأیید یا کاربر را Manual Trust کنید.", show_alert=True)
         return
