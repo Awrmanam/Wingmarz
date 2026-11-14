@@ -513,6 +513,27 @@ class PaygService:
             raise PaygError("top-up amount must be positive")
         await self.ensure_schema()
         async with aiosqlite.connect(self.db_path) as conn:
+            # Caller-supplied account/migration IDs must never attach a user's
+            # payment to a different customer's service or migration.
+            if account_id is not None:
+                async with conn.execute(
+                    "SELECT user_id,provider,status FROM payg_accounts WHERE id=?",
+                    (int(account_id),),
+                ) as cur:
+                    owner = await cur.fetchone()
+                if (owner is None or int(owner[0]) != int(user_id)
+                    or str(owner[1]) != str(provider) or str(owner[2]) == "migrated"):
+                    raise PaygError("top-up account does not belong to this customer")
+            if migration_id is not None:
+                async with conn.execute(
+                    "SELECT user_id,account_id FROM payg_migrations WHERE id=?",
+                    (int(migration_id),),
+                ) as cur:
+                    migration = await cur.fetchone()
+                if migration is None or int(migration[0]) != int(user_id):
+                    raise PaygError("top-up migration does not belong to this customer")
+                if account_id is not None and int(migration[1]) != int(account_id):
+                    raise PaygError("top-up migration account mismatch")
             cur = await conn.execute(
                 """
                 INSERT INTO payg_topups(
