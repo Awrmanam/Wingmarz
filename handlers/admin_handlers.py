@@ -505,7 +505,11 @@ async def _renewal_rates_if_allowed(callback: CallbackQuery, admin, action: str,
         await callback.answer("این پنل متعلق به حساب شما نیست.", show_alert=True)
         return None
     _, policy = await policy_for_admin(admin)
-    unlimited_traffic = int(getattr(admin, "max_total_traffic", 0) or 0) <= 0
+    current_quota = getattr(admin, "max_total_traffic", None)
+    # Old/manual admin rows may not carry a local quota snapshot at all.
+    # Only an explicit zero marks unlimited; unknown values are checked live
+    # against Rebecca before a paid incremental order is created.
+    unlimited_traffic = current_quota is not None and int(current_quota) <= 0
     permitted = allows(policy.mode, action)
     if action == "time" and unlimited_traffic and policy.mode == "both":
         permitted = True
