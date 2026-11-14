@@ -70,3 +70,24 @@ async def test_discount_edit_cannot_clear_existing_hold(tmp_path,monkeypatch):
     )
     with pytest.raises(PaygError,match="pending discount boundary"):
         await service.settle_usage(account_id,GIB)
+
+
+@pytest.mark.asyncio
+async def test_cancel_cannot_clear_existing_disputed_hold(tmp_path,monkeypatch):
+    path = str(tmp_path / "cancelhold.db")
+    service = PaygService(path)
+    await service.ensure_schema()
+    account_id = seed_account(path,rate=800)
+    monkeypatch.setenv("PAYG_OWNER_ID","99")
+    await service.configure_customer_discount(
+        account_id,99,mode="percent",value=20,base_rate=1000,starts_at=100,
+    )
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "UPDATE payg_discount_targets SET last_error='unpriced interval' WHERE account_id=?",
+            (account_id,),
+        )
+    assert await service.cancel_customer_discount(account_id,99)
+    assert (await service.reconcile_customer_discounts(now=150))[account_id] == "manual_review"
+    with pytest.raises(PaygError,match="pending discount boundary"):
+        await service.settle_usage(account_id,GIB)
