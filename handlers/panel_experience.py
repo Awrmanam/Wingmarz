@@ -114,9 +114,14 @@ async def canonical_renew_panel(callback: CallbackQuery, state: FSMContext):
     if policy.mode != "legacy":
         unlimited_traffic = int(getattr(admin, "max_total_traffic", 0) or 0) == 0
         rows = []
+        if allows(policy.mode, "reset_time") and not unlimited_traffic and category_id:
+            rows.append([await _button(
+                "افزایش حجم + ریست زمان · انتخاب پلن",
+                f"admin_reset_renew_{admin_id}", icon_key="renew", fallback="🔄",
+            )])
         if allows(policy.mode, "both") and not unlimited_traffic and category_id:
             rows.append([await _button(
-                "حجم و زمان با هم · انتخاب پلن",
+                "افزایش حجم و زمان به اعتبار قبلی",
                 f"admin_combo_renew_{admin_id}", icon_key="renew", fallback="♻️",
             )])
         if allows(policy.mode, "traffic") and not unlimited_traffic and rates["per_gb_toman"] > 0:
@@ -133,7 +138,8 @@ async def canonical_renew_panel(callback: CallbackQuery, state: FSMContext):
         rows.append([await _button("بازگشت", "admin_renew", icon_key="back", fallback="⬅️")])
         intro = (
             "برای تمدید این پنل نوع خرید را انتخاب کنید.\n"
-            "حجم و زمان با هم از مشخصات پلن خریداری‌شده اضافه می‌شوند.\n"
+            "«افزایش حجم + ریست زمان»: حجم اضافه می‌شود؛ مدت پلن از تاریخ تأیید دوباره آغاز می‌شود.\n"
+            "«افزایش حجم و زمان»: هر دو به مقادیر قبلی اضافه می‌شوند.\n"
             "برای پنل‌های نامحدود فقط تمدید زمان معنی دارد."
         ) if len(rows) > 1 else "برای این پنل تعرفه تمدید فعالی تعریف نشده است."
         await callback.message.edit_text(
@@ -265,29 +271,29 @@ async def canonical_full_renew(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@panel_experience_router.callback_query(
-    F.data.startswith("admin_combo_renew_") & (~F.data.startswith("admin_combo_renew_plan_")),
-    RebeccaOnly(),
-)
-async def canonical_combined_renew(callback: CallbackQuery, state: FSMContext):
-    """Choose a fixed plan whose time and quota are BOTH added, not reset."""
+async def _show_renew_plan_picker(callback: CallbackQuery, state: FSMContext, *, restart_time: bool):
+    """A new expiry may restart while traffic is always added without usage reset."""
     try:
         admin_id = int((callback.data or "").rsplit("_", 1)[-1])
     except ValueError:
         await callback.answer("درخواست نامعتبر است.", show_alert=True)
         return
     admin = await db.get_admin_by_id(admin_id)
-    if not admin or int(admin.user_id) != int(callback.from_user.id):
-        await callback.answer("پنل متعلق به شما نیست.", show_alert=True)
+    if not admin or int(admin.user_id) != int(callback.from_user.id) or not admin.is_active:
+        await callback.answer("پنل فعال متعلق به شما یافت نشد.", show_alert=True)
         return
+    action = "reset_time" if restart_time else "both"
     category_id, policy = await policy_for_admin(admin)
-    if not category_id or not allows(policy.mode, "both"):
-        await callback.answer("تمدید هم‌زمان برای این پنل فعال نیست.", show_alert=True)
+    if not category_id or not allows(policy.mode, action):
+        await callback.answer("این نوع تمدید برای پنل شما فعال نیست.", show_alert=True)
         return
     if int(getattr(admin, "max_total_traffic", 0) or 0) <= 0:
-        await callback.answer("حجم این پنل نامحدود است؛ فقط تمدید زمان را انتخاب کنید.", show_alert=True)
+        await callback.answer("حجم پنل نامحدود است؛ فقط تمدید زمان را انتخاب کنید.", show_alert=True)
         return
     category = await product_catalog.get_category(category_id)
+    if not category:
+        await callback.answer("محصول پنل پیدا نشد.", show_alert=True)
+        return
     plans = await product_catalog.plans_for_category(category_id, only_active=True)
     valid = [
         plan for plan in plans
@@ -298,47 +304,60 @@ async def canonical_combined_renew(callback: CallbackQuery, state: FSMContext):
     if not valid:
         await callback.answer("پلن دارای حجم، مدت و قیمت معتبر وجود ندارد.", show_alert=True)
         return
+    prefix = "admin_reset_renew_plan" if restart_time else "admin_combo_renew_plan"
     rows = []
     for plan in valid:
         gb = int(plan.traffic_limit_bytes) / 1024**3
         days = int(plan.time_limit_seconds) // 86400
         rows.append([await _button(
-            f"{plan.name} · +{gb:g}GB / +{days}روز · {int(plan.price):,} ت",
-            f"admin_combo_renew_plan_{admin_id}_{int(plan.id)}",
+            f"{plan.name} · +{gb:g}GB / {days}روز · {int(plan.price):,} ت",
+            f"{prefix}_{admin_id}_{int(plan.id)}",
             icon_key="renew", fallback="♻️",
         )])
     rows.append([await _button(
         "بازگشت", f"admin_renew_panel_{admin_id}", icon_key="back", fallback="⬅️",
     )])
     await state.clear()
+    if restart_time:
+        headline = "افزایش حجم + شروع مجدد مدت"
+        explanation = (
+            "حجم پلن جدید به سقف فعلی اضافه می‌شود و مصرف قبلی باقی می‌ماند. "
+            "تاریخ انقضا از زمان تأیید پرداخت، دقیقاً به‌اندازه مدت پلن انتخابی تنظیم می‌شود؛ "
+            "روزهای باقی‌مانده قبلی به زمان جدید اضافه نمی‌شوند."
+        )
+    else:
+        headline = "افزایش هم‌زمان حجم و زمان"
+        explanation = (
+            "حجم و مدت پلن جدید هر دو به مقادیر قبلی اضافه می‌شوند. "
+            "زمان از تاریخ انقضای فعلی (یا امروز، اگر منقضی شده باشد) محاسبه می‌شود. "
+            "مصرف قبلی پاک نمی‌شود."
+        )
     await callback.message.edit_text(
-        f"♻️ <b>افزایش هم‌زمان {escape(category.name)}</b>\n\n"
-        "با خرید هر پلن، حجم و مدت همان پلن به سقف فعلی پنل اضافه می‌شود. "
-        "زمان از تاریخ انقضای فعلی (یا امروز، اگر منقضی شده باشد) محاسبه می‌شود. "
-        "مصرف قبلی پاک نمی‌شود.\n\nپلن موردنظر را انتخاب کنید:",
+        f"♻️ <b>{escape(headline)} | {escape(category.name)}</b>\\n\\n"
+        f"{explanation}\\n\\nپلن موردنظر را انتخاب کنید:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
     )
     await callback.answer()
 
 
-@panel_experience_router.callback_query(F.data.startswith("admin_combo_renew_plan_"), RebeccaOnly())
-async def canonical_combined_renew_plan(callback: CallbackQuery, state: FSMContext):
-    """Validate owner, catalog, live limits and quote BEFORE issuing an order."""
+async def _place_renew_order(callback: CallbackQuery, state: FSMContext, *, restart_time: bool):
+    """Quote product once. Store expiry behavior on the order, never live policy."""
     try:
         admin_id, plan_id = (int(x) for x in (callback.data or "").rsplit("_", 2)[-2:])
     except ValueError:
         await callback.answer("درخواست نامعتبر است.", show_alert=True)
         return
     admin = await db.get_admin_by_id(admin_id)
-    if not admin or int(admin.user_id) != int(callback.from_user.id):
-        await callback.answer("پنل متعلق به شما نیست.", show_alert=True)
+    if not admin or int(admin.user_id) != int(callback.from_user.id) or not admin.is_active:
+        await callback.answer("پنل فعال متعلق به شما یافت نشد.", show_alert=True)
         return
+    action = "reset_time" if restart_time else "both"
     category_id, policy = await policy_for_admin(admin)
-    if not category_id or not allows(policy.mode, "both"):
+    if not category_id or not allows(policy.mode, action):
         await callback.answer("این روش تمدید غیرفعال شده است.", show_alert=True)
         return
     plans = await product_catalog.plans_for_category(category_id, only_active=True)
-    plan = next((x for x in plans if int(x.id) == plan_id), None)
+    plan = next((p for p in plans if int(p.id) == plan_id), None)
     if not plan or min(
         int(getattr(plan, "traffic_limit_bytes", 0) or 0),
         int(getattr(plan, "time_limit_seconds", 0) or 0),
@@ -346,8 +365,8 @@ async def canonical_combined_renew_plan(callback: CallbackQuery, state: FSMConte
     ) <= 0:
         await callback.answer("پلن یا تعرفه انتخاب‌شده نامعتبر است.", show_alert=True)
         return
-    # Pay only for an actually extendable account; never make an order that
-    # will necessarily fail at the Rebecca quota update.
+    # Fail closed if limits are unavailable or already unlimited. One atomic
+    # Rebecca update will change data_limit and expire after paid approval.
     try:
         remote = await rebecca_api.find_admin(str(admin.marzban_username or ""))
         if (not isinstance(remote, dict)
@@ -366,21 +385,27 @@ async def canonical_combined_renew_plan(callback: CallbackQuery, state: FSMConte
         callback.from_user.id,
         plan_id=int(plan.id),
         price_snapshot=int(plan.price),
-        plan_name_snapshot=f"افزایش حجم و زمان · {plan.name}",
+        plan_name_snapshot=(
+            f"افزایش حجم + ریست زمان · {plan.name}" if restart_time
+            else f"افزایش حجم و زمان · {plan.name}"
+        ),
     )
     if not order_id:
         await callback.answer("ثبت سفارش ناموفق بود.", show_alert=True)
         return
-    if not await db.update_order(
-        order_id, order_type="renew", target_admin_id=admin_id,
-        apply_as_reset=0, delta_traffic_bytes=int(plan.traffic_limit_bytes),
-        delta_time_seconds=int(plan.time_limit_seconds), delta_users=0,
-    ):
-        await callback.answer("تکمیل سفارش ناموفق بود؛ لطفاً با پشتیبانی تماس بگیرید.", show_alert=True)
+    order_fields = {
+        "order_type": "renew", "target_admin_id": admin_id,
+        "apply_as_reset": 0, "delta_traffic_bytes": int(plan.traffic_limit_bytes),
+        "delta_time_seconds": int(plan.time_limit_seconds), "delta_users": 0,
+    }
+    if restart_time:
+        order_fields["renewal_time_reset"] = 1
+    if not await db.update_order(order_id, **order_fields):
+        # No payment instructions may be shown for an incomplete renewal.
+        await db.reject_pending_order(order_id, callback.from_user.id)
+        await callback.answer("تکمیل سفارش ناموفق بود؛ سفارش قابل پرداخت نیست.", show_alert=True)
         return
 
-    # Standard manual checkout and the existing idempotent Rebecca journal
-    # remain the only paths that can authorize/execute a paid renewal.
     from handlers.admin_handlers import _mirror_admin_order_created
     from handlers.operations import render_checkout_payment
     await _mirror_admin_order_created(callback.bot, order_id)
@@ -389,3 +414,29 @@ async def canonical_combined_renew_plan(callback: CallbackQuery, state: FSMConte
         callback.message, await db.get_order_by_id(order_id), source="a",
     )
     await callback.answer()
+
+
+@panel_experience_router.callback_query(
+    F.data.startswith("admin_combo_renew_") & (~F.data.startswith("admin_combo_renew_plan_")),
+    RebeccaOnly(),
+)
+async def canonical_combined_renew(callback: CallbackQuery, state: FSMContext):
+    await _show_renew_plan_picker(callback, state, restart_time=False)
+
+
+@panel_experience_router.callback_query(F.data.startswith("admin_combo_renew_plan_"), RebeccaOnly())
+async def canonical_combined_renew_plan(callback: CallbackQuery, state: FSMContext):
+    await _place_renew_order(callback, state, restart_time=False)
+
+
+@panel_experience_router.callback_query(
+    F.data.startswith("admin_reset_renew_") & (~F.data.startswith("admin_reset_renew_plan_")),
+    RebeccaOnly(),
+)
+async def canonical_reset_time_renew(callback: CallbackQuery, state: FSMContext):
+    await _show_renew_plan_picker(callback, state, restart_time=True)
+
+
+@panel_experience_router.callback_query(F.data.startswith("admin_reset_renew_plan_"), RebeccaOnly())
+async def canonical_reset_time_renew_plan(callback: CallbackQuery, state: FSMContext):
+    await _place_renew_order(callback, state, restart_time=True)
