@@ -91,3 +91,31 @@ async def test_cancel_cannot_clear_existing_disputed_hold(tmp_path,monkeypatch):
     assert (await service.reconcile_customer_discounts(now=150))[account_id] == "manual_review"
     with pytest.raises(PaygError,match="pending discount boundary"):
         await service.settle_usage(account_id,GIB)
+
+
+@pytest.mark.asyncio
+async def test_legacy_debt_is_frozen_before_disputed_writeoff(tmp_path,monkeypatch):
+    path=str(tmp_path/"legacy-writeoff.db")
+    service=PaygService(path)
+    await service.ensure_schema()
+    account_id=seed_account(path,raw=GIB,cumulative=GIB,rate=1000)
+    monkeypatch.setenv("PAYG_OWNER_ID","99")
+    await service.configure_customer_discount(
+        account_id,99,mode="fixed",value=500,base_rate=1000,starts_at=100,
+    )
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "UPDATE payg_discount_targets SET last_error='outage' WHERE account_id=?",
+            (account_id,),
+        )
+    monkeypatch.setattr(module.db,"get_admin_by_id",AsyncMock(
+        return_value=SimpleNamespace(marzban_username="payg42")
+    ))
+    monkeypatch.setattr(module.rebecca_api,"get_admin_usage",AsyncMock(return_value=2*GIB))
+    await service.resolve_discount_boundary_without_charge(
+        account_id,99,reason="Verified missing boundary; write off unknown interval",
+    )
+    assert await service.get_accrued_target(account_id)==1000
+    assert (await service.get_account(account_id))["cumulative_usage_bytes"]==GIB
+    await service.settle_usage(account_id,3*GIB)
+    assert await service.get_accrued_target(account_id)==1500
