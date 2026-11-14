@@ -612,6 +612,10 @@ class PaygOfferService:
         offer = await self.get_offer(service_id)
         if not offer or not int(offer["enabled"]):
             raise PaygOfferError("PAYG این سرویس فعال نیست.")
+        if account_id is not None:
+            account = await self.account_for_user_service(int(user_id), int(service_id))
+            if not account or int(account["id"]) != int(account_id):
+                raise PaygOfferError("top-up service account ownership mismatch")
         amount = int(amount_toman)
         if amount < int(offer["min_topup_toman"]):
             raise PaygOfferError("مبلغ شارژ کمتر از حداقل این سرویس است.")
