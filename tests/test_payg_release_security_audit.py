@@ -20,6 +20,8 @@ async def test_topup_approval_and_rejection_require_backend_operator(tmp_path,mo
         await service.approve_topup(topup_id,42)
     with pytest.raises(PaygError,match="operator permission"):
         await service.reject_topup(topup_id,42)
+    with pytest.raises(PaygError,match="operator permission"):
+        await service.hold_topup_for_kyc(topup_id,42)
     assert (await service.get_topup(topup_id))["status"] == "pending"
     assert await service.get_balance(42) == 0
 
