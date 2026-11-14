@@ -72,3 +72,19 @@ async def test_legacy_ledger_schema_is_preserved(tmp_path):
     await service.ensure_schema()
     with sqlite3.connect(path) as conn:
         assert conn.execute("SELECT COUNT(*) FROM wallet_ledger").fetchone()[0] == 2
+
+
+@pytest.mark.asyncio
+async def test_approved_receipt_without_ledger_is_rejected(tmp_path):
+    import sqlite3
+    path = str(tmp_path / "receipt.db")
+    service = PaygService(path)
+    await service.ensure_schema()
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "INSERT INTO payg_topups(user_id,amount_toman,status) "
+            "VALUES(42,1200,'approved')"
+        )
+    with pytest.raises(PaygError, match="inconsistent ledger"):
+        await service.approve_topup(1, 99)
+    assert await service.get_balance(42) == 0
