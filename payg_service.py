@@ -843,7 +843,7 @@ class PaygService:
             await conn.execute(
                 "INSERT INTO payg_discount_targets(account_id,base_rate) VALUES(?,?) "
                 "ON CONFLICT(account_id) DO UPDATE SET base_rate=excluded.base_rate,"
-                "updated_at=CURRENT_TIMESTAMP",
+                "desired_rate=NULL,last_error=NULL,updated_at=CURRENT_TIMESTAMP",
                 (int(account_id),int(base_rate)),
             )
             await conn.commit()
@@ -1206,6 +1206,14 @@ class PaygService:
                 await conn.rollback()
                 raise PaygError("PAYG account not found")
             account = dict(row)
+            async with conn.execute(
+                "SELECT last_error FROM payg_discount_targets WHERE account_id=?",
+                (int(account_id),),
+            ) as cur:
+                pending_discount = await cur.fetchone()
+            if pending_discount is not None and pending_discount[0] is not None and _rate_switch_actor is None:
+                await conn.rollback()
+                raise PaygError("pending discount boundary; ordinary billing paused")
             async with conn.execute(
                 "SELECT actor_id FROM payg_rate_switches WHERE account_id=?",
                 (int(account_id),),
