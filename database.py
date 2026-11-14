@@ -228,6 +228,7 @@ class Database:
                     order_type TEXT,
                     target_admin_id INTEGER,
                     apply_as_reset BOOLEAN,
+                    renewal_time_reset BOOLEAN NOT NULL DEFAULT 0,
                     delta_traffic_bytes INTEGER,
                     delta_time_seconds INTEGER,
                     delta_users INTEGER,
@@ -275,6 +276,10 @@ class Database:
                 pass
             try:
                 await db.execute("ALTER TABLE orders ADD COLUMN apply_as_reset BOOLEAN")
+            except aiosqlite.OperationalError:
+                pass
+            try:
+                await db.execute("ALTER TABLE orders ADD COLUMN renewal_time_reset BOOLEAN NOT NULL DEFAULT 0")
             except aiosqlite.OperationalError:
                 pass
             try:

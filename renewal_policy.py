@@ -16,7 +16,8 @@ from service_marketplace_service import service_marketplace_service
 
 MODES = {
     "legacy": "حالت فعلی (سازگاری قدیمی)",
-    "both": "حجم و زمان با هم (خرید پلن)",
+    "both": "افزایش حجم و زمان با هم (جمع با اعتبار قبلی)",
+    "reset_time": "افزایش حجم + شروع دوباره زمان پلن",
     "traffic": "فقط افزایش حجم",
     "time": "فقط افزایش زمان",
     "choose": "انتخاب نوع تمدید توسط مشتری",
@@ -137,5 +138,5 @@ def allows(mode: str, action: str) -> bool:
     if mode == "legacy":
         return action in {"legacy", "traffic", "time", "users", "reset"}
     if mode == "choose":
-        return action in {"both", "traffic", "time"}
+        return action in {"both", "reset_time", "traffic", "time"}
     return mode == action
