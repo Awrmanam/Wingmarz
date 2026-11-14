@@ -333,8 +333,8 @@ async def _show_renew_plan_picker(callback: CallbackQuery, state: FSMContext, *,
             "مصرف قبلی پاک نمی‌شود."
         )
     await callback.message.edit_text(
-        f"♻️ <b>{escape(headline)} | {escape(category.name)}</b>\\n\\n"
-        f"{explanation}\\n\\nپلن موردنظر را انتخاب کنید:",
+        f"♻️ <b>{escape(headline)} | {escape(category.name)}</b>\n\n"
+        f"{explanation}\n\nپلن موردنظر را انتخاب کنید:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
     )
     await callback.answer()
