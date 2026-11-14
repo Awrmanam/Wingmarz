@@ -117,6 +117,9 @@ def _clean(value: str | None) -> str:
 
 
 BUTTONS: tuple[ButtonDef, ...] = (
+    ButtonDef("admin.discounts.payg", "admin.discounts", "تخفیف اختصاصی PAYG", "paygadmin:discounts", rank=10),
+    ButtonDef("admin.discounts.payg.search", "admin.discounts", "جست‌وجوی مشتری PAYG", "paygadmin:discount:search", rank=11),
+    ButtonDef("admin.discounts.payg.list", "admin.discounts", "فهرست مشتریان PAYG", "paygadmin:discount:list:0", rank=12),
     ButtonDef("public.home.buy", "public.home", "خرید پنل نمایندگی", "public_buy_reseller", rank=0),
     ButtonDef("reseller.home.info", "reseller.home", "اطلاعات من", "my_info", rank=0),
     ButtonDef("reseller.home.report", "reseller.home", "گزارش من", "my_report", rank=1),
