@@ -31,18 +31,18 @@ UI_MESSAGES = {
     # These are display-only; the step count describes product selection,
     # not KYC, payment or issuance that happen afterwards.
     'sales_provider_step': (
-        '{emoji:panel} <b>خرید پنل نمایندگی</b>\n'
+        '🧩 <b>خرید پنل نمایندگی</b>\n'
         'مرحله ۱ از ۴\n\nنوع پنل را انتخاب کنید:'
     ),
     'sales_billing_step': (
-        '{emoji:price} <b>نحوه خرید Rebecca</b>\n'
+        '💳 <b>نحوه خرید Rebecca</b>\n'
         'مرحله ۲ از ۴\n\n'
         'کدام مدل پرداخت برای شما مناسب‌تر است؟\n\n'
         '⚡ <b>PAYG</b> — فقط به‌اندازه مصرف واقعی هزینه پرداخت می‌کنید.\n'
-        '{emoji:plan} <b>پلن کامل</b> — حجم، مدت و قیمت از قبل مشخص است.'
+        '📦 <b>پلن کامل</b> — حجم، مدت و قیمت از قبل مشخص است.'
     ),
     'sales_fixed_services_step': (
-        '{emoji:plan} <b>پلن کامل Rebecca</b>\n'
+        '📦 <b>پلن کامل Rebecca</b>\n'
         'مرحله ۳ از ۴\n\n'
         'سرویس موردنظر را انتخاب کنید. در مرحله بعد جزئیات پلن‌ها را می‌بینید:'
     ),
