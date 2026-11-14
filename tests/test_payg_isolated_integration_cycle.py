@@ -160,3 +160,32 @@ async def test_topup_cannot_target_another_customer_account_or_migration(tmp_pat
     with pytest.raises(PaygError,match="mismatch"):
         await core.create_topup(42,1000,account_id=2,migration_id=1)
     assert await core.create_topup(42,1000,account_id=1,migration_id=1)>0
+
+
+@pytest.mark.asyncio
+async def test_recharge_rejects_other_service_of_same_customer(tmp_path,monkeypatch):
+    import aiosqlite
+    path=str(tmp_path/"cross-service.db")
+    core=PaygService(path)
+    offers=offers_mod.PaygOfferService(path)
+    monkeypatch.setattr(offers_mod,"payg_service",core)
+    monkeypatch.setattr(offers_mod,"get_service_by_rebecca_id",
+                        AsyncMock(return_value=SimpleNamespace(is_enabled=True,display_name="Test")))
+    await offers.ensure_offer(7)
+    await offers.update_offer(7,enabled=True,price_per_gb_toman=1000,min_topup_toman=1)
+    await offers.ensure_schema()
+    async with aiosqlite.connect(path) as conn:
+        await conn.execute(
+            "INSERT INTO payg_accounts(user_id,admin_id,provider,status,price_per_gb_toman)"
+            "VALUES(42,70,'rebecca','active',1000)"
+        )
+        await conn.execute(
+            "INSERT INTO payg_account_services(account_id,provider,service_id)"
+            "VALUES(1,'rebecca',8)"
+        )
+        await conn.commit()
+    with pytest.raises(offers_mod.PaygOfferError,match="ownership mismatch"):
+        await offers.create_topup(42,7,2000,source="test",account_id=1)
+    async with aiosqlite.connect(path) as conn:
+        async with conn.execute("SELECT COUNT(*) FROM payg_topups") as cur:
+            assert (await cur.fetchone())[0]==0
