@@ -1,6 +1,7 @@
 """Financial credit replay regressions (isolated SQLite database)."""
 import pytest
 from payg_service import PaygError, PaygService
+import payg_service as module
 
 
 @pytest.mark.asyncio
@@ -75,7 +76,8 @@ async def test_legacy_ledger_schema_is_preserved(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_approved_receipt_without_ledger_is_rejected(tmp_path):
+async def test_approved_receipt_without_ledger_is_rejected(tmp_path,monkeypatch):
+    monkeypatch.setattr(module.config, 'SUDO_ADMINS', [99])
     import sqlite3
     path = str(tmp_path / "receipt.db")
     service = PaygService(path)
