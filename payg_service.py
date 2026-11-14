@@ -119,6 +119,28 @@ class PaygService:
                 CREATE INDEX IF NOT EXISTS idx_payg_accounts_user
                     ON payg_accounts(user_id, provider, status);
 
+                -- Historical monetary target is fixed at the last observed counter.
+                -- New consumption accrues at the then-current rate only.
+                CREATE TABLE IF NOT EXISTS payg_billing_state (
+                    account_id INTEGER PRIMARY KEY,
+                    accrued_toman INTEGER NOT NULL CHECK(accrued_toman >= 0),
+                    remainder_numerator INTEGER NOT NULL DEFAULT 0
+                        CHECK(remainder_numerator >= 0),
+                    last_priced_bytes INTEGER NOT NULL CHECK(last_priced_bytes >= 0)
+                );
+                CREATE TABLE IF NOT EXISTS payg_rate_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    account_id INTEGER NOT NULL,
+                    actor_id INTEGER NOT NULL,
+                    previous_rate INTEGER NOT NULL,
+                    new_rate INTEGER NOT NULL,
+                    boundary_raw_bytes INTEGER NOT NULL,
+                    boundary_cumulative_bytes INTEGER NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE INDEX IF NOT EXISTS idx_payg_rate_history_account
+                    ON payg_rate_history(account_id,id DESC);
+
                 CREATE TABLE IF NOT EXISTS payg_topups (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER NOT NULL,
@@ -662,6 +684,91 @@ class PaygService:
                 row = await cur.fetchone()
         return dict(row) if row else None
 
+    async def get_accrued_target(self, account_id: int) -> int:
+        """Return the immutable monetary accrual for observed usage."""
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            async with conn.execute(
+                "SELECT accrued_toman FROM payg_billing_state WHERE account_id=?",
+                (int(account_id),),
+            ) as cur:
+                row = await cur.fetchone()
+            if row is not None:
+                return int(row[0])
+            async with conn.execute(
+                "SELECT cumulative_usage_bytes,price_per_gb_toman "
+                "FROM payg_accounts WHERE id=?", (int(account_id),),
+            ) as cur:
+                account = await cur.fetchone()
+            if account is None:
+                raise PaygError("PAYG account not found")
+            return int(account[0]) * int(account[1]) // GIB
+
+    async def change_account_rate(
+        self, account_id: int, actor_id: int, new_rate: int,
+        *, verified_raw_usage_bytes: int,
+    ) -> None:
+        """Owner-only rate switch at an exact, already-settled usage boundary.
+
+        Caller must obtain a fresh Rebecca counter and settle it first.
+        A mismatch refuses the change rather than assigning unobserved
+        consumption to the wrong price.
+        """
+        owners = getattr(config, "ADMINS", None)
+        owner = getattr(config, "ADMIN_ID", None)
+        if owner is None:
+            raise PaygError("owner identity is not configured")
+        if int(actor_id) != int(owner):
+            raise PaygError("owner permission required")
+        rate = int(new_rate)
+        if rate <= 0:
+            raise PaygError("PAYG rate must be positive")
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("BEGIN IMMEDIATE")
+            async with conn.execute(
+                "SELECT * FROM payg_accounts WHERE id=?", (int(account_id),),
+            ) as cur:
+                account = await cur.fetchone()
+            if account is None or account["status"] == "migrated":
+                await conn.rollback()
+                raise PaygError("active PAYG account not found")
+            if int(account["last_raw_usage_bytes"]) != int(verified_raw_usage_bytes):
+                await conn.rollback()
+                raise PaygError("unsettled usage at rate-change boundary")
+            async with conn.execute(
+                "SELECT 1 FROM payg_counter_reviews "
+                "WHERE account_id=? AND status='pending'", (int(account_id),),
+            ) as cur:
+                pending = await cur.fetchone()
+            if pending:
+                await conn.rollback()
+                raise PaygError("pending counter review blocks rate change")
+            previous = int(account["price_per_gb_toman"])
+            cumulative = int(account["cumulative_usage_bytes"])
+            await conn.execute(
+                "INSERT OR IGNORE INTO payg_billing_state"
+                "(account_id,accrued_toman,remainder_numerator,last_priced_bytes) "
+                "VALUES(?,?,?,?)",
+                (int(account_id), cumulative * previous // GIB,
+                 cumulative * previous % GIB, cumulative),
+            )
+            await conn.execute(
+                "UPDATE payg_accounts SET price_per_gb_toman=?,"
+                "updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (rate, int(account_id)),
+            )
+            await conn.execute(
+                "INSERT INTO payg_rate_history "
+                "(account_id,actor_id,previous_rate,new_rate,"
+                "boundary_raw_bytes,boundary_cumulative_bytes) "
+                "VALUES(?,?,?,?,?,?)",
+                (int(account_id),int(actor_id),previous,rate,
+                 int(verified_raw_usage_bytes),cumulative),
+            )
+            await conn.commit()
+
     async def account_snapshot(self, user_id: int, provider: str = "rebecca") -> dict[str, Any]:
         settings = await self.get_settings(provider)
         account = await self.get_user_account(user_id, provider)
@@ -669,7 +776,7 @@ class PaygService:
         rate = int((account or settings or {}).get("price_per_gb_toman") or 0)
         outstanding = 0
         if account and rate > 0:
-            target = int(account["cumulative_usage_bytes"]) * rate // GIB
+            target = await self.get_accrued_target(int(account["id"]))
             outstanding = max(0, target - int(account["charged_toman_total"]))
         return {
             "settings": settings,
@@ -841,7 +948,32 @@ class PaygService:
             delta_bytes = raw - last_raw
             cumulative = int(account["cumulative_usage_bytes"] or 0) + max(0, delta_bytes)
             rate = int(account["price_per_gb_toman"])
-            target_charge = cumulative * rate // GIB
+            # Legacy accounts start from their existing monetary obligation.
+            # Never multiply historical bytes by a newly changed rate.
+            await conn.execute(
+                "INSERT OR IGNORE INTO payg_billing_state"
+                "(account_id,accrued_toman,remainder_numerator,last_priced_bytes) "
+                "VALUES(?,?,?,?)",
+                (int(account_id),
+                 int(account["cumulative_usage_bytes"] or 0) * rate // GIB,
+                 (int(account["cumulative_usage_bytes"] or 0) * rate) % GIB,
+                 int(account["cumulative_usage_bytes"] or 0)),
+            )
+            async with conn.execute(
+                "SELECT * FROM payg_billing_state WHERE account_id=?",
+                (int(account_id),),
+            ) as cur:
+                pricing = await cur.fetchone()
+            if int(pricing["last_priced_bytes"]) != cumulative - delta_bytes:
+                await conn.rollback()
+                raise PaygError("billing state and usage counter diverged")
+            numerator = int(pricing["remainder_numerator"]) + delta_bytes * rate
+            target_charge = int(pricing["accrued_toman"]) + numerator // GIB
+            await conn.execute(
+                "UPDATE payg_billing_state SET accrued_toman=?,"
+                "remainder_numerator=?,last_priced_bytes=? WHERE account_id=?",
+                (target_charge, numerator % GIB, cumulative, int(account_id)),
+            )
             charged_total = int(account["charged_toman_total"] or 0)
             due = max(0, target_charge - charged_total)
             user_id = int(account["user_id"])
@@ -930,8 +1062,7 @@ class PaygService:
         for item in items:
             item["outstanding_toman"] = max(
                 0,
-                int(item["cumulative_usage_bytes"]) *
-                int(item["price_per_gb_toman"]) // GIB
+                await self.get_accrued_target(int(item["id"]))
                 - int(item["charged_toman_total"]),
             )
         return items
