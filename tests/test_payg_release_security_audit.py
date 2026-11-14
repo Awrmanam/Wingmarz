@@ -84,3 +84,18 @@ async def test_hold_release_refuses_unresolved_discount_boundary(tmp_path,monkey
     with pytest.raises(PaygError,match="disputed discount boundary"):
         await service.release_financial_hold(account_id,99)
     assert (await service.get_account(account_id))["status"] == "suspended"
+
+
+@pytest.mark.asyncio
+async def test_missing_historical_accrual_never_reprices_changed_rate(tmp_path):
+    path=str(tmp_path/"changed-rate.db")
+    service=PaygService(path)
+    await service.ensure_schema()
+    account_id=seed_account(path,raw=GIB,cumulative=GIB,rate=2000,charged=1000)
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "INSERT INTO payg_rate_history(account_id,old_rate,new_rate,actor_id)"
+            "VALUES(?,1000,2000,99)",(account_id,),
+        )
+    with pytest.raises(PaygError,match="historical accrual missing"):
+        await service.get_accrued_target(account_id)
