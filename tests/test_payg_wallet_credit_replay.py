@@ -120,3 +120,23 @@ async def test_migration_debit_conflicting_replay_rejected(tmp_path):
             reference_type="payg_migration", reference_id=8,
         )
     assert await service.get_balance(42) == 1800
+
+
+@pytest.mark.asyncio
+async def test_refunded_migration_cannot_reuse_old_debit(tmp_path):
+    service = PaygService(str(tmp_path / "debit.db"))
+    await service.credit_wallet(42, 3000, kind="test_seed")
+    await service.debit_wallet(
+        42, 1200, kind="fixed_plan_purchase",
+        reference_type="payg_migration", reference_id=8,
+    )
+    await service.credit_wallet(
+        42, 1200, kind="migration_refund",
+        reference_type="payg_migration", reference_id=8,
+    )
+    with pytest.raises(PaygError, match="refunded migration"):
+        await service.debit_wallet(
+            42, 1200, kind="fixed_plan_purchase",
+            reference_type="payg_migration", reference_id=8,
+        )
+    assert await service.get_balance(42) == 3000
