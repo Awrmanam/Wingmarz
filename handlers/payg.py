@@ -509,6 +509,7 @@ def _discount_owner(user_id: int) -> bool:
 def _discount_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔎 جست‌وجوی مشتری", callback_data="paygadmin:discount:search")],
+        [InlineKeyboardButton(text="👥 فهرست مشتریان", callback_data="paygadmin:discount:list:0")],
         [InlineKeyboardButton(text="🔙 مدیریت PAYG", callback_data="paygadmin:home")],
     ])
 
@@ -544,6 +545,58 @@ async def payg_discount_home(callback: CallbackQuery, state: FSMContext):
         return
     await state.clear()
     await callback.message.edit_text("🎯 <b>مدیریت تخفیف PAYG</b>",reply_markup=_discount_menu())
+    await callback.answer()
+
+
+@payg_router.callback_query(F.data.startswith("paygadmin:discount:list:"))
+async def payg_discount_customer_list(callback: CallbackQuery):
+    if not _discount_owner(callback.from_user.id):
+        await callback.answer("غیرمجاز",show_alert=True)
+        return
+    try:
+        page = int(callback.data.rsplit(":",1)[-1])
+        if page < 0 or page > 10000:
+            raise ValueError
+    except ValueError:
+        await callback.answer("صفحه نامعتبر",show_alert=True)
+        return
+    import aiosqlite
+    await payg_service.ensure_schema()
+    async with aiosqlite.connect(payg_service.db_path) as conn:
+        async with conn.execute(
+            "SELECT DISTINCT user_id FROM payg_accounts "
+            "ORDER BY user_id LIMIT 11 OFFSET ?",(page*10,),
+        ) as cur:
+            ids = [int(row[0]) for row in await cur.fetchall()]
+    rows = [[InlineKeyboardButton(
+        text=f"👤 {uid}",callback_data=f"paygadmin:discount:user:{uid}",
+    )] for uid in ids[:10]]
+    navigation = []
+    if page:
+        navigation.append(InlineKeyboardButton(
+            text="قبلی",callback_data=f"paygadmin:discount:list:{page-1}",
+        ))
+    if len(ids) > 10:
+        navigation.append(InlineKeyboardButton(
+            text="بعدی",callback_data=f"paygadmin:discount:list:{page+1}",
+        ))
+    if navigation:
+        rows.append(navigation)
+    rows.append([InlineKeyboardButton(text="🔙 بازگشت",callback_data="paygadmin:discounts")])
+    await callback.message.edit_text(
+        f"👥 مشتریان PAYG · صفحه {page+1}",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+    await callback.answer()
+
+
+@payg_router.callback_query(F.data.startswith("paygadmin:discount:user:"))
+async def payg_discount_user_select(callback: CallbackQuery):
+    if not _discount_owner(callback.from_user.id):
+        await callback.answer("غیرمجاز",show_alert=True)
+        return
+    user_id = int(callback.data.rsplit(":",1)[-1])
+    await _discount_customer_page(callback.message,user_id)
     await callback.answer()
 
 
