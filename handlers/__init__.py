@@ -15,6 +15,7 @@ from .trial_ui_v2 import trial_ui_v2_router
 from .panel_trial_restore import panel_trial_restore_router
 from .operations_bootstrap import operations_bootstrap_router
 from .product_center import product_center_router
+from .renewal_settings import renewal_settings_router
 from .plan_storefront import plan_storefront_router
 from .panel_experience import panel_experience_router
 from .rebecca_admin_sync import rebecca_admin_sync_router
@@ -47,6 +48,7 @@ style_admin_router.include_router(panel_trial_restore_router)
 # trial_ui_v2 is the single canonical owner of config/panel trial issuance.
 style_admin_router.include_router(trial_ui_v2_router)
 style_admin_router.include_router(product_center_router)
+style_admin_router.include_router(renewal_settings_router)
 style_admin_router.include_router(plan_storefront_router)
 # Renewal/extension also resolves panel identity through the same catalog.
 style_admin_router.include_router(panel_experience_router)

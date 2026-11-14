@@ -15,6 +15,7 @@ from marzban_api import marzban_api
 from rebecca_api import rebecca_api, RebeccaAPIError
 from group_ops_service import group_ops_service
 from group_ops_events import mirror_order_receipt
+from renewal_policy import allows, policy_for_admin, rates_for_admin
 from handlers.home_keyboards import public_home_keyboard, reseller_home_keyboard
 from order_kyc_gate import order_kyc_gate
 from trust_service import trust_service
@@ -497,6 +498,52 @@ async def admin_receive_payment_receipt(message: Message, state: FSMContext):
     await message.answer(config.MESSAGES["order_submitted_to_admin"], reply_markup=await reseller_home_keyboard())
 
 
+# Only allow offered, positive-price renewals; validate old callback buttons
+# as well as fresh ones (Telegram messages can remain available for months).
+async def _renewal_rates_if_allowed(callback: CallbackQuery, admin, action: str, *, live: bool = False):
+    if not admin or int(admin.user_id) != int(callback.from_user.id):
+        await callback.answer("این پنل متعلق به حساب شما نیست.", show_alert=True)
+        return None
+    _, policy = await policy_for_admin(admin)
+    current_quota = getattr(admin, "max_total_traffic", None)
+    # Old/manual admin rows may not carry a local quota snapshot at all.
+    # Only an explicit zero marks unlimited; unknown values are checked live
+    # against Rebecca before a paid incremental order is created.
+    unlimited_traffic = current_quota is not None and int(current_quota) <= 0
+    permitted = allows(policy.mode, action)
+    if action == "time" and unlimited_traffic and policy.mode == "both":
+        permitted = True
+    if not permitted:
+        await callback.answer("این روش تمدید برای پنل شما فعال نیست.", show_alert=True)
+        return None
+    rates = await rates_for_admin(admin)
+    field = {"traffic": "per_gb_toman", "time": "per_30days_toman", "users": "per_user_toman"}.get(action)
+    if field and int(rates[field]) <= 0:
+        await callback.answer("تعرفه این نوع تمدید هنوز تنظیم نشده است.", show_alert=True)
+        return None
+    if action == "traffic" and unlimited_traffic:
+        await callback.answer("پنل دارای حجم نامحدود است؛ تمدید زمان را انتخاب کنید.", show_alert=True)
+        return None
+    if live and action in {"traffic", "time", "users"} and config.PANEL_PROVIDER == "rebecca":
+        from rebecca_api import rebecca_api
+        try:
+            remote = await rebecca_api.find_admin(str(admin.marzban_username or ""))
+            field_key = {"traffic": "data_limit", "time": "expire", "users": "users_limit"}[action]
+            if (not isinstance(remote, dict)
+                    or remote.get("username") != admin.marzban_username
+                    or type(remote.get(field_key)) is not int
+                    or int(remote[field_key]) <= 0):
+                await callback.answer(
+                    "محدودیت پنل در Rebecca نامحدود یا نامعتبر است؛ سفارش ثبت نشد.",
+                    show_alert=True,
+                )
+                return None
+        except Exception:
+            await callback.answer("ارتباط با Rebecca برقرار نشد؛ سفارش ثبت نشد.", show_alert=True)
+            return None
+    return rates
+
+
 # ===== Admin Renew/Extend Flow =====
 
 @admin_router.callback_query(F.data == "admin_renew")
@@ -621,6 +668,10 @@ async def admin_full_renew_plan_selected(callback: CallbackQuery):
     if not plan:
         await callback.answer("پلن انتخابی یافت نشد.", show_alert=True)
         return
+    _, policy = await policy_for_admin(admin)
+    if policy.mode != "legacy":
+        await callback.answer("روش تمدید این پنل تغییر کرده؛ از منوی جدید استفاده کنید.", show_alert=True)
+        return
     # Create renew order flagged as reset (apply_as_reset)
     order_id = await db.add_order(callback.from_user.id, plan_id=plan.id, price_snapshot=plan.price, plan_name_snapshot=f"تمدید کامل - {plan.name}")
     if not order_id:
@@ -640,8 +691,11 @@ async def admin_full_renew_plan_selected(callback: CallbackQuery):
 @admin_router.callback_query(F.data.startswith("admin_renew_traffic_") & (~F.data.startswith("admin_renew_traffic_amount_")))
 async def admin_renew_traffic(callback: CallbackQuery, state: FSMContext):
     admin_id = int(callback.data.split("_")[-1])
+    target = await db.get_admin_by_id(admin_id)
+    rates = await _renewal_rates_if_allowed(callback, target, "traffic")
+    if rates is None:
+        return
     await state.update_data(current_admin_id=admin_id)
-    rates = await db.get_billing_rates()
     # پیشنهاد گزینه‌ها تا 2 ترابایت
     options_gb = [10, 50, 100, 200, 500, 1024, 2048]  # GB
     rows = []
@@ -674,7 +728,9 @@ async def admin_renew_traffic_amount(callback: CallbackQuery, state: FSMContext)
     if not target or int(target.user_id) != int(callback.from_user.id):
         await callback.answer("این پنل متعلق به حساب شما نیست.", show_alert=True)
         return
-    rates = await db.get_billing_rates()
+    rates = await _renewal_rates_if_allowed(callback, target, "traffic", live=True)
+    if rates is None:
+        return
     price = gb * rates['per_gb_toman']
     # ایجاد سفارش تمدید
     delta_bytes = gb * 1024 * 1024 * 1024
@@ -693,8 +749,11 @@ async def admin_renew_traffic_amount(callback: CallbackQuery, state: FSMContext)
 @admin_router.callback_query(F.data.startswith("admin_renew_time_") & (~F.data.startswith("admin_renew_time_amount_")))
 async def admin_renew_time(callback: CallbackQuery, state: FSMContext):
     admin_id = int(callback.data.split("_")[-1])
+    target = await db.get_admin_by_id(admin_id)
+    rates = await _renewal_rates_if_allowed(callback, target, "time")
+    if rates is None:
+        return
     await state.update_data(current_admin_id=admin_id)
-    rates = await db.get_billing_rates()
     options = [30, 90, 180, 360]  # days
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"+{d} روز - {((d // 30) * rates['per_30days_toman']):,} ت", callback_data=f"admin_renew_time_amount_{admin_id}_{d}")]
@@ -724,7 +783,9 @@ async def admin_renew_time_amount(callback: CallbackQuery, state: FSMContext):
     if not target or int(target.user_id) != int(callback.from_user.id):
         await callback.answer("این پنل متعلق به حساب شما نیست.", show_alert=True)
         return
-    rates = await db.get_billing_rates()
+    rates = await _renewal_rates_if_allowed(callback, target, "time", live=True)
+    if rates is None:
+        return
     price = (days // 30) * rates['per_30days_toman']
     delta_seconds = days * 24 * 60 * 60
     order_id = await db.add_order(callback.from_user.id, plan_id=0, price_snapshot=price, plan_name_snapshot=f"تمدید زمان +{days} روز")
@@ -741,8 +802,11 @@ async def admin_renew_time_amount(callback: CallbackQuery, state: FSMContext):
 @admin_router.callback_query(F.data.startswith("admin_renew_users_") & (~F.data.startswith("admin_renew_users_amount_")))
 async def admin_renew_users(callback: CallbackQuery, state: FSMContext):
     admin_id = int(callback.data.split("_")[-1])
+    target = await db.get_admin_by_id(admin_id)
+    rates = await _renewal_rates_if_allowed(callback, target, "users")
+    if rates is None:
+        return
     await state.update_data(current_admin_id=admin_id)
-    rates = await db.get_billing_rates()
     options = [10, 50, 100, 200]  # users
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"+{u} کاربر - {u * rates['per_user_toman']:,} ت", callback_data=f"admin_renew_users_amount_{admin_id}_{u}")]
@@ -772,7 +836,9 @@ async def admin_renew_users_amount(callback: CallbackQuery, state: FSMContext):
     if not target or int(target.user_id) != int(callback.from_user.id):
         await callback.answer("این پنل متعلق به حساب شما نیست.", show_alert=True)
         return
-    rates = await db.get_billing_rates()
+    rates = await _renewal_rates_if_allowed(callback, target, "users", live=True)
+    if rates is None:
+        return
     price = users * rates['per_user_toman']
     order_id = await db.add_order(callback.from_user.id, plan_id=0, price_snapshot=price, plan_name_snapshot=f"افزایش کاربر +{users}")
     await db.update_order(order_id, order_type="renew", target_admin_id=admin_id, delta_users=users)

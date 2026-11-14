@@ -175,3 +175,33 @@ def test_renewal_rejects_order_for_another_panels_owner(tmp_path, monkeypatch):
     with pytest.raises(renewal.RebeccaRenewalError, match="متعلق"):
         run(renewal.apply_rebecca_renewal(order, 99))
     api.update_admin_fields.assert_not_awaited()
+
+
+def test_combined_paid_order_increments_traffic_and_time_once_without_reset(tmp_path, monkeypatch):
+    path, db, admin_id, journal, api, remote, order = fixture(monkeypatch, tmp_path)
+    order["delta_time_seconds"] = 60 * 86400
+    original_expire = remote["expire"]
+
+    result = run(renewal.apply_rebecca_renewal(order, 99))
+    assert result.admin_id == admin_id
+    assert remote["data_limit"] == 150
+    assert remote["expire"] == original_expire + 60 * 86400
+    assert "حجم" in result.message and "زمان" in result.message
+    api.update_admin_fields.assert_awaited_once()
+    api.reset_admin_usage.assert_not_awaited()
+    with pytest.raises(renewal.RebeccaRenewalError):
+        run(renewal.apply_rebecca_renewal(order, 99))
+    assert api.update_admin_fields.await_count == 1
+
+
+def test_time_only_on_unlimited_traffic_never_converts_unlimited_to_finite(tmp_path, monkeypatch):
+    path, db, admin_id, journal, api, remote, order = fixture(monkeypatch, tmp_path)
+    remote["data_limit"] = None
+    original_expire = remote["expire"]
+    order["delta_traffic_bytes"] = 0
+    order["delta_time_seconds"] = 30 * 86400
+
+    run(renewal.apply_rebecca_renewal(order, 99))
+    assert remote["data_limit"] is None
+    assert remote["expire"] == original_expire + 30 * 86400
+    api.reset_admin_usage.assert_not_awaited()

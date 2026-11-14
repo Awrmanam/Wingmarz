@@ -150,6 +150,7 @@ async def _category_detail(message: Message, category_id: int) -> None:
             f"pc:cattoggle:{category.id}",
         )],
         [await _button("📦 پلن‌های این دسته", f"pc:plans:{category.id}")],
+        [await _button("⚙️ روش تمدید و تعرفه‌های افزایش", f"renewcfg:root:{category.id}", icon_key="renew", fallback="♻️")],
         [await _button("➕ ساخت پلن جدید", f"pc:new:{category.id}", fallback="➕")],
         [await _button("بازگشت", "pc:root", icon_key="back", fallback="⬅️")],
     ]
