@@ -86,3 +86,11 @@ async def test_cancel_queues_public_rate_transition(tmp_path, monkeypatch):
     monkeypatch.setattr(service,"switch_rate_after_rebecca_sync",switch)
     assert (await service.reconcile_customer_discounts(now=110))[account_id] == "applied"
     assert called == [1000]
+
+
+@pytest.mark.asyncio
+async def test_legacy_scheduler_without_discount_policy_does_not_require_owner(tmp_path,monkeypatch):
+    service = PaygService(str(tmp_path / "legacy.db"))
+    await service.ensure_schema()
+    monkeypatch.delenv("PAYG_OWNER_ID",raising=False)
+    assert await service.reconcile_customer_discounts() == {}
