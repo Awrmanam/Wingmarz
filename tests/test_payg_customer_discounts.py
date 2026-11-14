@@ -40,3 +40,26 @@ async def test_discount_persistence_audit_and_owner(tmp_path, monkeypatch):
             "SELECT COUNT(*) FROM payg_customer_discount_audit "
             "WHERE account_id=? AND actor_id=99", (account_id,),
         ).fetchone()[0] == 2
+
+
+@pytest.mark.asyncio
+async def test_discount_cancel_requires_owner_and_audits(tmp_path, monkeypatch):
+    path = str(tmp_path / "discount.db")
+    service = PaygService(path)
+    await service.ensure_schema()
+    account_id = seed_account(path)
+    monkeypatch.setenv("PAYG_OWNER_ID", "99")
+    await service.configure_customer_discount(
+        account_id, 99, mode="percent", value=20,
+        base_rate=1000, starts_at=100,
+    )
+    with pytest.raises(PaygError, match="owner"):
+        await service.cancel_customer_discount(account_id, 42)
+    assert await service.cancel_customer_discount(account_id, 99)
+    assert not await service.cancel_customer_discount(account_id, 99)
+    assert await service.get_customer_discount(account_id) is None
+    with sqlite3.connect(path) as conn:
+        assert conn.execute(
+            "SELECT action FROM payg_customer_discount_audit "
+            "WHERE account_id=? ORDER BY id DESC LIMIT 1", (account_id,),
+        ).fetchone()[0] == "cancel"
