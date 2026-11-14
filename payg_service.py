@@ -895,11 +895,18 @@ class PaygService:
         require a fresh Rebecca counter; failed transitions stay pending.
         """
         import os
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            async with conn.execute(
+                "SELECT 1 FROM payg_discount_targets LIMIT 1",
+            ) as cur:
+                has_policies = await cur.fetchone()
+        if has_policies is None:
+            return {}
         owner = os.getenv("PAYG_OWNER_ID", "").strip()
         if not owner.isdecimal():
             raise PaygError("PAYG_OWNER_ID must identify the owner")
         timestamp = int(time.time()) if now is None else int(now)
-        await self.ensure_schema()
         async with aiosqlite.connect(self.db_path) as conn:
             conn.row_factory = aiosqlite.Row
             async with conn.execute(
