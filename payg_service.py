@@ -1638,6 +1638,21 @@ class PaygService:
                 if await cur.fetchone():
                     await conn.rollback()
                     raise PaygError("resolve the counter review before releasing this account")
+            async with conn.execute(
+                "SELECT 1 FROM payg_discount_targets WHERE account_id=? "
+                "AND last_error IS NOT NULL",
+                (int(account_id),),
+            ) as cur:
+                if await cur.fetchone():
+                    await conn.rollback()
+                    raise PaygError("resolve disputed discount boundary before releasing hold")
+            async with conn.execute(
+                "SELECT 1 FROM payg_rate_switches WHERE account_id=?",
+                (int(account_id),),
+            ) as cur:
+                if await cur.fetchone():
+                    await conn.rollback()
+                    raise PaygError("rate switch pending; cannot release financial hold")
             balance = await self._balance_in_conn(conn,int(account["user_id"]))
             # Historical rate switches make cumulative_bytes * CURRENT_rate
             # financially invalid. Read the authoritative accrued ledger.
