@@ -14,6 +14,7 @@ from group_ops_service import group_ops_service
 from payg_kyc_gate import payg_kyc_gate
 from trust_service import trust_service
 from payg_offers_service import PaygOfferError, payg_offer_service
+from purchase_ui_text import purchase_message
 from payg_service import PaygError, PaygInsufficientFunds, payg_service
 from rebecca_catalog import get_service, get_service_by_rebecca_id, list_services
 from service_marketplace_service import service_marketplace_service
@@ -74,15 +75,7 @@ async def render_purchase_method(message: Message, source: str) -> None:
             callback_data=f"planmarket:root:{source}",
         )])
 
-    lines = [
-        "💳 <b>نحوه خرید Rebecca</b>",
-        "مرحله ۲ از ۴",
-        "",
-        "کدام مدل پرداخت برای شما مناسب‌تر است؟",
-        "",
-        "⚡ <b>PAYG</b> — کیف پول را شارژ می‌کنید و فقط به‌اندازه مصرف واقعی هزینه کم می‌شود.",
-        "📦 <b>پلن کامل</b> — حجم، مدت و قیمت از قبل مشخص است.",
-    ]
+    lines = [await purchase_message("sales_purchase_method")]
     if not rows:
         lines.extend(["", "فعلاً محصول فعالی برای خرید وجود ندارد."])
 
@@ -100,12 +93,7 @@ async def render_payg_storefront(message: Message, source: str) -> None:
     """Step 3A: show only services that actually have PAYG enabled."""
     offers = await payg_offer_service.list_offers(enabled_only=True)
     rows: list[list[InlineKeyboardButton]] = []
-    lines = [
-        "⚡ <b>خرید PAYG</b>",
-        "مرحله ۳ از ۴",
-        "",
-        "سرویس موردنظر را انتخاب کنید:",
-    ]
+    lines = [await purchase_message("sales_purchase_payg_services")]
 
     for offer in offers:
         service = await get_service_by_rebecca_id(int(offer["service_id"]))
