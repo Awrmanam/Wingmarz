@@ -610,10 +610,10 @@ async def payg_discount_account(callback: CallbackQuery, state: FSMContext):
         desc = (f"{policy['mode']}: {policy['value']}" if policy else "ندارد")
         await state.clear()
         await callback.message.edit_text(
-            f"🎯 <b>حساب #{account_id}</b> · کاربر <code>{account['user_id']}</code>\\n"
-            f"وضعیت: {escape(status)} · {escape(str(account['status']))}\\n"
-            f"نرخ عمومی: {_money(base)}\\nنرخ مؤثر: {_money(rate)}\\n"
-            f"سیاست: {escape(desc)}\\n"
+            f"🎯 <b>حساب #{account_id}</b> · کاربر <code>{account['user_id']}</code>\n"
+            f"وضعیت: {escape(status)} · {escape(str(account['status']))}\n"
+            f"نرخ عمومی: {_money(base)}\nنرخ مؤثر: {_money(rate)}\n"
+            f"سیاست: {escape(desc)}\n"
             f"موجودی: {_money(balance)} · بدهی: {_money(debt)}",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="✏️ ثبت/ویرایش تخفیف",callback_data=f"paygadmin:discount:edit:{account_id}")],
@@ -641,9 +641,9 @@ async def payg_discount_edit(callback: CallbackQuery,state: FSMContext):
     await state.update_data(discount_account=account_id)
     await state.set_state(PaygAdminStates.discount_policy)
     await callback.message.edit_text(
-        "نوع و مقدار و تاریخ شروع و پایان را ارسال کنید:\\n"
-        "<code>percent 20 1730000000 1740000000</code>\\n"
-        "<code>fixed 1500 now never</code>\\n"
+        "نوع و مقدار و تاریخ شروع و پایان را ارسال کنید:\n"
+        "<code>percent 20 1730000000 1740000000</code>\n"
+        "<code>fixed 1500 now never</code>\n"
         "زمان‌ها Unix timestamp (ثانیه) هستند؛ never یعنی بدون انقضا.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="لغو",callback_data=f"paygadmin:discount:account:{account_id}"),
@@ -691,8 +691,8 @@ async def payg_discount_edit_value(message: Message,state: FSMContext):
                             discount_base=base)
     await state.set_state(None)
     await message.answer(
-        f"⚠️ <b>تأیید تغییر نرخ</b>\\nحساب #{account_id}\\n"
-        f"نرخ عمومی: {_money(base)}\\nنرخ هدف: {_money(effective)}\\n"
+        f"⚠️ <b>تأیید تغییر نرخ</b>\nحساب #{account_id}\n"
+        f"نرخ عمومی: {_money(base)}\nنرخ هدف: {_money(effective)}\n"
         f"شروع: {start} · پایان: {expiry or 'بدون انقضا'}",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✅ تأیید",callback_data=f"paygadmin:discount:confirm:{account_id}")],
@@ -759,7 +759,7 @@ async def payg_discount_cancel_confirm(callback: CallbackQuery):
         await callback.answer(str(exc)[:120],show_alert=True)
         return
     await callback.message.edit_text(
-        f"لغو سیاست: {'ثبت شد' if changed else 'سیاست فعالی یافت نشد'}\\n"
+        f"لغو سیاست: {'ثبت شد' if changed else 'سیاست فعالی یافت نشد'}\n"
         f"وضعیت نرخ: {escape(outcome)}",
         reply_markup=_discount_menu(),
     )
@@ -788,7 +788,7 @@ async def payg_discount_history(callback: CallbackQuery):
         for r in rows
     )
     await callback.message.edit_text(
-        "\\n".join(lines),
+        "\n".join(lines),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="🔙 حساب",callback_data=f"paygadmin:discount:account:{account_id}"),
         ]]),
