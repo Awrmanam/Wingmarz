@@ -205,3 +205,41 @@ def test_time_only_on_unlimited_traffic_never_converts_unlimited_to_finite(tmp_p
     assert remote["data_limit"] is None
     assert remote["expire"] == original_expire + 30 * 86400
     api.reset_admin_usage.assert_not_awaited()
+
+def test_reset_time_rebecca_adds_quota_and_resets_expiry_without_usage_reset(tmp_path, monkeypatch):
+    # Existing test harness already exercises durable order reservation.
+    path, db, admin_id, journal, api, remote, order = fixture(
+        monkeypatch, tmp_path
+    )
+    original_expire = remote["expire"]
+    order.update({
+        "order_type": "renew", "renewal_time_reset": 1,
+        "delta_traffic_bytes": 50, "delta_time_seconds": 60 * 86400,
+        "delta_users": 0,
+    })
+    # Use a stable approval timestamp, strictly BEFORE original expiration.
+    monkeypatch.setattr(renewal, "time", SimpleNamespace(time=lambda: 1760000000))
+    result = run(renewal.apply_rebecca_renewal(order, 99))
+    assert remote["data_limit"] == 150
+    assert remote["expire"] == 1760000000 + 60 * 86400
+    assert remote["expire"] != original_expire + 60 * 86400
+    api.reset_admin_usage.assert_not_awaited()
+    api.update_admin_fields.assert_awaited_once()
+    assert "انقضای جدید" in result.message
+    with pytest.raises(renewal.RebeccaRenewalError):
+        run(renewal.apply_rebecca_renewal(order, 99))
+    assert api.update_admin_fields.await_count == 1
+
+
+def test_invalid_reset_flag_with_old_full_reset_is_rejected_without_api_update(tmp_path, monkeypatch):
+    _, _, _, _, api, _, order = fixture(
+        monkeypatch, tmp_path, reset=True
+    )
+    order.update({
+        "order_type": "renew", "renewal_time_reset": 1,
+        "delta_traffic_bytes": 50, "delta_time_seconds": 60 * 86400,
+    })
+    with pytest.raises(renewal.RebeccaRenewalError, match="نامعتبر"):
+        run(renewal.apply_rebecca_renewal(order, 99))
+    api.update_admin_fields.assert_not_awaited()
+    api.reset_admin_usage.assert_not_awaited()
