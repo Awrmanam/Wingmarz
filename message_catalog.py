@@ -125,3 +125,47 @@ UI_TITLES.update({
     'sales_username_prompt': 'درخواست نام کاربری خرید',
     'sales_discount_prompt': 'راهنمای کد تخفیف خرید',
 })
+
+# Canonical Rebecca purchase wizard: each screen can be edited from
+# "متن پیام‌ها و اعلان‌ها → فروش و انتخاب پلن" without changing order logic.
+UI_MESSAGES.update({
+    "sales_purchase_provider": (
+        "🛍️ <b>خرید پنل نمایندگی</b>\n"
+        "مرحله ۱ از ۴\n\n"
+        "نوع پنل را انتخاب کنید:"
+    ),
+    "sales_purchase_method": (
+        "💳 <b>نحوه خرید Rebecca</b>\n"
+        "مرحله ۲ از ۴\n\n"
+        "کدام مدل پرداخت برای شما مناسب‌تر است؟\n\n"
+        "⚡ <b>PAYG</b> — کیف پول را شارژ می‌کنید و فقط به‌اندازه مصرف واقعی هزینه کم می‌شود.\n"
+        "📦 <b>پلن کامل</b> — حجم، مدت و قیمت از قبل مشخص است."
+    ),
+    "sales_purchase_fixed_services": (
+        "📦 <b>پلن کامل Rebecca</b>\n"
+        "مرحله ۳ از ۴\n\n"
+        "سرویس موردنظر را انتخاب کنید. در مرحله بعد جزئیات پلن‌ها را می‌بینید:"
+    ),
+    "sales_purchase_payg_services": (
+        "⚡ <b>خرید PAYG</b>\n"
+        "مرحله ۳ از ۴\n\n"
+        "سرویس موردنظر را انتخاب کنید:"
+    ),
+    "sales_purchase_duration": (
+        "{service}{description}\n\n"
+        "مدت موردنظر را انتخاب کنید:"
+    ),
+    "sales_purchase_plan_list": (
+        "{service}\nمرحله ۴ از ۴\n\n"
+        "<b>پلن‌های قابل خرید</b>{duration}\n\n"
+        "پلن موردنظر را انتخاب کنید:"
+    ),
+})
+UI_TITLES.update({
+    "sales_purchase_provider": "خرید — انتخاب نوع پنل",
+    "sales_purchase_method": "خرید — روش پرداخت PAYG یا کامل",
+    "sales_purchase_fixed_services": "خرید — انتخاب سرویس پلن کامل",
+    "sales_purchase_payg_services": "خرید — انتخاب سرویس PAYG",
+    "sales_purchase_duration": "خرید — انتخاب مدت سرویس",
+    "sales_purchase_plan_list": "خرید — فهرست پلن‌ها",
+})
