@@ -382,6 +382,7 @@ class PaygOfferService:
         # fields must actually be present to prove ownership and entitlement.
         if (remote.get("username") != username
             or str(remote.get("role")) != "standard"
+            or str(remote.get("status", "")).lower() not in {"active", "disabled"}
             or str(remote.get("telegram_id")) != str(user_id)
             or not isinstance(remote.get("services"), list)
             or service_id not in {
@@ -431,13 +432,16 @@ class PaygOfferService:
                 await conn.rollback()
                 raise PaygOfferError("operation already finalized")
             async with conn.execute(
-                "SELECT a.id FROM payg_accounts a JOIN payg_account_services s "
+                "SELECT a.id,a.admin_id FROM payg_accounts a JOIN payg_account_services s "
                 "ON s.account_id=a.id WHERE a.user_id=? AND s.service_id=? "
                 "AND a.status!='migrated' ORDER BY a.id DESC LIMIT 1",
                 (user_id,service_id),
             ) as cur:
                 existing = await cur.fetchone()
             if existing:
+                if int(existing["admin_id"]) != int(local.id):
+                    await conn.rollback()
+                    raise PaygOfferError("existing PAYG account is linked to another remote admin")
                 account_id = int(existing["id"])
             else:
                 cur = await conn.execute(
