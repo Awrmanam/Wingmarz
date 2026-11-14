@@ -17,6 +17,10 @@ async def test_concurrent_provision_only_one_remote_create(tmp_path, monkeypatch
     monkeypatch.setattr(mod, "payg_service", core)
     service = mod.PaygOfferService(path)
     await service.ensure_schema()
+    monkeypatch.setattr(
+        mod, "get_service_by_rebecca_id",
+        AsyncMock(return_value=SimpleNamespace(is_enabled=True, display_name="Test")),
+    )
     await service.ensure_offer(7)
     await service.update_offer(
         7, enabled=True, price_per_gb_toman=1000, min_topup_toman=1
@@ -60,6 +64,10 @@ async def test_remote_timeout_never_deletes_or_recreates(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "payg_service", core)
     service = mod.PaygOfferService(path)
     await service.ensure_schema()
+    monkeypatch.setattr(
+        mod, "get_service_by_rebecca_id",
+        AsyncMock(return_value=SimpleNamespace(is_enabled=True, display_name="Test")),
+    )
     await service.ensure_offer(7)
     await service.update_offer(
         7, enabled=True, price_per_gb_toman=1000, min_topup_toman=1
