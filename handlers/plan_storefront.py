@@ -9,6 +9,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 import config
 from product_catalog import product_catalog
+from purchase_copy import purchase_copy
 from rebecca_catalog import get_service
 from service_marketplace_service import service_marketplace_service
 from style_engine import style_engine
@@ -75,7 +76,7 @@ async def _render_storefront(message: Message, source: str) -> None:
     categories = await _categories()
     if not categories:
         await message.edit_text(
-            str(config.MESSAGES.get("sales_empty", "فعلاً پلن کاملی برای خرید آماده نیست.")),
+            await purchase_copy("sales_empty"),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                 await _button("بازگشت", f"buyflow:method:{source}", icon_key="back", fallback="⬅️")
             ]]),
@@ -97,9 +98,7 @@ async def _render_storefront(message: Message, source: str) -> None:
         await _button("🔙 روش خرید", f"buyflow:method:{source}", icon_key="back", fallback="⬅️")
     ])
     await message.edit_text(
-        "📦 <b>پلن کامل Rebecca</b>\n"
-        "مرحله ۳ از ۴\n\n"
-        "سرویس موردنظر را انتخاب کنید. در مرحله بعد جزئیات پلن‌ها را می‌بینید:",
+        await purchase_copy("sales_fixed_services_step"),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
     )
 
@@ -130,7 +129,7 @@ async def _render_category(message: Message, source: str, category_id: int) -> N
         body = await _panel_heading(category)
         if category.description:
             body += f"\n\n{escape(category.description)}"
-        body += "\n\nمدت موردنظر را انتخاب کنید:"
+        body = await purchase_copy("sales_fixed_duration_step", service=body)
         await message.edit_text(body, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
         return
 
@@ -162,10 +161,12 @@ async def _render_plan_list(
         ])
     back = f"planmarket:c:{source}:{category_id}" if duration_key else f"planmarket:root:{source}"
     rows.append([await _button("بازگشت", back, icon_key="back", fallback="⬅️")])
-    body = f"{await _panel_heading(category)}\nمرحله ۴ از ۴\n\n<b>پلن‌های قابل خرید</b>"
-    if duration_label:
-        body += f"\n🗓 {escape(duration_label)}"
-    body += "\n\nپلن موردنظر را انتخاب کنید:"
+    duration_line = f"\n🗓 {escape(duration_label)}" if duration_label else ""
+    body = await purchase_copy(
+        "sales_fixed_plans_step",
+        service=await _panel_heading(category),
+        duration_line=duration_line,
+    )
     await message.edit_text(body, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 
