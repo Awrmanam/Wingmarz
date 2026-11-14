@@ -67,6 +67,20 @@ class PaygOfferService:
                 CREATE INDEX IF NOT EXISTS idx_payg_account_services_service
                     ON payg_account_services(provider, service_id, account_id);
 
+                CREATE TABLE IF NOT EXISTS payg_provision_operations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    provider TEXT NOT NULL DEFAULT 'rebecca',
+                    service_id INTEGER NOT NULL,
+                    remote_username TEXT NOT NULL UNIQUE,
+                    remote_password TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'reserved'
+                        CHECK(status IN ('reserved','remote_pending','reconcile','completed')),
+                    last_error TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(user_id,provider,service_id)
+                );
                 CREATE TABLE IF NOT EXISTS payg_service_topups (
                     topup_id INTEGER PRIMARY KEY,
                     service_id INTEGER NOT NULL,
@@ -274,92 +288,129 @@ class PaygOfferService:
         raise PaygOfferError("could not allocate a unique Rebecca username")
 
     async def provision(self, user_id: int, service_id: int) -> dict[str, Any]:
+        """Durably reserve exactly one remote identity before any network call.
+
+        An ambiguous network outcome is never retried as a CREATE: the same
+        identity must first be reconciled against Rebecca. Never delete a
+        remotely created admin as compensation for a local database failure.
+        """
         existing = await self.account_for_user_service(user_id, service_id)
         if existing:
             return existing
         offer = await self.get_offer(service_id)
         if not offer or not int(offer["enabled"]):
-            raise PaygOfferError("PAYG این سرویس فعال نیست.")
+            raise PaygOfferError("PAYG service is disabled")
         service = await get_service_by_rebecca_id(int(service_id))
         if not service or not service.is_enabled:
-            raise PaygOfferError("سرویس Rebecca فعال نیست.")
+            raise PaygOfferError("Rebecca service is disabled")
         rate = int(offer["price_per_gb_toman"] or 0)
-        minimum = int(offer["min_topup_toman"] or 0)
         if rate <= 0:
-            raise PaygOfferError("نرخ PAYG این سرویس تنظیم نشده است.")
+            raise PaygOfferError("PAYG rate is not configured")
         balance = await payg_service.get_balance(int(user_id))
+        minimum = int(offer["min_topup_toman"] or 0)
         if balance < minimum:
             raise PaygInsufficientFunds(minimum - balance)
-
-        username = await self._unique_username(user_id, service_id)
-        password = secrets.token_urlsafe(10)
-        remote_created = False
-        local_admin_id: int | None = None
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("BEGIN IMMEDIATE")
+            async with conn.execute(
+                "SELECT * FROM payg_provision_operations "
+                "WHERE user_id=? AND provider='rebecca' AND service_id=?",
+                (int(user_id), int(service_id)),
+            ) as cur:
+                operation = await cur.fetchone()
+            if operation is None:
+                # Stable across retries and process restarts, and bounded to
+                # Rebecca's username constraints.
+                username = f"payg{int(user_id)}_{int(service_id)}"
+                if len(username) > 24:
+                    await conn.rollback()
+                    raise PaygOfferError("PAYG identity exceeds Rebecca username limit")
+                password = secrets.token_urlsafe(10)
+                await conn.execute(
+                    "INSERT INTO payg_provision_operations "
+                    "(user_id,service_id,remote_username,remote_password,status) "
+                    "VALUES(?,?,?,?,'reserved')",
+                    (int(user_id),int(service_id),username,password),
+                )
+                status = "reserved"
+            else:
+                username = str(operation["remote_username"])
+                password = str(operation["remote_password"])
+                status = str(operation["status"])
+            if status != "reserved":
+                await conn.commit()
+                raise PaygOfferError(
+                    "PAYG provisioning pending reconciliation; no duplicate CREATE attempted"
+                )
+            await conn.execute(
+                "UPDATE payg_provision_operations SET status='remote_pending',"
+                "updated_at=CURRENT_TIMESTAMP WHERE user_id=? AND service_id=?",
+                (int(user_id),int(service_id)),
+            )
+            await conn.commit()
         try:
+            # Existing remote username must never be overwritten or adopted
+            # without a separate operator ownership verification.
+            remote = await rebecca_api.find_admin(username)
+            if remote is not None:
+                raise PaygOfferError("remote identity exists; manual ownership reconciliation required")
             await rebecca_api.create_admin_verified(
-                username,
-                password,
-                int(user_id),
-                data_limit=None,
-                expire=None,
-                users_limit=int(offer["max_users"]),
-                services=[int(service_id)],
+                username,password,int(user_id),data_limit=None,expire=None,
+                users_limit=int(offer["max_users"]),services=[int(service_id)],
             )
-            remote_created = True
-            baseline = await rebecca_api.get_admin_usage(username)
-            admin_model = AdminModel(
-                user_id=int(user_id),
-                admin_name=f"PAYG {service.display_name}",
-                marzban_username=username,
-                marzban_password=password,
-                max_users=int(offer["max_users"]),
-                max_total_time=_LONG_VALIDITY_DAYS * 86400,
-                max_total_traffic=0,
-                validity_days=_LONG_VALIDITY_DAYS,
-                is_active=True,
-                origin_plan_id=None,
-                allow_incremental_renewal=False,
-            )
-            if not await db.add_admin(admin_model):
-                raise PaygOfferError("failed to save PAYG admin locally")
+            baseline = int(await rebecca_api.get_admin_usage(username))
+            if baseline < 0:
+                raise PaygOfferError("invalid remote counter")
             local = await db.get_admin_by_marzban_username(username)
-            if not local or local.id is None:
-                raise PaygOfferError("PAYG admin local lookup failed")
-            local_admin_id = int(local.id)
+            if local is None:
+                model = AdminModel(
+                    user_id=int(user_id),admin_name=f"PAYG {service.display_name}",
+                    marzban_username=username,marzban_password=password,
+                    max_users=int(offer["max_users"]),
+                    max_total_time=_LONG_VALIDITY_DAYS * 86400,
+                    max_total_traffic=0,validity_days=_LONG_VALIDITY_DAYS,
+                    is_active=True,origin_plan_id=None,
+                    allow_incremental_renewal=False,
+                )
+                if not await db.add_admin(model):
+                    raise PaygOfferError("local admin persistence failed")
+                local = await db.get_admin_by_marzban_username(username)
+            if not local or local.id is None or int(local.user_id) != int(user_id):
+                raise PaygOfferError("local admin ownership mismatch")
             async with aiosqlite.connect(self.db_path) as conn:
                 await conn.execute("BEGIN IMMEDIATE")
                 cur = await conn.execute(
-                    """
-                    INSERT INTO payg_accounts(
-                        user_id,admin_id,provider,status,price_per_gb_toman,last_raw_usage_bytes
-                    ) VALUES(?,?,?,?,?,?)
-                    """,
-                    (int(user_id), local_admin_id, "rebecca", "active", rate, int(baseline)),
+                    "INSERT INTO payg_accounts "
+                    "(user_id,admin_id,provider,status,price_per_gb_toman,last_raw_usage_bytes) "
+                    "VALUES(?,?,?,?,?,?)",
+                    (int(user_id),int(local.id),"rebecca","active",rate,baseline),
                 )
                 account_id = int(cur.lastrowid)
                 await conn.execute(
-                    """
-                    INSERT INTO payg_account_services(account_id,provider,service_id,display_name_snapshot)
-                    VALUES(?,?,?,?)
-                    """,
-                    (account_id, "rebecca", int(service_id), str(service.display_name)),
+                    "INSERT INTO payg_account_services "
+                    "(account_id,provider,service_id,display_name_snapshot) "
+                    "VALUES(?,'rebecca',?,?)",
+                    (account_id,int(service_id),str(service.display_name)),
+                )
+                await conn.execute(
+                    "UPDATE payg_provision_operations SET status='completed',"
+                    "last_error=NULL,updated_at=CURRENT_TIMESTAMP "
+                    "WHERE user_id=? AND service_id=?",
+                    (int(user_id),int(service_id)),
                 )
                 await conn.commit()
-            account = await payg_service.get_account(account_id)
-            if not account:
-                raise PaygOfferError("PAYG account creation failed")
-            return account
-        except Exception:
-            if local_admin_id:
-                try:
-                    await db.remove_admin_by_id(local_admin_id)
-                except Exception:
-                    pass
-            if remote_created:
-                try:
-                    await rebecca_api.delete_admin(username)
-                except Exception:
-                    pass
+            return await payg_service.get_account(account_id)
+        except Exception as exc:
+            async with aiosqlite.connect(self.db_path) as conn:
+                await conn.execute(
+                    "UPDATE payg_provision_operations SET status='reconcile',"
+                    "last_error=?,updated_at=CURRENT_TIMESTAMP "
+                    "WHERE user_id=? AND service_id=? AND status!='completed'",
+                    (str(exc)[:400],int(user_id),int(service_id)),
+                )
+                await conn.commit()
             raise
 
     async def create_topup(
