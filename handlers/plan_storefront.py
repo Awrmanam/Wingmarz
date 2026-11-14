@@ -95,7 +95,7 @@ async def _render_storefront(message: Message, source: str) -> None:
             )
         ])
     rows.append([
-        await _button("🔙 روش خرید", f"buyflow:method:{source}", icon_key="back", fallback="⬅️")
+        await _button("روش خرید", f"buyflow:method:{source}", icon_key="back", fallback="⬅️")
     ])
     await message.edit_text(
         await purchase_message("sales_purchase_fixed_services"),
@@ -122,7 +122,7 @@ async def _render_category(message: Message, source: str, category_id: int) -> N
     groups = service_marketplace_service.group_plans_by_duration(plans)
     if grouping and len(groups) > 1:
         rows = [
-            [await _button(group.label, f"planmarket:d:{source}:{category_id}:{group.key}", fallback="🗓")]
+            [await _button(group.label, f"planmarket:d:{source}:{category_id}:{group.key}", icon_key="calendar", fallback="🗓")]
             for group in groups
         ]
         rows.append([await _button("بازگشت", f"planmarket:root:{source}", icon_key="back", fallback="⬅️")])
