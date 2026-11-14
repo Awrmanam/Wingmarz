@@ -714,10 +714,11 @@ class PaygService:
         A mismatch refuses the change rather than assigning unobserved
         consumption to the wrong price.
         """
-        owners = getattr(config, "ADMINS", None)
-        owner = getattr(config, "ADMIN_ID", None)
-        if owner is None:
-            raise PaygError("owner identity is not configured")
+        # Explicit dedicated owner identity; never treat every sudo as owner.
+        import os
+        owner = os.getenv("PAYG_OWNER_ID", "").strip()
+        if not owner.isdecimal():
+            raise PaygError("PAYG_OWNER_ID must identify the owner")
         if int(actor_id) != int(owner):
             raise PaygError("owner permission required")
         rate = int(new_rate)
