@@ -176,12 +176,23 @@ class PaygOfferService:
                 fields[key] = int(fields[key])
                 if fields[key] < 1:
                     raise PaygOfferError(f"invalid {key}")
-        if fields.get("enabled"):
-            rate = int(fields.get("price_per_gb_toman", offer["price_per_gb_toman"]) or 0)
-            if rate <= 0:
-                raise PaygOfferError("ابتدا نرخ هر گیگ این سرویس را تنظیم کنید.")
         setters = ",".join(f"{key}=?" for key in fields)
         async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("BEGIN IMMEDIATE")
+            async with conn.execute(
+                "SELECT * FROM payg_service_offers WHERE provider=? AND service_id=?",
+                (provider, int(service_id)),
+            ) as cur:
+                current = await cur.fetchone()
+            if current is None:
+                await conn.rollback()
+                raise PaygOfferError("PAYG offer row missing")
+            proposed = {**dict(current), **fields}
+            # Updating an already-enabled offer must not permit a zero rate.
+            if int(proposed["enabled"]) and int(proposed["price_per_gb_toman"] or 0) <= 0:
+                await conn.rollback()
+                raise PaygOfferError("ابتدا نرخ هر گیگ این سرویس را تنظیم کنید.")
             await conn.execute(
                 f"UPDATE payg_service_offers SET {setters},updated_at=CURRENT_TIMESTAMP "
                 "WHERE provider=? AND service_id=?",
