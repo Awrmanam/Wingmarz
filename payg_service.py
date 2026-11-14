@@ -835,6 +835,41 @@ class PaygService:
             )
             await conn.commit()
 
+    async def cancel_customer_discount(self, account_id: int, actor_id: int) -> bool:
+        """Remove scheduled policy and record the actor; billing rate is unchanged.
+
+        Restoring the public rate requires a fresh Rebecca-sampled rate switch.
+        """
+        import os
+        owner = os.getenv("PAYG_OWNER_ID", "").strip()
+        if not owner.isdecimal() or int(actor_id) != int(owner):
+            raise PaygError("owner permission required")
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("BEGIN IMMEDIATE")
+            async with conn.execute(
+                "SELECT mode,value FROM payg_customer_discounts WHERE account_id=?",
+                (int(account_id),),
+            ) as cur:
+                previous = await cur.fetchone()
+            if previous is None:
+                await conn.rollback()
+                return False
+            await conn.execute(
+                "DELETE FROM payg_customer_discounts WHERE account_id=?",
+                (int(account_id),),
+            )
+            await conn.execute(
+                "INSERT INTO payg_customer_discount_audit "
+                "(account_id,actor_id,action,previous_mode,previous_value) "
+                "VALUES(?,?,'cancel',?,?)",
+                (int(account_id),int(actor_id),
+                 str(previous["mode"]),int(previous["value"])),
+            )
+            await conn.commit()
+        return True
+
     async def switch_rate_after_rebecca_sync(
         self, account_id: int, actor_id: int, new_rate: int,
     ) -> None:
