@@ -18,6 +18,7 @@ from purchase_ui_text import purchase_message
 from payg_service import PaygError, PaygInsufficientFunds, payg_service
 from rebecca_catalog import get_service, get_service_by_rebecca_id, list_services
 from service_marketplace_service import service_marketplace_service
+from style_engine import style_engine
 from utils.rebecca import credential_message, parse_service_ids
 
 
@@ -51,6 +52,16 @@ def _home(source: str) -> str:
     return "back_to_admin_main" if source == "a" else "public_back_main"
 
 
+async def _purchase_button(text: str, callback_data: str, *, icon_key: str, fallback: str):
+    """Only decorate purchase keyboards; callback_data stays unchanged."""
+    return await style_engine.styled_button(
+        text,
+        callback_data=callback_data,
+        icon_key=icon_key,
+        fallback=fallback,
+    )
+
+
 async def _purchase_availability() -> tuple[int, int]:
     payg_count = len(await payg_offer_service.list_offers(enabled_only=True))
     fixed_count = len(await service_marketplace_service.sellable_services())
@@ -65,23 +76,25 @@ async def render_purchase_method(message: Message, source: str) -> None:
     payg_count, fixed_count = await _purchase_availability()
     rows: list[list[InlineKeyboardButton]] = []
     if payg_count:
-        rows.append([InlineKeyboardButton(
-            text="⚡ PAYG · پرداخت به‌اندازه مصرف",
-            callback_data=f"buyflow:payg:{source}",
+        rows.append([await _purchase_button(
+            "PAYG · پرداخت به‌اندازه مصرف",
+            f"buyflow:payg:{source}",
+            icon_key="payg", fallback="⚡",
         )])
     if fixed_count:
-        rows.append([InlineKeyboardButton(
-            text="📦 پلن کامل · حجم و زمان مشخص",
-            callback_data=f"planmarket:root:{source}",
+        rows.append([await _purchase_button(
+            "پلن کامل · حجم و زمان مشخص",
+            f"planmarket:root:{source}",
+            icon_key="plan", fallback="📦",
         )])
 
     lines = [await purchase_message("sales_purchase_method")]
     if not rows:
         lines.extend(["", "فعلاً محصول فعالی برای خرید وجود ندارد."])
 
-    rows.append([InlineKeyboardButton(
-        text="🔙 انتخاب نوع پنل",
-        callback_data=f"panelprov:root:{source}",
+    rows.append([await _purchase_button(
+        "انتخاب نوع پنل", f"panelprov:root:{source}",
+        icon_key="back", fallback="🔙",
     )])
     await message.edit_text(
         "\n".join(lines),
@@ -99,17 +112,18 @@ async def render_payg_storefront(message: Message, source: str) -> None:
         service = await get_service_by_rebecca_id(int(offer["service_id"]))
         if not service or not service.is_enabled:
             continue
-        rows.append([InlineKeyboardButton(
-            text=f"{service.display_name} · {int(offer['price_per_gb_toman']):,} ت/GB",
-            callback_data=f"paygsvc:offer:{source}:{int(offer['service_id'])}",
+        rows.append([await _purchase_button(
+            f"{service.display_name} · {int(offer['price_per_gb_toman']):,} ت/GB",
+            f"paygsvc:offer:{source}:{int(offer['service_id'])}",
+            icon_key="payg", fallback="⚡",
         )])
 
     if not rows:
         lines.extend(["", "فعلاً سرویس PAYG فعالی وجود ندارد."])
 
-    rows.append([InlineKeyboardButton(
-        text="🔙 روش خرید",
-        callback_data=f"buyflow:method:{source}",
+    rows.append([await _purchase_button(
+        "روش خرید", f"buyflow:method:{source}",
+        icon_key="back", fallback="🔙",
     )])
     await message.edit_text(
         "\n".join(lines),
