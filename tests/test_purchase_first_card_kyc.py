@@ -22,7 +22,8 @@ def _message():
     return SimpleNamespace(edit_text=AsyncMock(), answer=AsyncMock())
 
 
-def test_new_card_submission_preserves_only_last_and_first_four_and_level(tmp_path):
+def test_new_card_submission_preserves_only_last_and_first_four_and_level(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "SUDO_ADMINS", [999])
     dbpath = str(tmp_path / "cards.db")
     svc = KycService(dbpath)
 
@@ -140,6 +141,7 @@ def test_checkout_context_is_isolated_by_numeric_user_and_survives_restart(tmp_p
 
 
 def test_guard_skips_identity_approved_and_manually_trusted_users(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "SUDO_ADMINS", [999])
     monkeypatch.setattr(config, "DATABASE_PATH", str(tmp_path / "checkout.db"))
     service = TrustService(str(tmp_path / "checkout.db"))
     monkeypatch.setattr(checkout, "trust_service", service)
@@ -273,7 +275,8 @@ def test_approved_kyc_notice_includes_one_click_payment_resume(monkeypatch):
     assert "تأیید شد" in bot.send_message.await_args.args[1]
 
 
-def test_old_manual_trust_does_not_enable_payment_auto_approval(tmp_path):
+def test_old_manual_trust_does_not_enable_payment_auto_approval(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "SUDO_ADMINS", [999])
     svc = TrustService(str(tmp_path / "trust.db"))
     async def scenario():
         await svc.set_manual_trusted(42, True, 999)
