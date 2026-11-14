@@ -181,7 +181,9 @@ def test_trial_picker_uses_canonical_panel_layer():
 def test_fixed_storefront_is_service_first_after_billing_choice_and_keeps_purchase_callbacks():
     source = open("handlers/plan_storefront.py", encoding="utf-8").read()
     assert "planmarket:c:" in source
-    assert "سرویس موردنظر را انتخاب کنید" in source
+    from message_catalog import UI_MESSAGES
+    assert 'purchase_copy("sales_fixed_services_step")' in source
+    assert "سرویس موردنظر را انتخاب کنید" in UI_MESSAGES["sales_fixed_services_step"]
     assert "buyflow:method:" in source
     assert "resolve_panel_icon_key" in source
     assert "admin_order_" in source
