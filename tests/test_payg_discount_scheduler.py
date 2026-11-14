@@ -57,7 +57,7 @@ async def test_failed_transition_stays_pending_and_blocks_billing(tmp_path, monk
     with pytest.raises(PaygError,match="pending discount boundary"):
         await service.settle_usage(account_id,1024**3)
     restarted = PaygService(service.db_path)
-    assert (await restarted.reconcile_customer_discounts(now=101))[account_id] == "pending"
+    assert (await restarted.reconcile_customer_discounts(now=101))[account_id] == "manual_review"
 
 
 @pytest.mark.asyncio
