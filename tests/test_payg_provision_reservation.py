@@ -143,7 +143,7 @@ async def test_owner_adopts_verified_remote_once_without_second_create_or_charge
             "VALUES(42,7,'payg42_7','secret','reconcile')"
         )
         await conn.commit()
-    remote = {"username":"payg42_7","role":"standard","telegram_id":42,
+    remote = {"username":"payg42_7","role":"standard","status":"active","telegram_id":42,
               "services":[7],"permissions":{}}
     monkeypatch.setattr(mod.rebecca_api,"find_admin",AsyncMock(return_value=remote))
     monkeypatch.setattr(mod.rebecca_api,"get_admin_usage",AsyncMock(return_value=2048))
