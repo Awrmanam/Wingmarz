@@ -843,7 +843,7 @@ class PaygService:
             await conn.execute(
                 "INSERT INTO payg_discount_targets(account_id,base_rate) VALUES(?,?) "
                 "ON CONFLICT(account_id) DO UPDATE SET base_rate=excluded.base_rate,"
-                "desired_rate=NULL,last_error=NULL,updated_at=CURRENT_TIMESTAMP",
+                "desired_rate=NULL,updated_at=CURRENT_TIMESTAMP",
                 (int(account_id),int(base_rate)),
             )
             await conn.commit()
@@ -1011,11 +1011,12 @@ class PaygService:
             conn.row_factory = aiosqlite.Row
             await conn.execute("BEGIN IMMEDIATE")
             async with conn.execute(
-                "SELECT last_raw_usage_bytes,price_per_gb_toman FROM payg_accounts WHERE id=?",
+                "SELECT last_raw_usage_bytes,price_per_gb_toman,status FROM payg_accounts WHERE id=?",
                 (int(account_id),),
             ) as cur:
                 current = await cur.fetchone()
-            if current is None or int(current["last_raw_usage_bytes"]) != int(row["last_raw_usage_bytes"]):
+            if (current is None or str(current["status"]) == "migrated"
+                or int(current["last_raw_usage_bytes"]) != int(row["last_raw_usage_bytes"])):
                 await conn.rollback()
                 raise PaygError("counter changed during reconciliation")
             async with conn.execute(
