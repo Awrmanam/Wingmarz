@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import secrets
+import os
 from typing import Any
 
 import aiosqlite
@@ -332,6 +333,142 @@ class PaygOfferService:
                 await conn.commit()
             results.append({"id":operation_id,"status":result})
         return results
+
+    async def list_pending_provisions(self, actor_id: int) -> list[dict[str, Any]]:
+        self._require_owner(actor_id)
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            async with conn.execute(
+                "SELECT id,user_id,service_id,remote_username,status,last_error "
+                "FROM payg_provision_operations WHERE status!='completed' ORDER BY id",
+            ) as cur:
+                return [dict(row) for row in await cur.fetchall()]
+
+    @staticmethod
+    def _require_owner(actor_id: int) -> None:
+        owner = os.getenv("PAYG_OWNER_ID", "").strip()
+        if not owner.isdecimal() or int(actor_id) != int(owner):
+            raise PaygOfferError("owner permission required")
+
+    async def adopt_verified_provision(
+        self, operation_id: int, actor_id: int, *, reason: str,
+    ) -> dict[str, Any]:
+        """Owner-triggered reconciliation of an existing remote identity.
+
+        A matching username alone is insufficient: require a matching remote
+        Telegram owner, role, service and a fresh usage counter. No CREATE,
+        DELETE or wallet debit occurs. Incomplete remote metadata fails closed.
+        """
+        self._require_owner(actor_id)
+        if len(reason.strip()) < 12:
+            raise PaygOfferError("reconciliation reason must have at least 12 characters")
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            async with conn.execute(
+                "SELECT * FROM payg_provision_operations WHERE id=?",
+                (int(operation_id),),
+            ) as cur:
+                op = await cur.fetchone()
+        if op is None or op["status"] == "completed":
+            raise PaygOfferError("pending operation not found")
+        username = str(op["remote_username"])
+        user_id, service_id = int(op["user_id"]), int(op["service_id"])
+        remote = await rebecca_api.find_admin(username)
+        if not isinstance(remote, dict):
+            raise PaygOfferError("remote identity absent or unavailable; manual review required")
+        # Do not trust Rebecca's permissive verification for recovery: these
+        # fields must actually be present to prove ownership and entitlement.
+        if (remote.get("username") != username
+            or str(remote.get("role")) != "standard"
+            or str(remote.get("telegram_id")) != str(user_id)
+            or not isinstance(remote.get("services"), list)
+            or service_id not in {
+                int(item["id"]) if isinstance(item, dict) else int(item)
+                for item in remote["services"]
+            }):
+            raise PaygOfferError("remote identity ownership or service cannot be verified")
+        if "permissions" not in remote:
+            raise PaygOfferError("remote permissions are missing; cannot adopt safely")
+        from rebecca_api import permissions_are_user_only
+        if not permissions_are_user_only(remote["permissions"]):
+            raise PaygOfferError("remote permissions exceed user-only access")
+        baseline = int(await rebecca_api.get_admin_usage(username))
+        if baseline < 0:
+            raise PaygOfferError("invalid remote usage")
+        offer = await self.get_offer(service_id)
+        service = await get_service_by_rebecca_id(service_id)
+        if not offer or not int(offer["enabled"]) or not service or not service.is_enabled:
+            raise PaygOfferError("service offer is not enabled")
+        local = await db.get_admin_by_marzban_username(username)
+        if local is not None and int(local.user_id) != user_id:
+            raise PaygOfferError("local admin belongs to another customer")
+        if local is None:
+            model = AdminModel(
+                user_id=user_id,admin_name=f"PAYG {service.display_name}",
+                marzban_username=username,marzban_password=str(op["remote_password"]),
+                max_users=int(offer["max_users"]),
+                max_total_time=_LONG_VALIDITY_DAYS * 86400,
+                max_total_traffic=0,validity_days=_LONG_VALIDITY_DAYS,
+                is_active=True,origin_plan_id=None,
+                allow_incremental_renewal=False,
+            )
+            if not await db.add_admin(model):
+                raise PaygOfferError("local admin persistence failed")
+            local = await db.get_admin_by_marzban_username(username)
+        if local is None or local.id is None or int(local.user_id) != user_id:
+            raise PaygOfferError("local admin ownership mismatch")
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("BEGIN IMMEDIATE")
+            async with conn.execute(
+                "SELECT status FROM payg_provision_operations WHERE id=?",
+                (int(operation_id),),
+            ) as cur:
+                current = await cur.fetchone()
+            if current is None or current["status"] == "completed":
+                await conn.rollback()
+                raise PaygOfferError("operation already finalized")
+            async with conn.execute(
+                "SELECT a.id FROM payg_accounts a JOIN payg_account_services s "
+                "ON s.account_id=a.id WHERE a.user_id=? AND s.service_id=? "
+                "AND a.status!='migrated' ORDER BY a.id DESC LIMIT 1",
+                (user_id,service_id),
+            ) as cur:
+                existing = await cur.fetchone()
+            if existing:
+                account_id = int(existing["id"])
+            else:
+                cur = await conn.execute(
+                    "INSERT INTO payg_accounts "
+                    "(user_id,admin_id,provider,status,price_per_gb_toman,last_raw_usage_bytes) "
+                    "VALUES(?,?,'rebecca','active',?,?)",
+                    (user_id,int(local.id),int(offer["price_per_gb_toman"]),baseline),
+                )
+                account_id = int(cur.lastrowid)
+                await conn.execute(
+                    "INSERT INTO payg_account_services "
+                    "(account_id,provider,service_id,display_name_snapshot) "
+                    "VALUES(?,'rebecca',?,?)",
+                    (account_id,service_id,str(service.display_name)),
+                )
+            await conn.execute(
+                "UPDATE payg_provision_operations SET status='completed',"
+                "last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (int(operation_id),),
+            )
+            await conn.execute(
+                "INSERT INTO payg_provision_audit(operation_id,event_type,detail) "
+                "VALUES(?,'owner_adoption',?)",
+                (int(operation_id),f"owner={actor_id}; account={account_id}; "
+                 f"baseline={baseline}; {reason.strip()[:250]}"),
+            )
+            await conn.commit()
+        account = await payg_service.get_account(account_id)
+        if account is None:
+            raise PaygOfferError("adopted account cannot be loaded")
+        return account
 
     async def provision(self, user_id: int, service_id: int) -> dict[str, Any]:
         """Durably reserve exactly one remote identity before any network call.
