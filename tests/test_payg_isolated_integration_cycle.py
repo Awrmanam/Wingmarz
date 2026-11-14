@@ -145,6 +145,10 @@ async def test_topup_cannot_target_another_customer_account_or_migration(tmp_pat
             "VALUES(42,70,'rebecca','active',1000)"
         )
         await conn.execute(
+            "INSERT INTO payg_accounts(user_id,admin_id,provider,status,price_per_gb_toman)"
+            "VALUES(42,71,'rebecca','active',1000)"
+        )
+        await conn.execute(
             "INSERT INTO payg_migrations(user_id,account_id,target_plan_id,price_toman)"
             "VALUES(42,1,2,3000)"
         )
@@ -154,5 +158,5 @@ async def test_topup_cannot_target_another_customer_account_or_migration(tmp_pat
     with pytest.raises(PaygError,match="does not belong"):
         await core.create_topup(43,1000,migration_id=1)
     with pytest.raises(PaygError,match="mismatch"):
-        await core.create_topup(42,1000,account_id=999,migration_id=1)
+        await core.create_topup(42,1000,account_id=2,migration_id=1)
     assert await core.create_topup(42,1000,account_id=1,migration_id=1)>0
