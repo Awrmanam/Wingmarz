@@ -486,7 +486,7 @@ async def _render_admin_home(message: Message) -> None:
             InlineKeyboardButton(text="🔌 Service IDs", callback_data="paygadmin:set:services"),
         ],
         [InlineKeyboardButton(text="🎯 تخفیف اختصاصی مشتریان", callback_data="paygadmin:discounts")],
-        [InlineKeyboardButton(text="🔙 بازگشت", callback_data="sudo_menu_sales")],
+        [InlineKeyboardButton(text="🔙 مالی و پرداخت‌ها", callback_data="ops:hub:finance")],
     ]
     await message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
@@ -497,7 +497,8 @@ async def payg_admin_home(callback: CallbackQuery, state: FSMContext):
         await callback.answer("غیرمجاز", show_alert=True)
         return
     await state.clear()
-    await _render_admin_home(callback.message)
+    from handlers.payg_offers import render_admin_home
+    await render_admin_home(callback.message)
     await callback.answer()
 
 
@@ -512,7 +513,7 @@ def _discount_menu() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🔎 جست‌وجوی مشتری", callback_data="paygadmin:discount:search")],
         [InlineKeyboardButton(text="👥 فهرست مشتریان", callback_data="paygadmin:discount:list:0")],
         [InlineKeyboardButton(text="🧩 عملیات نیمه‌کاره Rebecca", callback_data="paygadmin:provision:pending")],
-        [InlineKeyboardButton(text="🔙 مدیریت PAYG", callback_data="paygadmin:home")],
+        [InlineKeyboardButton(text="🔙 تعرفه‌های PAYG", callback_data="paygsvcadmin:home")],
     ])
 
 
