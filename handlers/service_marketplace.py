@@ -16,6 +16,7 @@ from database import db
 from operations_service import OperationsError, operations_service
 from panel_providers import get_panel_provider, list_panel_providers
 from premium_ui_service import premium_ui_service
+from purchase_ui_text import purchase_message
 from service_marketplace_service import service_marketplace_service
 from style_engine import style_engine
 from trial_experience_service import trial_experience_service
@@ -93,9 +94,7 @@ async def _render_provider_selection(message: Message, source: str) -> None:
     home = "back_to_admin_main" if source == "a" else "public_back_main"
     rows.append([await _button("بازگشت", home, icon_key="back", fallback="⬅️")])
     await message.edit_text(
-        "🧩 <b>خرید پنل نمایندگی</b>\n"
-        "مرحله ۱ از ۴\n\n"
-        "نوع پنل را انتخاب کنید:",
+        await purchase_message("sales_purchase_provider"),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
     )
 
