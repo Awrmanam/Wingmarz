@@ -639,6 +639,8 @@ class PaygService:
 
     async def approve_topup(self, topup_id: int, actor_id: int) -> dict[str, Any]:
         """Atomically approve once and credit the wallet exactly once."""
+        if int(actor_id) not in config.SUDO_ADMINS:
+            raise PaygError("operator permission required")
         await self.ensure_schema()
         async with aiosqlite.connect(self.db_path) as conn:
             conn.row_factory = aiosqlite.Row
@@ -689,6 +691,8 @@ class PaygService:
         return (await self.get_topup(topup_id)) or topup
 
     async def reject_topup(self, topup_id: int, actor_id: int) -> bool:
+        if int(actor_id) not in config.SUDO_ADMINS:
+            raise PaygError("operator permission required")
         await self.ensure_schema()
         async with aiosqlite.connect(self.db_path) as conn:
             cur = await conn.execute(
@@ -1635,9 +1639,17 @@ class PaygService:
                     await conn.rollback()
                     raise PaygError("resolve the counter review before releasing this account")
             balance = await self._balance_in_conn(conn,int(account["user_id"]))
-            due = (int(account["cumulative_usage_bytes"]) *
-                   int(account["price_per_gb_toman"]) // GIB
-                   - int(account["charged_toman_total"]))
+            # Historical rate switches make cumulative_bytes * CURRENT_rate
+            # financially invalid. Read the authoritative accrued ledger.
+            async with conn.execute(
+                "SELECT accrued_toman FROM payg_billing_state WHERE account_id=?",
+                (int(account_id),),
+            ) as cur:
+                accrued_row = await cur.fetchone()
+            if accrued_row is None:
+                await conn.rollback()
+                raise PaygError("billing state missing; financial hold cannot be released")
+            due = int(accrued_row["accrued_toman"]) - int(account["charged_toman_total"])
             if due > 0 or balance <= 0:
                 await conn.rollback()
                 raise PaygError("outstanding usage debt or empty wallet")
