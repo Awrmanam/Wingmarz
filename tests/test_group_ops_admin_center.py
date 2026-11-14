@@ -41,12 +41,12 @@ def test_manual_trust_and_auto_approve_require_real_payment_match(tmp_path, monk
     async def scenario():
         assert await service.is_identity_approved(55) is False
         with pytest.raises(ValueError):
-            await service.set_auto_approve(55, True)
+            await service.set_auto_approve(55, True, actor_id=999)
 
         await service.set_manual_trusted(55, True, 999)
         assert await service.is_identity_approved(55) is True
 
-        await service.set_auto_approve(55, True)
+        await service.set_auto_approve(55, True, actor_id=999)
         assert await service.auto_approve_enabled(55) is True
 
         # Receipt/trust alone is never sufficient.
@@ -71,12 +71,13 @@ def test_manual_trust_and_auto_approve_require_real_payment_match(tmp_path, monk
 
 
 def test_kyc_approval_can_enable_auto_approve_without_manual_trust(tmp_path, monkeypatch):
+    monkeypatch.setattr(trust_module.config, "SUDO_ADMINS", [999])
     service = trust_module.TrustService(str(tmp_path / "trust.db"))
     monkeypatch.setattr(trust_module, "kyc_service", _FakeKyc(True))
 
     async def scenario():
         assert await service.is_identity_approved(77) is True
-        await service.set_auto_approve(77, True)
+        await service.set_auto_approve(77, True, actor_id=999)
         assert await service.auto_approve_enabled(77) is True
 
     run(scenario())
