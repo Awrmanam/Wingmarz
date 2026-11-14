@@ -67,6 +67,13 @@ class PaygOfferService:
                 CREATE INDEX IF NOT EXISTS idx_payg_account_services_service
                     ON payg_account_services(provider, service_id, account_id);
 
+                CREATE TABLE IF NOT EXISTS payg_provision_audit (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    operation_id INTEGER NOT NULL,
+                    event_type TEXT NOT NULL,
+                    detail TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
                 CREATE TABLE IF NOT EXISTS payg_provision_operations (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER NOT NULL,
@@ -286,6 +293,45 @@ class PaygOfferService:
             if await rebecca_api.find_admin(candidate) is None:
                 return candidate
         raise PaygOfferError("could not allocate a unique Rebecca username")
+
+    async def inspect_incomplete_provisions(self) -> list[dict[str, Any]]:
+        """Read-only remote reconciliation; never retry CREATE after ambiguity.
+
+        Safe to invoke on restart. A remote username match is NOT proof of
+        ownership, so adoption requires separately verified operator action.
+        """
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            async with conn.execute(
+                "SELECT id,remote_username,status FROM payg_provision_operations "
+                "WHERE status IN ('remote_pending','reconcile') ORDER BY id",
+            ) as cur:
+                rows = [dict(row) for row in await cur.fetchall()]
+        results = []
+        for row in rows:
+            operation_id = int(row["id"])
+            try:
+                remote = await rebecca_api.find_admin(str(row["remote_username"]))
+                result = "remote_present_needs_ownership_review" if remote is not None else "remote_absent_unverified"
+            except Exception as exc:
+                result = "rebecca_unavailable"
+            async with aiosqlite.connect(self.db_path) as conn:
+                await conn.execute("BEGIN IMMEDIATE")
+                await conn.execute(
+                    "UPDATE payg_provision_operations SET status='reconcile',"
+                    "last_error=?,updated_at=CURRENT_TIMESTAMP WHERE id=? "
+                    "AND status IN ('remote_pending','reconcile')",
+                    (result,operation_id),
+                )
+                await conn.execute(
+                    "INSERT INTO payg_provision_audit(operation_id,event_type,detail) "
+                    "VALUES(?,'inspection',?)",
+                    (operation_id,result),
+                )
+                await conn.commit()
+            results.append({"id":operation_id,"status":result})
+        return results
 
     async def provision(self, user_id: int, service_id: int) -> dict[str, Any]:
         """Durably reserve exactly one remote identity before any network call.
