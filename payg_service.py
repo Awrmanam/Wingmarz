@@ -242,21 +242,37 @@ class PaygService:
             else:
                 fields["service_ids"] = ""
         await self.ensure_schema()
+        # Validate the prospective configuration before committing any changes.
+        # Keep the read, validation and write under one lock to avoid races.
         setters = ",".join(f"{key}=?" for key in fields)
         async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("BEGIN IMMEDIATE")
+            async with conn.execute(
+                "SELECT * FROM payg_settings WHERE provider=?", (str(provider),)
+            ) as cur:
+                current = await cur.fetchone()
+            if current is None:
+                await conn.rollback()
+                raise PaygError("PAYG settings row missing")
+            proposed = {**dict(current), **fields}
+            if int(proposed["enabled"]):
+                if int(proposed["price_per_gb_toman"] or 0) <= 0:
+                    await conn.rollback()
+                    raise PaygError("PAYG rate must be positive before enabling")
+                try:
+                    service_ids = parse_service_ids(str(proposed["service_ids"] or ""))
+                    if not service_ids:
+                        raise ValueError("empty service IDs")
+                except ValueError as exc:
+                    await conn.rollback()
+                    raise PaygError("PAYG service IDs must be valid before enabling") from exc
             await conn.execute(
                 f"UPDATE payg_settings SET {setters},updated_at=CURRENT_TIMESTAMP WHERE provider=?",
                 [*fields.values(), str(provider)],
             )
             await conn.commit()
-        settings = await self.get_settings(provider)
-        if not settings:
-            raise PaygError("PAYG settings row missing")
-        if settings["enabled"]:
-            if int(settings["price_per_gb_toman"] or 0) <= 0:
-                raise PaygError("PAYG rate must be positive before enabling")
-            parse_service_ids(str(settings["service_ids"] or ""))
-        return settings
+        return (await self.get_settings(provider)) or proposed
 
     async def set_enabled(self, provider: str, enabled: bool) -> dict[str, Any]:
         if enabled:
