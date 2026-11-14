@@ -94,6 +94,12 @@ async def test_remote_timeout_never_deletes_or_recreates(tmp_path, monkeypatch):
         ) as cur:
             row = await cur.fetchone()
     assert row == ("reconcile", "payg42_7")
+    async with aiosqlite.connect(path) as conn:
+        async with conn.execute(
+            "SELECT event_type FROM payg_provision_audit ORDER BY id"
+        ) as cur:
+            events = [row[0] for row in await cur.fetchall()]
+    assert events == ["remote_create_started", "ambiguous_or_failed"]
 
 
 @pytest.mark.asyncio
