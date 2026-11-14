@@ -1618,8 +1618,10 @@ class PaygService:
         try:
             transitions = await self.reconcile_customer_discounts()
         except PaygError as exc:
-            transitions = {}
-            print(f"PAYG discount reconciliation unavailable: {exc}")
+            # Fail closed: an unknown transition state must never cause
+            # consumption to be billed at a potentially obsolete rate.
+            print(f"PAYG discount reconciliation unavailable; billing paused: {exc}")
+            return []
         await self.ensure_schema()
         async with aiosqlite.connect(self.db_path) as conn:
             async with conn.execute(
