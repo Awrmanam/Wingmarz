@@ -254,7 +254,7 @@ class PaygOfferService:
         rate = int((account or offer or {}).get("price_per_gb_toman") or 0)
         outstanding = 0
         if account and rate > 0:
-            target = int(account["cumulative_usage_bytes"] or 0) * rate // GIB
+            target = await payg_service.get_accrued_target(int(account["id"]))
             outstanding = max(0, target - int(account["charged_toman_total"] or 0))
         return {
             "offer": offer,
