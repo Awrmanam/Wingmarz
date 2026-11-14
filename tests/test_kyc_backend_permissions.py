@@ -33,3 +33,17 @@ async def test_manual_trust_grant_and_revocation_require_backend_operator(tmp_pa
     assert await service.is_manually_trusted(42)
     await service.set_manual_trusted(42,False,99)
     assert not await service.is_manually_trusted(42)
+
+
+@pytest.mark.asyncio
+async def test_auto_approve_requires_backend_operator_even_for_trusted_customer(tmp_path,monkeypatch):
+    monkeypatch.setattr(trust_mod.config,"SUDO_ADMINS",[99])
+    service=trust_mod.TrustService(str(tmp_path/"auto.db"))
+    await service.set_manual_trusted(42,True,99)
+    with pytest.raises(PermissionError,match="auto-approve"):
+        await service.set_auto_approve(42,True)
+    with pytest.raises(PermissionError,match="auto-approve"):
+        await service.set_auto_approve(42,True,actor_id=42)
+    assert not await service.auto_approve_enabled(42)
+    await service.set_auto_approve(42,True,actor_id=99)
+    assert await service.auto_approve_enabled(42)
