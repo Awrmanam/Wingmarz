@@ -32,6 +32,7 @@ class PaygAdminStates(StatesGroup):
     services = State()
     discount_customer = State()
     discount_policy = State()
+    discount_review_reason = State()
 
 
 def _money(value: int) -> str:
@@ -619,6 +620,7 @@ async def payg_discount_account(callback: CallbackQuery, state: FSMContext):
                 [InlineKeyboardButton(text="✏️ ثبت/ویرایش تخفیف",callback_data=f"paygadmin:discount:edit:{account_id}")],
                 [InlineKeyboardButton(text="🗑 لغو تخفیف",callback_data=f"paygadmin:discount:cancel:{account_id}")],
                 [InlineKeyboardButton(text="📜 تاریخچه",callback_data=f"paygadmin:discount:history:{account_id}")],
+                [InlineKeyboardButton(text="⚖️ بررسی مصرف مبهم",callback_data=f"paygadmin:discount:review:{account_id}")],
                 [InlineKeyboardButton(text="🔙 جست‌وجو",callback_data="paygadmin:discounts")],
             ]),
         )
@@ -761,6 +763,83 @@ async def payg_discount_cancel_confirm(callback: CallbackQuery):
     await callback.message.edit_text(
         f"لغو سیاست: {'ثبت شد' if changed else 'سیاست فعالی یافت نشد'}\n"
         f"وضعیت نرخ: {escape(outcome)}",
+        reply_markup=_discount_menu(),
+    )
+    await callback.answer()
+
+
+@payg_router.callback_query(F.data.startswith("paygadmin:discount:review:"))
+async def payg_discount_review_prompt(callback: CallbackQuery,state: FSMContext):
+    if not _discount_owner(callback.from_user.id):
+        await callback.answer("غیرمجاز",show_alert=True)
+        return
+    account_id = int(callback.data.rsplit(":",1)[-1])
+    import aiosqlite
+    async with aiosqlite.connect(payg_service.db_path) as conn:
+        async with conn.execute(
+            "SELECT last_error FROM payg_discount_targets WHERE account_id=?",
+            (account_id,),
+        ) as cur:
+            row = await cur.fetchone()
+    if row is None or row[0] is None:
+        await callback.answer("بازه مبهم ثبت‌شده‌ای وجود ندارد.",show_alert=True)
+        return
+    await state.clear()
+    await state.update_data(discount_review_account=account_id)
+    await state.set_state(PaygAdminStates.discount_review_reason)
+    await callback.message.edit_text(
+        "⚠️ بازه مصرف نامشخص است. تنها تصمیم محافظه‌کارانه بدون "
+        "قیمت‌گذاری حدسی، صرف‌نظر کردن از شارژ مصرف نامشخص است.\n"
+        "برای ثبت تصمیم حسابرسی‌شده، علت را حداقل در ۱۲ نویسه ارسال کنید.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="انصراف",callback_data=f"paygadmin:discount:account:{account_id}"),
+        ]]),
+    )
+    await callback.answer()
+
+
+@payg_router.message(PaygAdminStates.discount_review_reason,F.text)
+async def payg_discount_review_reason(message: Message,state: FSMContext):
+    if not _discount_owner(message.from_user.id):
+        return
+    reason = (message.text or "").strip()
+    if len(reason) < 12:
+        await message.answer("علت باید حداقل ۱۲ نویسه باشد.")
+        return
+    data = await state.get_data()
+    account_id = int(data["discount_review_account"])
+    await state.update_data(discount_review_reason=reason)
+    await state.set_state(None)
+    await message.answer(
+        f"⚠️ تأیید نهایی صرف‌نظر از شارژ بازه مبهم حساب #{account_id}\n"
+        f"علت: {escape(reason[:250])}",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="تأیید نهایی",callback_data=f"paygadmin:discount:reviewconfirm:{account_id}")],
+            [InlineKeyboardButton(text="انصراف",callback_data=f"paygadmin:discount:account:{account_id}")],
+        ]),
+    )
+
+
+@payg_router.callback_query(F.data.startswith("paygadmin:discount:reviewconfirm:"))
+async def payg_discount_review_confirm(callback: CallbackQuery,state: FSMContext):
+    if not _discount_owner(callback.from_user.id):
+        await callback.answer("غیرمجاز",show_alert=True)
+        return
+    account_id = int(callback.data.rsplit(":",1)[-1])
+    data = await state.get_data()
+    if int(data.get("discount_review_account",0)) != account_id or not data.get("discount_review_reason"):
+        await callback.answer("درخواست تأیید منقضی شده است.",show_alert=True)
+        return
+    try:
+        await payg_service.resolve_discount_boundary_without_charge(
+            account_id,callback.from_user.id,reason=data["discount_review_reason"],
+        )
+    except Exception as exc:
+        await callback.answer(f"تطبیق انجام نشد: {str(exc)[:100]}",show_alert=True)
+        return
+    await state.clear()
+    await callback.message.edit_text(
+        "تطبیق با صرف‌نظر از شارژ مصرف مبهم ثبت و حسابرسی شد.",
         reply_markup=_discount_menu(),
     )
     await callback.answer()
