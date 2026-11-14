@@ -396,6 +396,20 @@ class PaygService:
         await self.ensure_schema()
         async with aiosqlite.connect(self.db_path) as conn:
             await conn.execute("BEGIN IMMEDIATE")
+            if kind == "fixed_plan_purchase" and reference_type == "payg_migration" and reference_id is not None:
+                async with conn.execute(
+                    "SELECT user_id,amount_toman FROM wallet_ledger "
+                    "WHERE kind=? AND reference_type=? AND reference_id=?",
+                    (kind, reference_type, int(reference_id)),
+                ) as cur:
+                    prior = await cur.fetchone()
+                if prior is not None:
+                    if int(prior[0]) != int(user_id) or int(prior[1]) != -amount:
+                        await conn.rollback()
+                        raise PaygError("conflicting repeated wallet debit")
+                    balance = await self._balance_in_conn(conn, int(user_id))
+                    await conn.rollback()
+                    return balance
             balance = await self._balance_in_conn(conn, int(user_id))
             if balance < amount:
                 await conn.rollback()
