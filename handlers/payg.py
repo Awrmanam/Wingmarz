@@ -33,6 +33,7 @@ class PaygAdminStates(StatesGroup):
     discount_customer = State()
     discount_policy = State()
     discount_review_reason = State()
+    provision_review_reason = State()
 
 
 def _money(value: int) -> str:
@@ -510,6 +511,7 @@ def _discount_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔎 جست‌وجوی مشتری", callback_data="paygadmin:discount:search")],
         [InlineKeyboardButton(text="👥 فهرست مشتریان", callback_data="paygadmin:discount:list:0")],
+        [InlineKeyboardButton(text="🧩 عملیات نیمه‌کاره Rebecca", callback_data="paygadmin:provision:pending")],
         [InlineKeyboardButton(text="🔙 مدیریت PAYG", callback_data="paygadmin:home")],
     ])
 
@@ -545,6 +547,126 @@ async def payg_discount_home(callback: CallbackQuery, state: FSMContext):
         return
     await state.clear()
     await callback.message.edit_text("🎯 <b>مدیریت تخفیف PAYG</b>",reply_markup=_discount_menu())
+    await callback.answer()
+
+
+@payg_router.callback_query(F.data == "paygadmin:provision:pending")
+async def payg_provision_pending(callback: CallbackQuery,state: FSMContext):
+    if not _discount_owner(callback.from_user.id):
+        await callback.answer("غیرمجاز",show_alert=True)
+        return
+    from payg_offers_service import payg_offer_service
+    try:
+        operations = await payg_offer_service.list_pending_provisions(callback.from_user.id)
+    except Exception as exc:
+        await callback.answer(f"خطای بررسی: {str(exc)[:100]}",show_alert=True)
+        return
+    await state.clear()
+    rows = [[InlineKeyboardButton(
+        text=f"#{op['id']} · {op['remote_username']} · {op['status']}",
+        callback_data=f"paygadmin:provision:inspect:{op['id']}",
+    )] for op in operations[:25]]
+    rows.append([InlineKeyboardButton(text="بازگشت",callback_data="paygadmin:discounts")])
+    await callback.message.edit_text(
+        f"🧩 عملیات نیمه‌کاره Rebecca: {len(operations)} مورد\n"
+        "تطبیق فقط با تأیید مالک و احراز مالکیت سرویس مجاز است.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+    await callback.answer()
+
+
+@payg_router.callback_query(F.data.startswith("paygadmin:provision:inspect:"))
+async def payg_provision_inspect(callback: CallbackQuery,state: FSMContext):
+    if not _discount_owner(callback.from_user.id):
+        await callback.answer("غیرمجاز",show_alert=True)
+        return
+    from payg_offers_service import payg_offer_service
+    operation_id = int(callback.data.rsplit(":",1)[-1])
+    try:
+        result = await payg_offer_service.inspect_incomplete_provisions()
+        match = next((x for x in result if x["id"] == operation_id),None)
+    except Exception as exc:
+        await callback.answer(f"Rebecca در دسترس نیست: {str(exc)[:100]}",show_alert=True)
+        return
+    if not match:
+        await callback.answer("عملیات یافت نشد",show_alert=True)
+        return
+    await state.clear()
+    await callback.message.edit_text(
+        f"🧩 عملیات #{operation_id}\nوضعیت بررسی: {escape(match['status'])}\n"
+        "اتصال فقط در صورت تطبیق مالکیت و سطح دسترسی Rebecca انجام می‌شود.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="بررسی و اتصال موجود",callback_data=f"paygadmin:provision:adopt:{operation_id}")],
+            [InlineKeyboardButton(text="بازگشت",callback_data="paygadmin:provision:pending")],
+        ]),
+    )
+    await callback.answer()
+
+
+@payg_router.callback_query(F.data.startswith("paygadmin:provision:adopt:"))
+async def payg_provision_adopt_prompt(callback: CallbackQuery,state: FSMContext):
+    if not _discount_owner(callback.from_user.id):
+        await callback.answer("غیرمجاز",show_alert=True)
+        return
+    operation_id = int(callback.data.rsplit(":",1)[-1])
+    await state.clear()
+    await state.update_data(provision_operation=operation_id)
+    await state.set_state(PaygAdminStates.provision_review_reason)
+    await callback.message.edit_text(
+        f"برای عملیات #{operation_id} علت تطبیق را حداقل در ۱۲ نویسه ارسال کنید. "
+        "این عملیات هیچ سرویس جدیدی در Rebecca ایجاد نمی‌کند.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="انصراف",callback_data="paygadmin:provision:pending"),
+        ]]),
+    )
+    await callback.answer()
+
+
+@payg_router.message(PaygAdminStates.provision_review_reason,F.text)
+async def payg_provision_adopt_reason(message: Message,state: FSMContext):
+    if not _discount_owner(message.from_user.id):
+        return
+    reason = (message.text or "").strip()
+    if len(reason) < 12:
+        await message.answer("علت باید حداقل ۱۲ نویسه باشد.")
+        return
+    data = await state.get_data()
+    operation_id = int(data["provision_operation"])
+    await state.update_data(provision_reason=reason)
+    await state.set_state(None)
+    await message.answer(
+        f"⚠️ تأیید اتصال عملیات #{operation_id} به سفارش موجود پس از "
+        f"بررسی مالکیت Rebecca\nعلت: {escape(reason[:250])}",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="تأیید نهایی",callback_data=f"paygadmin:provision:confirm:{operation_id}")],
+            [InlineKeyboardButton(text="انصراف",callback_data="paygadmin:provision:pending")],
+        ]),
+    )
+
+
+@payg_router.callback_query(F.data.startswith("paygadmin:provision:confirm:"))
+async def payg_provision_adopt_confirm(callback: CallbackQuery,state: FSMContext):
+    if not _discount_owner(callback.from_user.id):
+        await callback.answer("غیرمجاز",show_alert=True)
+        return
+    from payg_offers_service import payg_offer_service
+    operation_id = int(callback.data.rsplit(":",1)[-1])
+    data = await state.get_data()
+    if int(data.get("provision_operation",0)) != operation_id or not data.get("provision_reason"):
+        await callback.answer("درخواست تأیید منقضی شده است",show_alert=True)
+        return
+    try:
+        account = await payg_offer_service.adopt_verified_provision(
+            operation_id,callback.from_user.id,reason=data["provision_reason"],
+        )
+    except Exception as exc:
+        await callback.answer(f"اتصال انجام نشد: {str(exc)[:120]}",show_alert=True)
+        return
+    await state.clear()
+    await callback.message.edit_text(
+        f"اتصال تأیید شد · حساب PAYG #{account['id']} · بدون ساخت یا برداشت تکراری",
+        reply_markup=_discount_menu(),
+    )
     await callback.answer()
 
 
