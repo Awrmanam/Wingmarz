@@ -30,6 +30,8 @@ class PaygAdminStates(StatesGroup):
     minimum = State()
     max_users = State()
     services = State()
+    discount_customer = State()
+    discount_policy = State()
 
 
 def _money(value: int) -> str:
@@ -481,6 +483,7 @@ async def _render_admin_home(message: Message) -> None:
             InlineKeyboardButton(text="👥 حد کاربر", callback_data="paygadmin:set:users"),
             InlineKeyboardButton(text="🔌 Service IDs", callback_data="paygadmin:set:services"),
         ],
+        [InlineKeyboardButton(text="🎯 تخفیف اختصاصی مشتریان", callback_data="paygadmin:discounts")],
         [InlineKeyboardButton(text="🔙 بازگشت", callback_data="sudo_menu_sales")],
     ]
     await message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
@@ -493,6 +496,303 @@ async def payg_admin_home(callback: CallbackQuery, state: FSMContext):
         return
     await state.clear()
     await _render_admin_home(callback.message)
+    await callback.answer()
+
+
+def _discount_owner(user_id: int) -> bool:
+    import os
+    owner = os.getenv("PAYG_OWNER_ID", "").strip()
+    return owner.isdecimal() and int(owner) == int(user_id)
+
+
+def _discount_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔎 جست‌وجوی مشتری", callback_data="paygadmin:discount:search")],
+        [InlineKeyboardButton(text="🔙 مدیریت PAYG", callback_data="paygadmin:home")],
+    ])
+
+
+async def _discount_customer_page(message: Message, user_id: int) -> None:
+    import aiosqlite
+    await payg_service.ensure_schema()
+    async with aiosqlite.connect(payg_service.db_path) as conn:
+        conn.row_factory = aiosqlite.Row
+        async with conn.execute(
+            "SELECT id,status,price_per_gb_toman FROM payg_accounts "
+            "WHERE user_id=? ORDER BY id DESC LIMIT 15", (int(user_id),),
+        ) as cur:
+            accounts = [dict(row) for row in await cur.fetchall()]
+    if not accounts:
+        await message.answer("برای این شناسه، حساب PAYG پیدا نشد.",reply_markup=_discount_menu())
+        return
+    rows = [[InlineKeyboardButton(
+        text=f"حساب #{a['id']} · {a['status']}",
+        callback_data=f"paygadmin:discount:account:{a['id']}",
+    )] for a in accounts]
+    rows.append([InlineKeyboardButton(text="🔙 بازگشت",callback_data="paygadmin:discounts")])
+    await message.answer(
+        f"🎯 حساب‌های PAYG کاربر <code>{user_id}</code>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+
+
+@payg_router.callback_query(F.data == "paygadmin:discounts")
+async def payg_discount_home(callback: CallbackQuery, state: FSMContext):
+    if not _discount_owner(callback.from_user.id):
+        await callback.answer("فقط مالک مجاز است.",show_alert=True)
+        return
+    await state.clear()
+    await callback.message.edit_text("🎯 <b>مدیریت تخفیف PAYG</b>",reply_markup=_discount_menu())
+    await callback.answer()
+
+
+@payg_router.callback_query(F.data == "paygadmin:discount:search")
+async def payg_discount_search(callback: CallbackQuery, state: FSMContext):
+    if not _discount_owner(callback.from_user.id):
+        await callback.answer("غیرمجاز",show_alert=True)
+        return
+    await state.clear()
+    await state.set_state(PaygAdminStates.discount_customer)
+    await callback.message.edit_text(
+        "شناسه عددی تلگرام مشتری را ارسال کنید.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="لغو",callback_data="paygadmin:discounts"),
+        ]]),
+    )
+    await callback.answer()
+
+
+@payg_router.message(PaygAdminStates.discount_customer, F.text)
+async def payg_discount_search_value(message: Message, state: FSMContext):
+    if not _discount_owner(message.from_user.id):
+        return
+    value = (message.text or "").strip()
+    if not value.isdecimal() or int(value) <= 0:
+        await message.answer("شناسه عددی معتبر وارد کنید.")
+        return
+    await state.clear()
+    await _discount_customer_page(message,int(value))
+
+
+@payg_router.callback_query(F.data.startswith("paygadmin:discount:account:"))
+async def payg_discount_account(callback: CallbackQuery, state: FSMContext):
+    if not _discount_owner(callback.from_user.id):
+        await callback.answer("غیرمجاز",show_alert=True)
+        return
+    try:
+        account_id = int(callback.data.rsplit(":",1)[-1])
+        account = await payg_service.get_account(account_id)
+        if not account:
+            raise PaygError("حساب پیدا نشد")
+        policy = await payg_service.get_customer_discount(account_id)
+        import aiosqlite
+        async with aiosqlite.connect(payg_service.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            async with conn.execute(
+                "SELECT base_rate,last_error FROM payg_discount_targets WHERE account_id=?",
+                (account_id,),
+            ) as cur:
+                target = await cur.fetchone()
+        base = int(target["base_rate"]) if target else int(account["price_per_gb_toman"])
+        rate = int(account["price_per_gb_toman"])
+        balance = await payg_service.get_balance(int(account["user_id"]))
+        accrued = await payg_service.get_accrued_target(account_id)
+        debt = max(0,int(accrued)-int(account["charged_toman_total"]))
+        import time
+        now = int(time.time())
+        status = "بدون تخفیف"
+        if policy:
+            status = ("زمان‌بندی‌شده" if now < int(policy["starts_at"])
+                      else "منقضی" if policy["expires_at"] is not None and now >= int(policy["expires_at"])
+                      else "فعال")
+        if target and target["last_error"]:
+            status = "در انتظار تطبیق Rebecca"
+        desc = (f"{policy['mode']}: {policy['value']}" if policy else "ندارد")
+        await state.clear()
+        await callback.message.edit_text(
+            f"🎯 <b>حساب #{account_id}</b> · کاربر <code>{account['user_id']}</code>\\n"
+            f"وضعیت: {escape(status)} · {escape(str(account['status']))}\\n"
+            f"نرخ عمومی: {_money(base)}\\nنرخ مؤثر: {_money(rate)}\\n"
+            f"سیاست: {escape(desc)}\\n"
+            f"موجودی: {_money(balance)} · بدهی: {_money(debt)}",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="✏️ ثبت/ویرایش تخفیف",callback_data=f"paygadmin:discount:edit:{account_id}")],
+                [InlineKeyboardButton(text="🗑 لغو تخفیف",callback_data=f"paygadmin:discount:cancel:{account_id}")],
+                [InlineKeyboardButton(text="📜 تاریخچه",callback_data=f"paygadmin:discount:history:{account_id}")],
+                [InlineKeyboardButton(text="🔙 جست‌وجو",callback_data="paygadmin:discounts")],
+            ]),
+        )
+    except (ValueError,PaygError) as exc:
+        await callback.answer(str(exc)[:150],show_alert=True)
+        return
+    await callback.answer()
+
+
+@payg_router.callback_query(F.data.startswith("paygadmin:discount:edit:"))
+async def payg_discount_edit(callback: CallbackQuery,state: FSMContext):
+    if not _discount_owner(callback.from_user.id):
+        await callback.answer("غیرمجاز",show_alert=True)
+        return
+    account_id = int(callback.data.rsplit(":",1)[-1])
+    if not await payg_service.get_account(account_id):
+        await callback.answer("حساب پیدا نشد",show_alert=True)
+        return
+    await state.clear()
+    await state.update_data(discount_account=account_id)
+    await state.set_state(PaygAdminStates.discount_policy)
+    await callback.message.edit_text(
+        "نوع و مقدار و تاریخ شروع و پایان را ارسال کنید:\\n"
+        "<code>percent 20 1730000000 1740000000</code>\\n"
+        "<code>fixed 1500 now never</code>\\n"
+        "زمان‌ها Unix timestamp (ثانیه) هستند؛ never یعنی بدون انقضا.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="لغو",callback_data=f"paygadmin:discount:account:{account_id}"),
+        ]]),
+    )
+    await callback.answer()
+
+
+@payg_router.message(PaygAdminStates.discount_policy,F.text)
+async def payg_discount_edit_value(message: Message,state: FSMContext):
+    if not _discount_owner(message.from_user.id):
+        return
+    import time
+    parts = (message.text or "").strip().split()
+    if len(parts) != 4 or parts[0] not in {"fixed","percent"}:
+        await message.answer("فرمت معتبر نیست. نمونه: <code>percent 20 now never</code>")
+        return
+    try:
+        mode = parts[0]
+        value = int(parts[1])
+        start = int(time.time()) if parts[2] == "now" else int(parts[2])
+        expiry = None if parts[3] == "never" else int(parts[3])
+        data = await state.get_data()
+        account_id = int(data["discount_account"])
+        account = await payg_service.get_account(account_id)
+        if not account:
+            raise PaygError("حساب پیدا نشد")
+        policy = await payg_service.get_customer_discount(account_id)
+        import aiosqlite
+        async with aiosqlite.connect(payg_service.db_path) as conn:
+            async with conn.execute(
+                "SELECT base_rate FROM payg_discount_targets WHERE account_id=?",
+                (account_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        base = int(row[0]) if row else int(account["price_per_gb_toman"])
+        effective = payg_service.discount_rate(base,mode,value)
+        if start <= 0 or (expiry is not None and expiry <= start):
+            raise PaygError("بازه زمانی نامعتبر است")
+    except (ValueError,KeyError,PaygError) as exc:
+        await message.answer(f"خطا: {escape(str(exc))}")
+        return
+    await state.update_data(discount_mode=mode,discount_value=value,
+                            discount_start=start,discount_expiry=expiry,
+                            discount_base=base)
+    await state.set_state(None)
+    await message.answer(
+        f"⚠️ <b>تأیید تغییر نرخ</b>\\nحساب #{account_id}\\n"
+        f"نرخ عمومی: {_money(base)}\\nنرخ هدف: {_money(effective)}\\n"
+        f"شروع: {start} · پایان: {expiry or 'بدون انقضا'}",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ تأیید",callback_data=f"paygadmin:discount:confirm:{account_id}")],
+            [InlineKeyboardButton(text="❌ انصراف",callback_data=f"paygadmin:discount:account:{account_id}")],
+        ]),
+    )
+
+
+@payg_router.callback_query(F.data.startswith("paygadmin:discount:confirm:"))
+async def payg_discount_confirm(callback: CallbackQuery,state: FSMContext):
+    if not _discount_owner(callback.from_user.id):
+        await callback.answer("غیرمجاز",show_alert=True)
+        return
+    account_id = int(callback.data.rsplit(":",1)[-1])
+    data = await state.get_data()
+    if int(data.get("discount_account",0)) != account_id or "discount_mode" not in data:
+        await callback.answer("درخواست منقضی شده؛ دوباره شروع کنید.",show_alert=True)
+        return
+    try:
+        await payg_service.configure_customer_discount(
+            account_id,callback.from_user.id,mode=data["discount_mode"],
+            value=int(data["discount_value"]),base_rate=int(data["discount_base"]),
+            starts_at=int(data["discount_start"]),expires_at=data["discount_expiry"],
+        )
+        result = await payg_service.reconcile_customer_discounts()
+        outcome = result.get(account_id,"scheduled")
+    except Exception as exc:
+        await callback.answer(f"خطا: {str(exc)[:120]}",show_alert=True)
+        return
+    await state.clear()
+    await callback.message.edit_text(
+        f"سیاست ذخیره شد؛ وضعیت تطبیق: {escape(outcome)}",
+        reply_markup=_discount_menu(),
+    )
+    await callback.answer()
+
+
+@payg_router.callback_query(F.data.startswith("paygadmin:discount:cancel:"))
+async def payg_discount_cancel_prompt(callback: CallbackQuery):
+    if not _discount_owner(callback.from_user.id):
+        await callback.answer("غیرمجاز",show_alert=True)
+        return
+    account_id = int(callback.data.rsplit(":",1)[-1])
+    await callback.message.edit_text(
+        f"لغو سیاست تخفیف حساب #{account_id} و درخواست بازگشت به نرخ عمومی؟",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ تأیید لغو",callback_data=f"paygadmin:discount:cancelconfirm:{account_id}")],
+            [InlineKeyboardButton(text="🔙 انصراف",callback_data=f"paygadmin:discount:account:{account_id}")],
+        ]),
+    )
+    await callback.answer()
+
+
+@payg_router.callback_query(F.data.startswith("paygadmin:discount:cancelconfirm:"))
+async def payg_discount_cancel_confirm(callback: CallbackQuery):
+    if not _discount_owner(callback.from_user.id):
+        await callback.answer("غیرمجاز",show_alert=True)
+        return
+    account_id = int(callback.data.rsplit(":",1)[-1])
+    try:
+        changed = await payg_service.cancel_customer_discount(account_id,callback.from_user.id)
+        outcome = (await payg_service.reconcile_customer_discounts()).get(account_id,"unchanged")
+    except Exception as exc:
+        await callback.answer(str(exc)[:120],show_alert=True)
+        return
+    await callback.message.edit_text(
+        f"لغو سیاست: {'ثبت شد' if changed else 'سیاست فعالی یافت نشد'}\\n"
+        f"وضعیت نرخ: {escape(outcome)}",
+        reply_markup=_discount_menu(),
+    )
+    await callback.answer()
+
+
+@payg_router.callback_query(F.data.startswith("paygadmin:discount:history:"))
+async def payg_discount_history(callback: CallbackQuery):
+    if not _discount_owner(callback.from_user.id):
+        await callback.answer("غیرمجاز",show_alert=True)
+        return
+    import aiosqlite
+    account_id = int(callback.data.rsplit(":",1)[-1])
+    await payg_service.ensure_schema()
+    async with aiosqlite.connect(payg_service.db_path) as conn:
+        async with conn.execute(
+            "SELECT actor_id,action,new_mode,new_value,created_at "
+            "FROM payg_customer_discount_audit WHERE account_id=? "
+            "ORDER BY id DESC LIMIT 12", (account_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+    lines = [f"📜 تاریخچه تخفیف حساب #{account_id}"]
+    lines.extend(
+        f"• {escape(str(r[4]))} · مدیر {r[0]} · {escape(str(r[1]))} · "
+        f"{escape(str(r[2] or '-'))} {r[3] if r[3] is not None else '-'}"
+        for r in rows
+    )
+    await callback.message.edit_text(
+        "\\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="🔙 حساب",callback_data=f"paygadmin:discount:account:{account_id}"),
+        ]]),
+    )
     await callback.answer()
 
 
