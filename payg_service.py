@@ -903,7 +903,7 @@ class PaygService:
         async with aiosqlite.connect(self.db_path) as conn:
             conn.row_factory = aiosqlite.Row
             async with conn.execute(
-                "SELECT t.account_id,t.base_rate,t.desired_rate,"
+                "SELECT t.account_id,t.base_rate,t.desired_rate,t.last_error,"
                 "d.mode,d.value,d.starts_at,d.expires_at,"
                 "a.price_per_gb_toman,a.status FROM payg_discount_targets t "
                 "JOIN payg_accounts a ON a.id=t.account_id "
@@ -923,6 +923,13 @@ class PaygService:
                        if active else base)
             if row["desired_rate"] is not None:
                 desired = int(row["desired_rate"])
+            # Once a boundary was missed while Rebecca was unavailable, the
+            # recovered cumulative counter cannot attribute bytes to either
+            # side of the time boundary. Never auto-retry and charge them at
+            # an arbitrary rate. Require audited operator reconciliation.
+            if row["last_error"] is not None:
+                results[account_id] = "manual_review"
+                continue
             if int(row["price_per_gb_toman"]) == desired:
                 results[account_id] = "current"
                 if row["desired_rate"] is not None:
@@ -1631,7 +1638,7 @@ class PaygService:
         results: list[BillingResult] = []
         for account_id in ids:
             try:
-                if transitions.get(account_id) == "pending":
+                if transitions.get(account_id) in {"pending","manual_review"}:
                     continue
                 results.append(await self.sync_account(account_id))
             except Exception as exc:
