@@ -548,6 +548,8 @@ class PaygService:
 
     async def hold_topup_for_kyc(self, topup_id: int, actor_id: int) -> dict[str, Any]:
         """Verify payment without crediting wallet until KYC is approved."""
+        if int(actor_id) not in config.SUDO_ADMINS:
+            raise PaygError("operator permission required")
         await self.ensure_schema()
         async with aiosqlite.connect(self.db_path) as conn:
             conn.row_factory = aiosqlite.Row
