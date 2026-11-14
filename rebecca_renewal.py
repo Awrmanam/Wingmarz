@@ -59,6 +59,16 @@ async def apply_rebecca_renewal(order: dict, actor_id: int) -> RebeccaRenewalRes
 
     now = int(time.time())
     apply_as_reset = bool(order.get("apply_as_reset"))
+    # Snapshot on the order: later shop-policy edits never change paid orders.
+    restart_expiry = bool(order.get("renewal_time_reset"))
+    if restart_expiry and (
+        apply_as_reset
+        or str(order.get("order_type") or "") != "renew"
+        or int(order.get("delta_traffic_bytes") or 0) <= 0
+        or int(order.get("delta_time_seconds") or 0) <= 0
+        or int(order.get("delta_users") or 0) != 0
+    ):
+        raise RebeccaRenewalError("روش تمدید حجم و ریست زمان در سفارش نامعتبر است.")
     reserved = False
 
     if apply_as_reset:
@@ -118,12 +128,21 @@ async def apply_rebecca_renewal(order: dict, actor_id: int) -> RebeccaRenewalRes
 
         if delta_time:
             current_expire = _finite_int(remote.get("expire"), "تاریخ انقضا")
-            payload["expire"] = max(now, current_expire) + delta_time
-            local_fields["max_total_time"] = int(admin.max_total_time or 0) + delta_time
-            local_fields["validity_days"] = max(
-                1, int(admin.validity_days or 0) + max(1, delta_time // 86400)
-            )
-            lines.append(f"⏳ زمان: +{delta_time // 86400} روز")
+            if restart_expiry:
+                # Keep existing traffic usage and remaining quota. Reset ONLY
+                # expiry to now + the purchased duration, even if active.
+                payload["expire"] = now + delta_time
+                local_fields["max_total_time"] = delta_time
+                local_fields["validity_days"] = max(1, (delta_time + 86399) // 86400)
+                local_fields["created_at"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                lines.append(f"⏳ انقضای جدید: {delta_time // 86400} روز از زمان تأیید")
+            else:
+                payload["expire"] = max(now, current_expire) + delta_time
+                local_fields["max_total_time"] = int(admin.max_total_time or 0) + delta_time
+                local_fields["validity_days"] = max(
+                    1, int(admin.validity_days or 0) + max(1, delta_time // 86400)
+                )
+                lines.append(f"⏳ زمان: +{delta_time // 86400} روز")
 
         if delta_users:
             current_users = _finite_int(remote.get("users_limit"), "User Limit")
