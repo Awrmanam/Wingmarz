@@ -37,7 +37,7 @@ Production deployment and merge are prohibited until all critical blockers clear
 
 ## Security and finance audit scope
 
-**Reviewed and modified this branch:** PAYG reservation and concurrency, remote creation timeout, ownership verification on adoption, owner-only Telegram callbacks and backend actions, discount billing boundaries, financial hold for disputed usage, rate history, wallet credit replay protection, additive PAYG migrations.
+**Reviewed and modified this branch:** PAYG reservation and concurrency, remote creation timeout, ownership verification on adoption, owner-only Telegram callbacks and backend actions, discount billing boundaries, financial hold for disputed usage, rate history, wallet credit replay protection, additive PAYG migrations. This pass also found and fixed missing backend operator authorization in PAYG receipt approval/rejection, and incorrect historical-debt calculation during financial-hold release. The latter now uses the persisted billing accrual and refuses release while a discount boundary or rate switch is disputed. Regression tests: `tests/test_payg_release_security_audit.py`.
 
 **Not signed off as a comprehensive audit:** all KYC flows, all legacy purchase/renewal routes, generic receipt approvals, reseller data isolation, all notification callbacks, production database migration and backup restore, Rebecca staging contract, full end-to-end payment reconciliation.
 
