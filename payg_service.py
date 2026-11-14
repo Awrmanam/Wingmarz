@@ -128,6 +128,28 @@ class PaygService:
                         CHECK(remainder_numerator >= 0),
                     last_priced_bytes INTEGER NOT NULL CHECK(last_priced_bytes >= 0)
                 );
+                CREATE TABLE IF NOT EXISTS payg_customer_discounts (
+                    account_id INTEGER PRIMARY KEY,
+                    mode TEXT NOT NULL CHECK(mode IN ('fixed','percent')),
+                    value INTEGER NOT NULL CHECK(value >= 0),
+                    starts_at INTEGER NOT NULL,
+                    expires_at INTEGER,
+                    updated_by INTEGER NOT NULL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE IF NOT EXISTS payg_customer_discount_audit (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    account_id INTEGER NOT NULL,
+                    actor_id INTEGER NOT NULL,
+                    action TEXT NOT NULL,
+                    previous_mode TEXT,
+                    previous_value INTEGER,
+                    new_mode TEXT,
+                    new_value INTEGER,
+                    starts_at INTEGER,
+                    expires_at INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
                 CREATE TABLE IF NOT EXISTS payg_rate_switches (
                     account_id INTEGER PRIMARY KEY,
                     actor_id INTEGER NOT NULL,
@@ -733,6 +755,85 @@ class PaygService:
             if account is None:
                 raise PaygError("PAYG account not found")
             return int(account[0]) * int(account[1]) // GIB
+
+    @staticmethod
+    def discount_rate(base_rate: int, mode: str, value: int) -> int:
+        """Fixed overrides percentage; never stack two discounts."""
+        base, amount = int(base_rate), int(value)
+        if base <= 0:
+            raise PaygError("base PAYG rate must be positive")
+        if mode == "fixed" and amount > 0:
+            return amount
+        if mode == "percent" and 0 <= amount < 100:
+            return max(1, base * (100 - amount) // 100)
+        raise PaygError("invalid discount configuration")
+
+    async def get_customer_discount(self, account_id: int) -> dict[str, Any] | None:
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            async with conn.execute(
+                "SELECT * FROM payg_customer_discounts WHERE account_id=?",
+                (int(account_id),),
+            ) as cur:
+                row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def configure_customer_discount(
+        self, account_id: int, actor_id: int, *, mode: str,
+        value: int, base_rate: int, starts_at: int,
+        expires_at: int | None = None,
+    ) -> None:
+        """Owner-only future discount configuration, no historical repricing.
+
+        The discount is stored separately from the current billing rate.
+        Activation must use switch_rate_after_rebecca_sync at the boundary.
+        """
+        import os
+        owner = os.getenv("PAYG_OWNER_ID", "").strip()
+        if not owner.isdecimal() or int(actor_id) != int(owner):
+            raise PaygError("owner permission required")
+        self.discount_rate(base_rate, mode, value)
+        if expires_at is not None and int(expires_at) <= int(starts_at):
+            raise PaygError("discount expiration must follow start")
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("BEGIN IMMEDIATE")
+            async with conn.execute(
+                "SELECT mode,value FROM payg_customer_discounts WHERE account_id=?",
+                (int(account_id),),
+            ) as cur:
+                previous = await cur.fetchone()
+            async with conn.execute(
+                "SELECT 1 FROM payg_accounts WHERE id=?", (int(account_id),),
+            ) as cur:
+                exists = await cur.fetchone()
+            if not exists:
+                await conn.rollback()
+                raise PaygError("PAYG account not found")
+            await conn.execute(
+                "INSERT INTO payg_customer_discounts"
+                "(account_id,mode,value,starts_at,expires_at,updated_by)"
+                "VALUES(?,?,?,?,?,?) ON CONFLICT(account_id) DO UPDATE SET "
+                "mode=excluded.mode,value=excluded.value,"
+                "starts_at=excluded.starts_at,expires_at=excluded.expires_at,"
+                "updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP",
+                (int(account_id),str(mode),int(value),int(starts_at),
+                 int(expires_at) if expires_at is not None else None,int(actor_id)),
+            )
+            await conn.execute(
+                "INSERT INTO payg_customer_discount_audit "
+                "(account_id,actor_id,action,previous_mode,previous_value,"
+                "new_mode,new_value,starts_at,expires_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
+                (int(account_id),int(actor_id),"upsert",
+                 str(previous["mode"]) if previous else None,
+                 int(previous["value"]) if previous else None,
+                 str(mode),int(value),int(starts_at),
+                 int(expires_at) if expires_at is not None else None),
+            )
+            await conn.commit()
 
     async def switch_rate_after_rebecca_sync(
         self, account_id: int, actor_id: int, new_rate: int,
