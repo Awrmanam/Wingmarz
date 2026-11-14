@@ -92,6 +92,15 @@ class PaygService:
                 );
                 CREATE INDEX IF NOT EXISTS idx_wallet_ledger_user
                     ON wallet_ledger(user_id, id DESC);
+                -- Only one financial posting per approved receipt or migration refund.
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_wallet_ledger_unique_topup_credit
+                    ON wallet_ledger(reference_id)
+                    WHERE kind='topup' AND reference_type='payg_topup'
+                      AND reference_id IS NOT NULL;
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_wallet_ledger_unique_migration_refund
+                    ON wallet_ledger(reference_id)
+                    WHERE kind='migration_refund' AND reference_type='payg_migration'
+                      AND reference_id IS NOT NULL;
 
                 CREATE TABLE IF NOT EXISTS payg_settings (
                     provider TEXT PRIMARY KEY,
@@ -325,6 +334,25 @@ class PaygService:
         await self.ensure_schema()
         async with aiosqlite.connect(self.db_path) as conn:
             await conn.execute("BEGIN IMMEDIATE")
+            # An operation may be retried after a timeout or process restart.
+            # The ledger is authoritative: never post the same credit twice.
+            if reference_id is not None and (
+                (kind == "topup" and reference_type == "payg_topup")
+                or (kind == "migration_refund" and reference_type == "payg_migration")
+            ):
+                async with conn.execute(
+                    "SELECT user_id,amount_toman FROM wallet_ledger "
+                    "WHERE kind=? AND reference_type=? AND reference_id=?",
+                    (kind, reference_type, int(reference_id)),
+                ) as cur:
+                    prior = await cur.fetchone()
+                if prior is not None:
+                    if int(prior[0]) != int(user_id) or int(prior[1]) != amount:
+                        await conn.rollback()
+                        raise PaygError("conflicting repeated wallet credit")
+                    balance = await self._balance_in_conn(conn, int(user_id))
+                    await conn.rollback()
+                    return balance
             balance = await self._balance_in_conn(conn, int(user_id))
             new_balance = balance + amount
             await self._write_balance_in_conn(conn, int(user_id), new_balance)
@@ -551,7 +579,16 @@ class PaygService:
                 raise PaygError("top-up not found")
             topup = dict(row)
             if topup["status"] == "approved":
+                # Approved state and its ledger posting must agree.
+                async with conn.execute(
+                    "SELECT COUNT(*) FROM wallet_ledger "
+                    "WHERE kind='topup' AND reference_type='payg_topup' AND reference_id=?",
+                    (int(topup_id),),
+                ) as cur:
+                    count = (await cur.fetchone())[0]
                 await conn.rollback()
+                if count != 1:
+                    raise PaygError("approved top-up has inconsistent ledger")
                 return topup
             if topup["status"] not in {"submitted", "paid_awaiting_kyc"}:
                 await conn.rollback()
