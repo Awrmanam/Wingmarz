@@ -92,16 +92,6 @@ class PaygService:
                 );
                 CREATE INDEX IF NOT EXISTS idx_wallet_ledger_user
                     ON wallet_ledger(user_id, id DESC);
-                -- Only one financial posting per approved receipt or migration refund.
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_wallet_ledger_unique_topup_credit
-                    ON wallet_ledger(reference_id)
-                    WHERE kind='topup' AND reference_type='payg_topup'
-                      AND reference_id IS NOT NULL;
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_wallet_ledger_unique_migration_refund
-                    ON wallet_ledger(reference_id)
-                    WHERE kind='migration_refund' AND reference_type='payg_migration'
-                      AND reference_id IS NOT NULL;
-
                 CREATE TABLE IF NOT EXISTS payg_settings (
                     provider TEXT PRIMARY KEY,
                     enabled INTEGER NOT NULL DEFAULT 0,
