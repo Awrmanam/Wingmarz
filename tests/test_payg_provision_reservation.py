@@ -94,3 +94,30 @@ async def test_remote_timeout_never_deletes_or_recreates(tmp_path, monkeypatch):
         ) as cur:
             row = await cur.fetchone()
     assert row == ("reconcile", "payg42_7")
+
+
+@pytest.mark.asyncio
+async def test_restart_inspects_ambiguous_operation_without_creating(tmp_path, monkeypatch):
+    path = str(tmp_path / "restart.db")
+    core = PaygService(path)
+    monkeypatch.setattr(mod,"payg_service",core)
+    service = mod.PaygOfferService(path)
+    await service.ensure_schema()
+    async with aiosqlite.connect(path) as conn:
+        await conn.execute(
+            "INSERT INTO payg_provision_operations "
+            "(user_id,service_id,remote_username,remote_password,status) "
+            "VALUES(42,7,'payg42_7','secret','remote_pending')"
+        )
+        await conn.commit()
+    find = AsyncMock(return_value={"username":"payg42_7"})
+    create = AsyncMock()
+    monkeypatch.setattr(mod.rebecca_api,"find_admin",find)
+    monkeypatch.setattr(mod.rebecca_api,"create_admin_verified",create)
+    restarted = mod.PaygOfferService(path)
+    results = await restarted.inspect_incomplete_provisions()
+    assert results[0]["status"] == "remote_present_needs_ownership_review"
+    create.assert_not_awaited()
+    async with aiosqlite.connect(path) as conn:
+        async with conn.execute("SELECT COUNT(*) FROM payg_provision_audit") as cur:
+            assert (await cur.fetchone())[0] == 1
