@@ -536,6 +536,13 @@ class PaygOfferService:
                 "updated_at=CURRENT_TIMESTAMP WHERE user_id=? AND service_id=?",
                 (int(user_id),int(service_id)),
             )
+            await conn.execute(
+                "INSERT INTO payg_provision_audit(operation_id,event_type,detail) "
+                "SELECT id,'remote_create_started',? FROM payg_provision_operations "
+                "WHERE user_id=? AND provider='rebecca' AND service_id=?",
+                ("create request may be ambiguous after process crash",
+                 int(user_id),int(service_id)),
+            )
             await conn.commit()
         try:
             # Existing remote username must never be overwritten or adopted
@@ -587,6 +594,13 @@ class PaygOfferService:
                     "WHERE user_id=? AND service_id=?",
                     (int(user_id),int(service_id)),
                 )
+                await conn.execute(
+                    "INSERT INTO payg_provision_audit(operation_id,event_type,detail) "
+                    "SELECT id,'created_and_linked',? FROM payg_provision_operations "
+                    "WHERE user_id=? AND provider='rebecca' AND service_id=?",
+                    (f"account={account_id}; baseline={baseline}",
+                     int(user_id),int(service_id)),
+                )
                 await conn.commit()
             return await payg_service.get_account(account_id)
         except Exception as exc:
@@ -595,6 +609,13 @@ class PaygOfferService:
                     "UPDATE payg_provision_operations SET status='reconcile',"
                     "last_error=?,updated_at=CURRENT_TIMESTAMP "
                     "WHERE user_id=? AND service_id=? AND status!='completed'",
+                    (str(exc)[:400],int(user_id),int(service_id)),
+                )
+                await conn.execute(
+                    "INSERT INTO payg_provision_audit(operation_id,event_type,detail) "
+                    "SELECT id,'ambiguous_or_failed',? FROM payg_provision_operations "
+                    "WHERE user_id=? AND provider='rebecca' AND service_id=? "
+                    "AND status='reconcile'",
                     (str(exc)[:400],int(user_id),int(service_id)),
                 )
                 await conn.commit()
