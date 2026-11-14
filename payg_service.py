@@ -128,6 +128,13 @@ class PaygService:
                         CHECK(remainder_numerator >= 0),
                     last_priced_bytes INTEGER NOT NULL CHECK(last_priced_bytes >= 0)
                 );
+                CREATE TABLE IF NOT EXISTS payg_discount_targets (
+                    account_id INTEGER PRIMARY KEY,
+                    base_rate INTEGER NOT NULL CHECK(base_rate > 0),
+                    desired_rate INTEGER,
+                    last_error TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
                 CREATE TABLE IF NOT EXISTS payg_customer_discounts (
                     account_id INTEGER PRIMARY KEY,
                     mode TEXT NOT NULL CHECK(mode IN ('fixed','percent')),
@@ -833,6 +840,12 @@ class PaygService:
                  str(mode),int(value),int(starts_at),
                  int(expires_at) if expires_at is not None else None),
             )
+            await conn.execute(
+                "INSERT INTO payg_discount_targets(account_id,base_rate) VALUES(?,?) "
+                "ON CONFLICT(account_id) DO UPDATE SET base_rate=excluded.base_rate,"
+                "updated_at=CURRENT_TIMESTAMP",
+                (int(account_id),int(base_rate)),
+            )
             await conn.commit()
 
     async def cancel_customer_discount(self, account_id: int, actor_id: int) -> bool:
@@ -861,6 +874,11 @@ class PaygService:
                 (int(account_id),),
             )
             await conn.execute(
+                "UPDATE payg_discount_targets SET desired_rate=base_rate,"
+                "last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE account_id=?",
+                (int(account_id),),
+            )
+            await conn.execute(
                 "INSERT INTO payg_customer_discount_audit "
                 "(account_id,actor_id,action,previous_mode,previous_value) "
                 "VALUES(?,?,'cancel',?,?)",
@@ -869,6 +887,77 @@ class PaygService:
             )
             await conn.commit()
         return True
+
+    async def reconcile_customer_discounts(self, *, now: int | None = None) -> dict[int, str]:
+        """Run on every PAYG scheduler tick, including after a restart.
+
+        One policy per account: fixed OR percent, never stacked. Rate changes
+        require a fresh Rebecca counter; failed transitions stay pending.
+        """
+        import os
+        owner = os.getenv("PAYG_OWNER_ID", "").strip()
+        if not owner.isdecimal():
+            raise PaygError("PAYG_OWNER_ID must identify the owner")
+        timestamp = int(time.time()) if now is None else int(now)
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            async with conn.execute(
+                "SELECT t.account_id,t.base_rate,t.desired_rate,"
+                "d.mode,d.value,d.starts_at,d.expires_at,"
+                "a.price_per_gb_toman,a.status FROM payg_discount_targets t "
+                "JOIN payg_accounts a ON a.id=t.account_id "
+                "LEFT JOIN payg_customer_discounts d ON d.account_id=t.account_id "
+                "WHERE a.status IN ('active','suspended')",
+            ) as cur:
+                rows = await cur.fetchall()
+        results: dict[int, str] = {}
+        for row in rows:
+            account_id = int(row["account_id"])
+            base = int(row["base_rate"])
+            active = (row["mode"] is not None
+                      and timestamp >= int(row["starts_at"])
+                      and (row["expires_at"] is None
+                           or timestamp < int(row["expires_at"])))
+            desired = (self.discount_rate(base,str(row["mode"]),int(row["value"]))
+                       if active else base)
+            if row["desired_rate"] is not None:
+                desired = int(row["desired_rate"])
+            if int(row["price_per_gb_toman"]) == desired:
+                results[account_id] = "current"
+                if row["desired_rate"] is not None:
+                    async with aiosqlite.connect(self.db_path) as conn:
+                        await conn.execute(
+                            "UPDATE payg_discount_targets SET desired_rate=NULL,"
+                            "last_error=NULL WHERE account_id=? AND desired_rate=?",
+                            (account_id,desired),
+                        )
+                        await conn.commit()
+                continue
+            try:
+                await self.switch_rate_after_rebecca_sync(
+                    account_id,int(owner),desired,
+                )
+            except Exception as exc:
+                async with aiosqlite.connect(self.db_path) as conn:
+                    await conn.execute(
+                        "UPDATE payg_discount_targets SET last_error=?,"
+                        "updated_at=CURRENT_TIMESTAMP WHERE account_id=?",
+                        (str(exc)[:400],account_id),
+                    )
+                    await conn.commit()
+                results[account_id] = "pending"
+            else:
+                async with aiosqlite.connect(self.db_path) as conn:
+                    await conn.execute(
+                        "UPDATE payg_discount_targets SET desired_rate=NULL,"
+                        "last_error=NULL,updated_at=CURRENT_TIMESTAMP "
+                        "WHERE account_id=?",
+                        (account_id,),
+                    )
+                    await conn.commit()
+                results[account_id] = "applied"
+        return results
 
     async def switch_rate_after_rebecca_sync(
         self, account_id: int, actor_id: int, new_rate: int,
@@ -1515,6 +1604,14 @@ class PaygService:
         return result
 
     async def sync_all_accounts(self) -> list[BillingResult]:
+        # Apply due policy transitions before billing at the scheduler's rate.
+        # If Rebecca is unavailable, a pending transition must block ordinary
+        # settlement rather than silently bill at an outdated price.
+        try:
+            transitions = await self.reconcile_customer_discounts()
+        except PaygError as exc:
+            transitions = {}
+            print(f"PAYG discount reconciliation unavailable: {exc}")
         await self.ensure_schema()
         async with aiosqlite.connect(self.db_path) as conn:
             async with conn.execute(
@@ -1524,6 +1621,8 @@ class PaygService:
         results: list[BillingResult] = []
         for account_id in ids:
             try:
+                if transitions.get(account_id) == "pending":
+                    continue
                 results.append(await self.sync_account(account_id))
             except Exception as exc:
                 print(f"PAYG billing sync failed for account {account_id}: {type(exc).__name__}: {exc}")
