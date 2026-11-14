@@ -34,6 +34,7 @@ class _FakeKyc:
 
 
 def test_manual_trust_and_auto_approve_require_real_payment_match(tmp_path, monkeypatch):
+    monkeypatch.setattr(trust_module.config, "SUDO_ADMINS", [999])
     service = trust_module.TrustService(str(tmp_path / "trust.db"))
     monkeypatch.setattr(trust_module, "kyc_service", _FakeKyc(False))
 
