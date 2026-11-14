@@ -1662,8 +1662,34 @@ class PaygService:
             ) as cur:
                 accrued_row = await cur.fetchone()
             if accrued_row is None:
-                await conn.rollback()
-                raise PaygError("billing state missing; financial hold cannot be released")
+                # Pre-upgrade legacy account: reconstruct only when no rate
+                # history exists. Repricing a changed-rate account is unsafe.
+                async with conn.execute(
+                    "SELECT 1 FROM payg_rate_history WHERE account_id=? LIMIT 1",
+                    (int(account_id),),
+                ) as cur:
+                    changed_rate = await cur.fetchone()
+                if changed_rate:
+                    await conn.rollback()
+                    raise PaygError("historical billing state missing; manual review required")
+                legacy_accrued = (
+                    int(account["cumulative_usage_bytes"])
+                    * int(account["price_per_gb_toman"]) // GIB
+                )
+                await conn.execute(
+                    "INSERT OR IGNORE INTO payg_billing_state"
+                    "(account_id,accrued_toman,remainder_numerator,last_priced_bytes)"
+                    "VALUES(?,?,?,?)",
+                    (int(account_id),legacy_accrued,
+                     (int(account["cumulative_usage_bytes"]) *
+                      int(account["price_per_gb_toman"])) % GIB,
+                     int(account["cumulative_usage_bytes"])),
+                )
+                async with conn.execute(
+                    "SELECT accrued_toman FROM payg_billing_state WHERE account_id=?",
+                    (int(account_id),),
+                ) as cur:
+                    accrued_row = await cur.fetchone()
             due = int(accrued_row["accrued_toman"]) - int(account["charged_toman_total"])
             if due > 0 or balance <= 0:
                 await conn.rollback()
