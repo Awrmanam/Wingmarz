@@ -27,6 +27,38 @@ UI_MESSAGES = {
     'sales_plan_select_public': '🛒 <b>پلن‌های نمایندگی</b>\n\nپلن موردنظر را انتخاب کنید:',
     'sales_duration_select_public': '🛒 <b>پلن‌های نمایندگی</b>\n\nمدت موردنظر را انتخاب کنید:',
     'renew_panel_select': '🔄 <b>تمدید و افزایش</b>\n\nپنل موردنظر را انتخاب کنید:',
+    # Editable labels for the current four-step Rebecca purchase choice flow.
+    # These are display-only; the step count describes product selection,
+    # not KYC, payment or issuance that happen afterwards.
+    'sales_provider_step': (
+        '{emoji:panel} <b>خرید پنل نمایندگی</b>\n'
+        'مرحله ۱ از ۴\n\nنوع پنل را انتخاب کنید:'
+    ),
+    'sales_billing_step': (
+        '{emoji:price} <b>نحوه خرید Rebecca</b>\n'
+        'مرحله ۲ از ۴\n\n'
+        'کدام مدل پرداخت برای شما مناسب‌تر است؟\n\n'
+        '⚡ <b>PAYG</b> — فقط به‌اندازه مصرف واقعی هزینه پرداخت می‌کنید.\n'
+        '{emoji:plan} <b>پلن کامل</b> — حجم، مدت و قیمت از قبل مشخص است.'
+    ),
+    'sales_fixed_services_step': (
+        '{emoji:plan} <b>پلن کامل Rebecca</b>\n'
+        'مرحله ۳ از ۴\n\n'
+        'سرویس موردنظر را انتخاب کنید. در مرحله بعد جزئیات پلن‌ها را می‌بینید:'
+    ),
+    'sales_payg_services_step': (
+        '⚡ <b>خرید PAYG</b>\n'
+        'مرحله ۳ از ۴\n\nسرویس موردنظر را انتخاب کنید:'
+    ),
+    'sales_fixed_duration_step': (
+        '{service}\n\nمدت موردنظر را انتخاب کنید:'
+    ),
+    'sales_fixed_plans_step': (
+        '{service}\nمرحله ۴ از ۴\n\n'
+        '<b>پلن‌های قابل خرید</b>{duration_line}\n\n'
+        'پلن موردنظر را انتخاب کنید:'
+    ),
+
     # Read-only Rebecca per-user monitoring. All three messages can be edited
     # in Telegram and can use Premium Emoji keys via the existing editor.
     'rebecca_user_quota_single': (
@@ -73,6 +105,12 @@ UI_TITLES = {
     'sales_plan_select_public': 'انتخاب پلن نمایندگی',
     'sales_duration_select_public': 'انتخاب مدت پلن نمایندگی',
     'renew_panel_select': 'انتخاب پنل برای تمدید',
+    'sales_provider_step': 'مسیر خرید — انتخاب نوع پنل',
+    'sales_billing_step': 'مسیر خرید — انتخاب روش پرداخت',
+    'sales_fixed_services_step': 'مسیر خرید — انتخاب سرویس پلن کامل',
+    'sales_payg_services_step': 'مسیر خرید — انتخاب سرویس PAYG',
+    'sales_fixed_duration_step': 'مسیر خرید — انتخاب مدت سرویس',
+    'sales_fixed_plans_step': 'مسیر خرید — فهرست پلن‌های قابل خرید',
     'rebecca_user_quota_single': 'Rebecca — اتمام حجم یک کاربر',
     'rebecca_user_expired_single': 'Rebecca — پایان اعتبار یک کاربر',
     'rebecca_user_smart_digest': 'Rebecca — گزارش هوشمند گروهی کاربران',
