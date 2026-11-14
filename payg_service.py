@@ -128,6 +128,13 @@ class PaygService:
                         CHECK(remainder_numerator >= 0),
                     last_priced_bytes INTEGER NOT NULL CHECK(last_priced_bytes >= 0)
                 );
+                CREATE TABLE IF NOT EXISTS payg_rate_switches (
+                    account_id INTEGER PRIMARY KEY,
+                    actor_id INTEGER NOT NULL,
+                    requested_rate INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
                 CREATE TABLE IF NOT EXISTS payg_rate_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     account_id INTEGER NOT NULL,
@@ -727,6 +734,62 @@ class PaygService:
                 raise PaygError("PAYG account not found")
             return int(account[0]) * int(account[1]) // GIB
 
+    async def switch_rate_after_rebecca_sync(
+        self, account_id: int, actor_id: int, new_rate: int,
+    ) -> None:
+        """Fence scheduler billing, sample Rebecca, settle old price, then switch.
+
+        A pending row survives process crashes. An operator must inspect and
+        clear stale reservations rather than silently reprice ambiguous bytes.
+        """
+        import os
+        owner = os.getenv("PAYG_OWNER_ID", "").strip()
+        if not owner.isdecimal() or int(actor_id) != int(owner):
+            raise PaygError("owner permission required")
+        if int(new_rate) <= 0:
+            raise PaygError("PAYG rate must be positive")
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            await conn.execute("BEGIN IMMEDIATE")
+            async with conn.execute(
+                "SELECT admin_id,status FROM payg_accounts WHERE id=?",
+                (int(account_id),),
+            ) as cur:
+                account = await cur.fetchone()
+            if account is None or str(account[1]) == "migrated":
+                await conn.rollback()
+                raise PaygError("PAYG account not found")
+            await conn.execute(
+                "INSERT INTO payg_rate_switches(account_id,actor_id,requested_rate)"
+                " VALUES(?,?,?)",
+                (int(account_id),int(actor_id),int(new_rate)),
+            )
+            await conn.commit()
+        try:
+            admin = await db.get_admin_by_id(int(account[0]))
+            if not admin or not admin.marzban_username:
+                raise PaygError("Rebecca admin missing")
+            raw = int(await rebecca_api.get_admin_usage(admin.marzban_username))
+            if raw < 0:
+                raise PaygError("invalid Rebecca usage counter")
+            await self.settle_usage(
+                int(account_id), raw, _rate_switch_actor=int(actor_id),
+            )
+            await self.change_account_rate(
+                int(account_id), int(actor_id), int(new_rate),
+                verified_raw_usage_bytes=raw,
+            )
+        finally:
+            # On an ambiguous failure the old rate is preserved; the next
+            # attempt must obtain a fresh counter, not reuse the old sample.
+            async with aiosqlite.connect(self.db_path) as conn:
+                await conn.execute(
+                    "DELETE FROM payg_rate_switches "
+                    "WHERE account_id=? AND actor_id=?",
+                    (int(account_id),int(actor_id)),
+                )
+                await conn.commit()
+
     async def change_account_rate(
         self, account_id: int, actor_id: int, new_rate: int,
         *, verified_raw_usage_bytes: int,
@@ -901,7 +964,10 @@ class PaygService:
                     pass
             raise
 
-    async def settle_usage(self, account_id: int, raw_usage_bytes: int) -> BillingResult:
+    async def settle_usage(
+        self, account_id: int, raw_usage_bytes: int, *,
+        _rate_switch_actor: int | None = None,
+    ) -> BillingResult:
         raw = int(raw_usage_bytes)
         if raw < 0:
             raise PaygError("Rebecca usage counter is negative; billing refused")
@@ -915,6 +981,16 @@ class PaygService:
                 await conn.rollback()
                 raise PaygError("PAYG account not found")
             account = dict(row)
+            async with conn.execute(
+                "SELECT actor_id FROM payg_rate_switches WHERE account_id=?",
+                (int(account_id),),
+            ) as cur:
+                switch = await cur.fetchone()
+            if switch is not None and (
+                _rate_switch_actor is None or int(switch[0]) != int(_rate_switch_actor)
+            ):
+                await conn.rollback()
+                raise PaygError("rate switch pending; scheduler billing paused")
             old_status = str(account["status"])
             if old_status == "migrated":
                 await conn.rollback()
