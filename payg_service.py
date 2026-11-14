@@ -407,6 +407,15 @@ class PaygService:
                     if int(prior[0]) != int(user_id) or int(prior[1]) != -amount:
                         await conn.rollback()
                         raise PaygError("conflicting repeated wallet debit")
+                    async with conn.execute(
+                        "SELECT 1 FROM wallet_ledger WHERE kind='migration_refund' "
+                        "AND reference_type='payg_migration' AND reference_id=?",
+                        (int(reference_id),),
+                    ) as cur:
+                        refunded = await cur.fetchone()
+                    if refunded:
+                        await conn.rollback()
+                        raise PaygError("refunded migration cannot be debited again")
                     balance = await self._balance_in_conn(conn, int(user_id))
                     await conn.rollback()
                     return balance
