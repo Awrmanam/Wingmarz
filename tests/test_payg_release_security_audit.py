@@ -94,8 +94,9 @@ async def test_missing_historical_accrual_never_reprices_changed_rate(tmp_path):
     account_id=seed_account(path,raw=GIB,cumulative=GIB,rate=2000,charged=1000)
     with sqlite3.connect(path) as conn:
         conn.execute(
-            "INSERT INTO payg_rate_history(account_id,old_rate,new_rate,actor_id)"
-            "VALUES(?,1000,2000,99)",(account_id,),
+            "INSERT INTO payg_rate_history"
+            "(account_id,actor_id,previous_rate,new_rate,boundary_raw_bytes,boundary_cumulative_bytes)"
+            "VALUES(?,99,1000,2000,0,0)",(account_id,),
         )
     with pytest.raises(PaygError,match="historical accrual missing"):
         await service.get_accrued_target(account_id)
