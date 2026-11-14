@@ -875,7 +875,7 @@ class PaygService:
             )
             await conn.execute(
                 "UPDATE payg_discount_targets SET desired_rate=base_rate,"
-                "last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE account_id=?",
+                "updated_at=CURRENT_TIMESTAMP WHERE account_id=?",
                 (int(account_id),),
             )
             await conn.execute(
