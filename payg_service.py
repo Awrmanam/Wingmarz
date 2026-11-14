@@ -1069,6 +1069,35 @@ class PaygService:
             if switch:
                 await conn.rollback()
                 raise PaygError("another rate switch is in progress")
+            # Freeze the legacy accrued obligation at the OLD rate before
+            # recording a new rate-history entry. A missing ledger on an
+            # already switched account is ambiguous and must fail closed.
+            async with conn.execute(
+                "SELECT 1 FROM payg_billing_state WHERE account_id=?",
+                (int(account_id),),
+            ) as cur:
+                billing_exists = await cur.fetchone()
+            if not billing_exists:
+                async with conn.execute(
+                    "SELECT 1 FROM payg_rate_history WHERE account_id=? LIMIT 1",
+                    (int(account_id),),
+                ) as cur:
+                    if await cur.fetchone():
+                        await conn.rollback()
+                        raise PaygError("historical accrual missing; manual review required")
+                async with conn.execute(
+                    "SELECT cumulative_usage_bytes FROM payg_accounts WHERE id=?",
+                    (int(account_id),),
+                ) as cur:
+                    old_cumulative = int((await cur.fetchone())[0])
+                old_numerator = old_cumulative * int(current["price_per_gb_toman"])
+                await conn.execute(
+                    "INSERT INTO payg_billing_state"
+                    "(account_id,accrued_toman,remainder_numerator,last_priced_bytes)"
+                    "VALUES(?,?,?,?)",
+                    (int(account_id),old_numerator // GIB,
+                     old_numerator % GIB,old_cumulative),
+                )
             await conn.execute(
                 "UPDATE payg_accounts SET last_raw_usage_bytes=?,"
                 "price_per_gb_toman=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
