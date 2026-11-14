@@ -788,6 +788,14 @@ class PaygService:
                 account = await cur.fetchone()
             if account is None:
                 raise PaygError("PAYG account not found")
+            # The legacy fallback is valid only for a single unchanged rate.
+            # A missing historical ledger must not silently reprice past bytes.
+            async with conn.execute(
+                "SELECT 1 FROM payg_rate_history WHERE account_id=? LIMIT 1",
+                (int(account_id),),
+            ) as cur:
+                if await cur.fetchone():
+                    raise PaygError("historical accrual missing for changed-rate account")
             return int(account[0]) * int(account[1]) // GIB
 
     @staticmethod
