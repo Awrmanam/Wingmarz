@@ -348,6 +348,22 @@ async def service_payg_create(callback: CallbackQuery, state: FSMContext):
         await callback.answer("نامعتبر", show_alert=True)
         return
     source, service_id = parts[2], int(parts[3])
+    # Existing wallet credit can originate from a different product. Unlike
+    # top-up checkout, this direct-create button has no payment KYC checkpoint.
+    # Never create or reveal an active PAYG panel to an unverified identity.
+    if await payg_kyc_gate.requires_kyc(int(callback.from_user.id)):
+        await callback.message.edit_text(
+            "🪪 <b>احراز هویت برای فعال‌سازی PAYG الزامی است.</b>\n\n"
+            "موجودی کیف پول شما حفظ می‌شود. پس از تأیید هویت، "
+            "برای ساخت پنل با همان موجودی به فروشگاه برگردید.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🪪 شروع احراز هویت", callback_data="kyc:start")],
+                [InlineKeyboardButton(text="📋 وضعیت احراز هویت", callback_data="kyc:status")],
+                [InlineKeyboardButton(text="↩️ بازگشت به PAYG", callback_data=f"paygsvc:offer:{source}:{service_id}")],
+            ]),
+        )
+        await callback.answer()
+        return
     try:
         account = await payg_offer_service.provision(callback.from_user.id, service_id)
         admin = await db.get_admin_by_id(int(account["admin_id"]))
