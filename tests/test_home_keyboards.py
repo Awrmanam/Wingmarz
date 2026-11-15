@@ -24,13 +24,11 @@ def test_public_home_keyboard_uses_runtime_style_engine(monkeypatch):
         "public_buy_reseller",
         "wallet:accounts",
         "wallet:home",
-        "wallet:reports",
-        "wallet:ledger:all:0",
-        "tariffs:home",
-        "svcmarket:trial",
-        "kyc:status",
-        "support:home",
+        "customer:reports",
+        "customer:explore",
+        "customer:account",
     ]
+    assert len(callbacks) == 6
     assert all("callback_data" in kwargs for _text, kwargs in calls)
 
 
@@ -43,21 +41,15 @@ def test_reseller_home_keyboard_preserves_business_callbacks(monkeypatch):
     callbacks = [button.callback_data for row in keyboard.inline_keyboard for button in row]
 
     assert callbacks == [
-        "my_info",
-        "my_report",
-        "my_users",
-        "reactivate_users",
         "admin_buy_reseller",
-        "admin_renew",
         "wallet:accounts",
         "wallet:home",
-        "wallet:reports",
-        "wallet:ledger:all:0",
-        "tariffs:home",
-        "svcmarket:trial",
-        "kyc:status",
-        "support:home",
+        "customer:reports",
+        "customer:explore",
+        "customer:account",
     ]
+    assert len(callbacks) == 6
+
 
 
 def test_home_renderer_no_longer_uses_legacy_direct_keyboard_builders():
@@ -69,7 +61,7 @@ def test_home_renderer_no_longer_uses_legacy_direct_keyboard_builders():
     assert '@home_navigation_router.message(CommandStart(), F.chat.type == "private")' in source
 
 
-def test_kyc_emoji_is_separate_from_account_info_for_both_home_roles(monkeypatch):
+def test_kyc_and_existing_panel_actions_remain_accessible_in_secondary_hubs(monkeypatch):
     calls = []
 
     async def fake_styled(text, **kwargs):
@@ -77,13 +69,18 @@ def test_kyc_emoji_is_separate_from_account_info_for_both_home_roles(monkeypatch
         return InlineKeyboardButton(text=text, callback_data=kwargs.get("callback_data"))
 
     monkeypatch.setattr(home_keyboards.style_engine, "styled_button", fake_styled)
-    run(home_keyboards.public_home_keyboard())
-    run(home_keyboards.reseller_home_keyboard())
-    kyc = [kwargs for _text, kwargs in calls if kwargs.get("callback_data") == "kyc:status"]
-    info = [kwargs for _text, kwargs in calls if kwargs.get("callback_data") == "my_info"]
-    assert len(kyc) == 2
-    assert all(button.get("icon_key") == "kyc" for button in kyc)
-    assert len(info) == 1 and info[0]["icon_key"] == "info"
+    account = run(home_keyboards.customer_hub_keyboard("account", reseller=True))
+    reports = run(home_keyboards.customer_hub_keyboard("reports", reseller=True))
+    explore = run(home_keyboards.customer_hub_keyboard("explore", reseller=True))
+    callbacks = [b.callback_data for markup in (account,reports,explore)
+                 for row in markup.inline_keyboard for b in row]
+    assert {"kyc:status","support:home","my_info","my_users",
+            "reactivate_users","my_report","wallet:reports","wallet:ledger:all:0",
+            "tariffs:home","svcmarket:trial"}.issubset(callbacks)
+    kyc=[kwargs for _text,kwargs in calls if kwargs.get("callback_data")=="kyc:status"]
+    info=[kwargs for _text,kwargs in calls if kwargs.get("callback_data")=="my_info"]
+    assert len(kyc)==1 and kyc[0]["icon_key"]=="kyc"
+    assert len(info)==1 and info[0]["icon_key"]=="info"
 
 
 def test_shared_kyc_button_is_searchable_in_editor():
