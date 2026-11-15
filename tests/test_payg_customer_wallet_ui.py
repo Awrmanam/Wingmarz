@@ -58,6 +58,7 @@ async def test_payg_account_mapping_and_reports_are_owner_scoped(tmp_path,monkey
     monkeypatch.setattr(reports,"payg_service",service)
     monkeypatch.setattr(reports,"payg_offer_service",PaygOfferService(service.db_path))
     await service.ensure_schema()
+    await reports.payg_offer_service.ensure_schema()
     account_id=seed_account(service.db_path,rate=2500)
     with sqlite3.connect(service.db_path) as conn:
         conn.execute(
