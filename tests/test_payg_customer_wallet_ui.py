@@ -84,3 +84,67 @@ async def test_legacy_payg_account_without_service_mapping_remains_visible(tmp_p
     account=await reports.account_for_customer(42,account_id)
     assert account is not None
     assert account["service_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_legacy_fixed_renewal_callbacks_are_captured_only_for_owned_payg(monkeypatch):
+    from types import SimpleNamespace
+    from handlers.payg_customer_center import LegacyFixedRenewalForPayg
+    import handlers.payg_customer_center as center
+    admin=SimpleNamespace(id=420,user_id=42)
+    monkeypatch.setattr(center.db,"get_admin_by_id",AsyncMock(return_value=admin))
+    monkeypatch.setattr(center.payg_service,"get_admin_account",AsyncMock(
+        return_value={"id":1,"user_id":42,"admin_id":420}
+    ))
+    guard=LegacyFixedRenewalForPayg()
+    for name in (
+        "admin_renew_panel_420",
+        "admin_full_renew_420",
+        "admin_full_renew_plan_420_3",
+        "admin_combo_renew_plan_420_3",
+        "admin_reset_renew_plan_420_3",
+        "admin_renew_traffic_420",
+        "admin_renew_time_420",
+        "admin_renew_users_420",
+    ):
+        assert await guard(SimpleNamespace(
+            data=name,from_user=SimpleNamespace(id=42)
+        )),name
+    assert not await guard(SimpleNamespace(
+        data="admin_full_renew_plan_420_3",from_user=SimpleNamespace(id=43)
+    ))
+    monkeypatch.setattr(center.payg_service,"get_admin_account",AsyncMock(return_value=None))
+    assert not await guard(SimpleNamespace(
+        data="admin_full_renew_plan_420_3",from_user=SimpleNamespace(id=42)
+    ))
+
+
+@pytest.mark.asyncio
+async def test_customer_dashboard_is_read_only_and_scoped(tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    import handlers.payg_customer_center as center
+    service=PaygService(str(tmp_path/"dashboard.db"))
+    monkeypatch.setattr(reports,"payg_service",service)
+    monkeypatch.setattr(reports,"payg_offer_service",PaygOfferService(service.db_path))
+    monkeypatch.setattr(center,"payg_service",service)
+    await service.ensure_schema()
+    account_id=seed_account(service.db_path,rate=2500)
+    with sqlite3.connect(service.db_path) as conn:
+        conn.execute(
+            "INSERT INTO payg_account_services(account_id,provider,service_id)"
+            "VALUES(?,'rebecca',7)",(account_id,)
+        )
+    monkeypatch.setattr(center,"get_service_by_rebecca_id",AsyncMock(
+        return_value=SimpleNamespace(display_name="ProMax")
+    ))
+    message=SimpleNamespace(edit_text=AsyncMock())
+    await center.render_payg_dashboard(message,42,account_id)
+    text=message.edit_text.call_args.args[0]
+    assert "PAYG" in text and "ProMax" in text and "2,500" in text
+    keyboard=message.edit_text.call_args.kwargs["reply_markup"]
+    callbacks=[b.callback_data for row in keyboard.inline_keyboard for b in row]
+    assert f"paygsvc:topup:a:7:{account_id}" in callbacks
+    assert not any(x.startswith("admin_full_renew") for x in callbacks)
+    await center.render_payg_dashboard(message,43,account_id)
+    assert "متعلق به شما نیست" in message.edit_text.call_args.args[0]
+    assert await service.get_balance(42)==0
