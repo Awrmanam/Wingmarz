@@ -189,7 +189,6 @@ async def render_fixed_dashboard(message,user_id: int,admin_id: int) -> bool:
          _b("📊 گزارش لحظه‌ای",f"report_panel_{int(admin_id)}")],
         [_b("🔐 اطلاعات ورود",f"rebecca:credentials:{int(admin_id)}")],
         [_b("👥 کاربران پنل",f"users_panel_{int(admin_id)}")],
-        [_b("🔄 فعال‌سازی کاربران",f"reactivate_panel_{int(admin_id)}")],
         [_b("🔙 سرویس‌های من","wallet:accounts")],
     ]
     await message.edit_text(
