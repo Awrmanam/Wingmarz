@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from html import escape
+import re
 
 from aiogram import F, Router
 from aiogram.filters import BaseFilter
@@ -15,6 +16,7 @@ from payg_customer_reporting import (
 from payg_service import GIB, payg_service
 from database import db
 from rebecca_catalog import get_service_by_rebecca_id
+from style_engine import style_engine
 
 
 payg_customer_center_router=Router(name="payg_customer_center")
@@ -22,6 +24,50 @@ payg_customer_center_router=Router(name="payg_customer_center")
 
 def _b(label: str, target: str):
     return InlineKeyboardButton(text=label,callback_data=target)
+
+
+def _status_label(status: str) -> str:
+    return {
+        "active": "🟢 فعال",
+        "suspended": "🔴 متوقف به دلیل اتمام اعتبار",
+        "migrated": "🔁 تبدیل‌شده به پلن کامل",
+    }.get(str(status), "نامشخص")
+
+
+async def _styled_markup(rows):
+    """Central premium-aware customer button renderer, preserving all callbacks."""
+    rendered=[]
+    for row in rows:
+        styled_row=[]
+        for button in row:
+            callback=str(button.callback_data or "")
+            if not callback:
+                styled_row.append(button)
+                continue
+            label=str(button.text)
+            clean=re.sub(r"^[^\\w@]+", "", label, flags=re.UNICODE).strip() or label
+            fallback=label[:len(label)-len(clean)].strip() or None
+            if "بازگشت" in clean or clean.startswith(("قبلی", "داشبورد", "گزارش خلاصه")):
+                key="back"
+            elif callback.startswith(("wallet:", "paygsvc:topup:", "payg:topup:")):
+                key="wallet"
+            elif callback.startswith(("paygcustomer:report:", "paygcustomer:detail:", "report_panel_")):
+                key="report"
+            elif callback.startswith("users_panel_"):
+                key="users"
+            elif callback.startswith("info_panel_"):
+                key="info"
+            elif callback.startswith(("admin_renew_panel_", "paygsvc:migrate:")):
+                key="renew"
+            elif callback.startswith(("customer:fixed:", "paygcustomer:dashboard:")):
+                key="plan"
+            else:
+                key=None
+            styled_row.append(await style_engine.styled_button(
+                clean, callback_data=callback, icon_key=key, fallback=fallback
+            ))
+        rendered.append(styled_row)
+    return InlineKeyboardMarkup(inline_keyboard=rendered)
 
 
 def _money(value):
@@ -44,7 +90,7 @@ async def render_wallet(message,user_id: int):
         if last else "آخرین برداشت: ثبت نشده"
     )
     lines.append(f"آخرین ثبت مالی: {escape(str(data['last_update'] or 'ثبت نشده'))}")
-    await message.edit_text("\n".join(lines),reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+    await message.edit_text("\n".join(lines),reply_markup=await _styled_markup([
         [_b("➕ افزایش اعتبار","wallet:topup")],
         [_b("🧾 گردش مالی","wallet:ledger:all:0")],
         [_b("⚡ حساب‌های PAYG","wallet:accounts")],
@@ -75,7 +121,7 @@ async def render_accounts(message,user_id: int):
     await message.edit_text(
         "📦 <b>سرویس‌های من</b>\n\nحساب‌های PAYG و پلن‌های کامل شما:"
         if len(rows)>1 else "هنوز سرویسی برای نمایش ندارید.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+        reply_markup=await _styled_markup(rows),
     )
 
 
@@ -124,7 +170,7 @@ async def render_payg_dashboard(message,user_id: int,account_id: int):
     if service_id is not None:
         rows.append([_b("🔄 تبدیل به پلن کامل",f"paygsvc:migrate:a:{service_id}:{account_id}")])
     rows.append([_b("🔙 سرویس‌های من","wallet:accounts")])
-    await message.edit_text("\n".join(lines),reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await message.edit_text("\n".join(lines),reply_markup=await _styled_markup(rows))
 
 
 @payg_customer_center_router.callback_query(F.data=="wallet:home")
@@ -151,7 +197,7 @@ async def wallet_reports(callback:CallbackQuery,state:FSMContext):
     await callback.message.edit_text(
         "📊 <b>گزارش مصرف</b>\\n\\nسرویس اعتباری موردنظر را انتخاب کنید."
         if accounts else "هنوز حساب PAYG برای گزارش مصرف ندارید.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+        reply_markup=await _styled_markup(rows),
     )
     await callback.answer()
 
@@ -171,7 +217,7 @@ async def wallet_topup(callback:CallbackQuery,state:FSMContext):
     await callback.message.edit_text(
         "💰 <b>افزایش اعتبار</b>\n\nسرویس PAYG موردنظر را انتخاب کنید. "
         "اعتبار به کیف پول مشترک موجود افزوده می‌شود.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+        reply_markup=await _styled_markup(rows),
     )
     await callback.answer()
 
@@ -213,7 +259,7 @@ async def payg_report(callback:CallbackQuery):
         lines.append(f"⚠️ بدهی ثبت‌شده: <b>{_money(int(accrued)-charged)}</b>")
     if report["hold"]:
         lines.append("⚠️ بخشی از محاسبه مصرف نیازمند بررسی است.")
-    await callback.message.edit_text("\n".join(lines),reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+    await callback.message.edit_text("\n".join(lines),reply_markup=await _styled_markup([
         [_b("📋 جزئیات بیشتر",f"paygcustomer:detail:{account_id}")],
         [_b("🧾 گردش مالی","wallet:ledger:all:0")],
         [_b("🔙 داشبورد",f"paygcustomer:dashboard:{account_id}")],
@@ -256,7 +302,7 @@ async def payg_report_details(callback:CallbackQuery):
                 f"{int(row['previous_rate']):,} ← {int(row['new_rate']):,} ت/GB"
             )
     lines.append("\nگزارش روزانه/هفتگی تنها در صورت وجود داده تاریخی معتبر امکان‌پذیر است.")
-    await callback.message.edit_text("\n".join(lines),reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+    await callback.message.edit_text("\n".join(lines),reply_markup=await _styled_markup([
         [_b("🔙 گزارش خلاصه",f"paygcustomer:report:{account_id}")],
     ]))
     await callback.answer()
@@ -296,7 +342,7 @@ async def wallet_ledger(callback:CallbackQuery):
     if nav:
         filters.append(nav)
     filters.append([_b("🔙 کیف پول","wallet:home")])
-    await callback.message.edit_text("\n\n".join(lines),reply_markup=InlineKeyboardMarkup(inline_keyboard=filters))
+    await callback.message.edit_text("\n\n".join(lines),reply_markup=await _styled_markup(filters))
     await callback.answer()
 
 
