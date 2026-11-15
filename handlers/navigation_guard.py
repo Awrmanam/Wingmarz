@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 
 from aiogram import F, Router
-from aiogram.filters import Command
+from aiogram.filters import Command, Filter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
@@ -42,9 +42,8 @@ async def _return_home(message: Message, user_id: int, *, edit: bool) -> None:
 
 @navigation_guard_router.callback_query(F.data == "ui:cancel")
 async def cancel_current_screen(callback: CallbackQuery, state: FSMContext) -> None:
-    if str(getattr(getattr(callback, "message", None), "chat", None).type
-           if getattr(callback, "message", None) and getattr(callback.message, "chat", None)
-           else "") != "private":
+    chat=getattr(getattr(callback, "message", None), "chat", None)
+    if getattr(chat, "type", None) != "private":
         await callback.answer("لغو فقط در گفت‌وگوی خصوصی ربات انجام می‌شود.", show_alert=True)
         return
     await state.clear()
@@ -85,13 +84,17 @@ async def unified_legacy_panel_roots(callback: CallbackQuery, state: FSMContext)
     await callback.answer()
 
 
-@navigation_guard_router.callback_query(F.data.startswith("panelprov:root:")
-                                         | F.data.startswith("panelprov:select:"))
+class RebeccaProvider(Filter):
+    async def __call__(self, _event) -> bool:
+        return config.PANEL_PROVIDER == "rebecca"
+
+
+@navigation_guard_router.callback_query(
+    F.data.startswith("panelprov:root:") | F.data.startswith("panelprov:select:"),
+    RebeccaProvider(),
+)
 async def retired_provider_picker(callback: CallbackQuery, state: FSMContext) -> None:
     """Stale Rebecca-only provider selectors cannot reopen obsolete menus."""
-    if config.PANEL_PROVIDER != "rebecca":
-        await callback.answer("برای انتخاب سرویس از صفحه خرید جدید استفاده کنید.", show_alert=True)
-        return
     await state.clear()
     fields=str(callback.data or "").split(":")
     source=fields[2] if len(fields)>2 and fields[2] in {"a", "p"} else "p"
@@ -103,10 +106,10 @@ async def retired_provider_picker(callback: CallbackQuery, state: FSMContext) ->
 @navigation_guard_router.callback_query(F.data.startswith("payg:history:"))
 async def retired_payg_history(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
-    from handlers.payg_customer_center import ledger_page, _styled_markup, _b
+    from handlers.payg_customer_center import _styled_markup, _b
     # Keeping this read-only landing screen avoids recreating a legacy wallet.
     await callback.message.edit_text(
-        "🧾 <b>گردش مالی PAYG</b>\\n\\n"
+        "🧾 <b>گردش مالی PAYG</b>\n\n"
         "گزارش کامل شارژ و مصرف از کیف پول یکپارچه در دسترس است.",
         reply_markup=await _styled_markup([
             [_b("🧾 گردش مالی", "wallet:ledger:all:0")],
