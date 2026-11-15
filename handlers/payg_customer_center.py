@@ -11,6 +11,7 @@ from payg_customer_reporting import (
     account_for_customer, customer_accounts, ledger_page, usage_report, wallet_summary,
 )
 from payg_service import GIB, payg_service
+from database import db
 from rebecca_catalog import get_service_by_rebecca_id
 
 
@@ -57,7 +58,15 @@ async def render_accounts(message,user_id: int):
         service=await get_service_by_rebecca_id(int(service_id)) if service_id is not None else None
         label=service.display_name if service else f"حساب #{account['id']}"
         rows.append([_b(f"⚡ PAYG · {label}",f"paygcustomer:dashboard:{account['id']}")])
-    rows.append([_b("📦 پلن‌های کامل / تمدید","admin_renew")])
+    linked={int(a["admin_id"]) for a in accounts}
+    for admin in await db.get_admins_for_user(int(user_id)):
+        if int(admin.id) not in linked:
+            # Historical PAYG accounts can lack the service mapping; do not
+            # accidentally advertise their fixed-plan renewal buttons.
+            if await payg_service.get_admin_account(int(admin.id)):
+                continue
+            name=escape(str(getattr(admin,"admin_name",None) or f"پنل {admin.id}"))
+            rows.append([_b(f"📦 FIXED · {name}",f"admin_renew_panel_{int(admin.id)}")])
     rows.append([_b("🔙 کیف پول","wallet:home")])
     await message.edit_text(
         "📦 <b>سرویس‌های من · PAYG</b>\n\nحساب‌های اعتباری شما:"
