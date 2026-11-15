@@ -2093,9 +2093,14 @@ class PaygService:
         result: dict[str, Any] = {"topup": topup}
         purpose = str(topup["purpose"])
         if purpose == "initial":
-            result["account"] = await self.ensure_payg_account(
-                int(topup["user_id"]), str(topup["provider"])
-            )
+            # Old payment callbacks may arrive after the legacy CREATE route is
+            # retired. Preserve credited wallet funds and require KYC-gated,
+            # service-specific provisioning instead of guessing a service ID.
+            account = await self.get_user_account(int(topup["user_id"]), str(topup["provider"]))
+            if account:
+                result["account"] = account
+            else:
+                result["legacy_initial_needs_service"] = True
         elif purpose == "migration" and topup.get("migration_id"):
             migration_id = int(topup["migration_id"])
             migration = await self.get_migration(migration_id)
