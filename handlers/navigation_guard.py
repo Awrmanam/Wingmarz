@@ -11,7 +11,7 @@ import logging
 from aiogram import F, Router
 from aiogram.filters import Command, Filter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, Message, ReplyKeyboardRemove
 
 import config
 
@@ -56,7 +56,8 @@ async def cancel_current_screen(callback: CallbackQuery, state: FSMContext) -> N
 async def cancel_current_input(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(
-        "❌ مرحله فعلی لغو شد. سفارش یا پرداخت ثبت‌شده‌ای پاک نشده است."
+        "❌ مرحله فعلی لغو شد. سفارش یا پرداخت ثبت‌شده‌ای پاک نشده است.",
+        reply_markup=ReplyKeyboardRemove(),
     )
     await _return_home(message, message.from_user.id, edit=False)
 
