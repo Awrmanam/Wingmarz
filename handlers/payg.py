@@ -387,9 +387,13 @@ async def payg_migration_plans(callback: CallbackQuery):
     if not account or int(account["user_id"]) != int(callback.from_user.id):
         await callback.answer("حساب پیدا نشد.", show_alert=True)
         return
-    plans = await payg_service.list_migration_plans()
+    try:
+        plans = await payg_service.migration_plans_for_account(account_id)
+    except PaygError:
+        await callback.answer("سرویس Rebecca این حساب قدیمی باید قبل از تبدیل تأیید شود.", show_alert=True)
+        return
     if not plans:
-        await callback.answer("فعلاً پلن کاملی برای تبدیل تعریف نشده است.", show_alert=True)
+        await callback.answer("برای همین سرویس پلن کامل فعالی وجود ندارد.", show_alert=True)
         return
     balance = await payg_service.get_balance(callback.from_user.id)
     lines = [
