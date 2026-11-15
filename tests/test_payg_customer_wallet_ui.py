@@ -267,7 +267,7 @@ async def test_payg_usage_summary_is_compact_and_read_only(monkeypatch):
     assert text.count("3,084") == 1
     callbacks=[b.callback_data for row in message.edit_text.await_args.kwargs["reply_markup"].inline_keyboard for b in row]
     assert "paygcustomer:detail:7" in callbacks
-    assert "wallet:ledger:all:0" in callbacks
+    assert "wallet:ledger:all:0:payg:7" in callbacks
     get_report.assert_awaited_once_with(42,7)
     get_balance.assert_awaited_once_with(42)
     callback.answer.assert_awaited_once_with()
