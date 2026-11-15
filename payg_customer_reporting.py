@@ -16,7 +16,7 @@ async def customer_accounts(user_id: int) -> list[dict]:
     async with aiosqlite.connect(payg_service.db_path) as conn:
         conn.row_factory = aiosqlite.Row
         async with conn.execute(
-            "SELECT a.*,s.service_id FROM payg_accounts a "
+            "SELECT a.*,s.service_id,s.display_name_snapshot FROM payg_accounts a "
             "LEFT JOIN payg_account_services s ON s.account_id=a.id "
             "WHERE a.user_id=? AND a.provider='rebecca' AND a.status!='migrated' "
             "ORDER BY a.id DESC",(int(user_id),),
