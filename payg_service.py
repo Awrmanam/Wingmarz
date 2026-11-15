@@ -1878,18 +1878,23 @@ class PaygService:
 
     async def migration_plans_for_account(self, account_id: int) -> list[Any]:
         service_id = await self._migration_service_id(account_id)
-        return [
-            plan for plan in await self.list_migration_plans()
-            if service_id in parse_service_ids(
-                str(getattr(plan, "rebecca_service_ids", "") or "")
-            )
-        ]
+        plans = []
+        for plan in await self.list_migration_plans():
+            try:
+                ids = parse_service_ids(str(getattr(plan, "rebecca_service_ids", "") or ""))
+            except ValueError:
+                continue
+            if service_id in ids:
+                plans.append(plan)
+        return plans
 
     async def _assert_migration_plan_matches(self, account_id: int, plan: Any) -> None:
         service_id = await self._migration_service_id(account_id)
-        if service_id not in parse_service_ids(
-            str(getattr(plan, "rebecca_service_ids", "") or "")
-        ):
+        try:
+            ids = parse_service_ids(str(getattr(plan, "rebecca_service_ids", "") or ""))
+        except ValueError as exc:
+            raise PaygError("target FIXED plan has invalid Rebecca service IDs") from exc
+        if service_id not in ids:
             raise PaygError("target FIXED plan belongs to another Rebecca service")
 
     async def get_migration(self, migration_id: int) -> dict[str, Any] | None:
