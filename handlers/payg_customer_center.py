@@ -321,7 +321,11 @@ class LegacyFixedRenewalForPayg(BaseFilter):
         if not admin or int(admin.user_id)!=int(callback.from_user.id):
             return False
         account=await payg_service.get_admin_account(admin_id)
-        return account is not None
+        if account is not None:
+            return True
+        # A stale Telegram button may still reference the retired PAYG admin
+        # after migration. Such an ID must never reach fixed-plan order flow.
+        return admin_id in await historical_payg_admin_ids(callback.from_user.id)
 
 
 @payg_customer_center_router.callback_query(LegacyFixedRenewalForPayg())
@@ -329,7 +333,15 @@ async def redirect_legacy_fixed_renewal(callback:CallbackQuery,state:FSMContext)
     data=str(callback.data or "")
     admin_id=int(data.split("_")[-2] if "_plan_" in data else data.split("_")[-1])
     account=await payg_service.get_admin_account(admin_id)
-    if not account or int(account["user_id"])!=int(callback.from_user.id):
+    if account is None:
+        if admin_id not in await historical_payg_admin_ids(callback.from_user.id):
+            await callback.answer("حساب متعلق به شما نیست",show_alert=True)
+            return
+        await state.clear()
+        await render_accounts(callback.message,callback.from_user.id)
+        await callback.answer("پنل قدیمی PAYG تبدیل شده؛ پنل جدید را انتخاب کنید.",show_alert=True)
+        return
+    if int(account["user_id"])!=int(callback.from_user.id):
         await callback.answer("حساب متعلق به شما نیست",show_alert=True)
         return
     await state.clear()
