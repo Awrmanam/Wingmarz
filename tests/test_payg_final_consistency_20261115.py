@@ -170,3 +170,23 @@ async def test_missing_owner_blocks_only_discount_accounts(tmp_path,monkeypatch)
     monkeypatch.delenv("PAYG_OWNER_ID",raising=False)
     result=await service.reconcile_customer_discounts()
     assert result=={affected:"manual_review"}
+
+
+@pytest.mark.asyncio
+async def test_migration_selector_skips_malformed_unrelated_plans(tmp_path,monkeypatch):
+    from payg_service import db
+    path=str(tmp_path/"plans.db")
+    service=PaygService(path)
+    await service.ensure_schema()
+    account_id=seed_account(path)
+    with sqlite3.connect(path) as conn:
+        conn.execute("CREATE TABLE payg_account_services(account_id INTEGER PRIMARY KEY,provider TEXT DEFAULT 'rebecca',service_id INTEGER)")
+        conn.execute("INSERT INTO payg_account_services(account_id,service_id) VALUES(?,7)",(account_id,))
+    bad=SimpleNamespace(id=3,is_active=True,price=1000,rebecca_service_ids="not-numbers")
+    correct=SimpleNamespace(id=4,is_active=True,price=1000,rebecca_service_ids="7")
+    unrelated=SimpleNamespace(id=5,is_active=True,price=1000,rebecca_service_ids="8")
+    monkeypatch.setattr(db,"get_plans",AsyncMock(return_value=[bad,correct,unrelated]))
+    plans=await service.migration_plans_for_account(account_id)
+    assert [p.id for p in plans]==[4]
+    with pytest.raises(PaygError,match="invalid Rebecca service IDs"):
+        await service._assert_migration_plan_matches(account_id,bad)
