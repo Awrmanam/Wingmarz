@@ -332,7 +332,11 @@ class ForcedJoinMiddleware(BaseMiddleware):
             user_id = int(user.id)
             if user_id in config.SUDO_ADMINS:
                 return await handler(event, data)
-            if getattr(event, "data", "") == "forced_join_refresh":
+            if getattr(event, "data", "") in {"forced_join_refresh", "ui:cancel"}:
+                return await handler(event, data)
+            if isinstance(event, Message) and str(getattr(event,"text","") or "").strip() in {
+                "/cancel","لغو","❌ لغو","انصراف"
+            }:
                 return await handler(event, data)
 
             channels = await db.get_forced_channels()
