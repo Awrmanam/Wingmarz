@@ -236,3 +236,95 @@ async def test_no_services_has_true_empty_state(tmp_path,monkeypatch):
     message=SimpleNamespace(edit_text=AsyncMock())
     await center.render_accounts(message,42)
     assert "هنوز سرویسی" in message.edit_text.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_payg_usage_summary_is_compact_and_read_only(monkeypatch):
+    from types import SimpleNamespace
+    import handlers.payg_customer_center as center
+    account={"cumulative_usage_bytes":int(1.234*GIB),"charged_toman_total":3084,"last_raw_usage_bytes":int(1.234*GIB)}
+    snapshot={"account":account,"accrued":3084,"audit":[
+        {"id":422,"created_at":"2026-11-15 04:35:59","event_type":"settled","charged_toman":4}
+    ],"rates":[],"hold":None}
+    get_report=AsyncMock(return_value=snapshot)
+    get_balance=AsyncMock(return_value=9916)
+    monkeypatch.setattr(center,"usage_report",get_report)
+    monkeypatch.setattr(center.payg_service,"get_balance",get_balance)
+    message=SimpleNamespace(edit_text=AsyncMock())
+    callback=SimpleNamespace(
+        data="paygcustomer:report:7",from_user=SimpleNamespace(id=42),
+        message=message,answer=AsyncMock(),
+    )
+    await center.payg_report(callback)
+    text=message.edit_text.await_args.args[0]
+    assert "1.23 GB" in text
+    assert "3,084 تومان" in text
+    assert "9,916 تومان" in text
+    assert "آخرین رخدادهای مصرف" not in text
+    assert "آخرین شمارنده" not in text
+    assert "settled" not in text
+    assert "Snapshot" not in text
+    assert text.count("3,084") == 1
+    callbacks=[b.callback_data for row in message.edit_text.await_args.kwargs["reply_markup"].inline_keyboard for b in row]
+    assert "paygcustomer:detail:7" in callbacks
+    assert "wallet:ledger:all:0" in callbacks
+    get_report.assert_awaited_once_with(42,7)
+    get_balance.assert_awaited_once_with(42)
+    callback.answer.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_payg_usage_details_are_optional_and_scoped(monkeypatch):
+    from types import SimpleNamespace
+    import handlers.payg_customer_center as center
+    snapshot={"account":{"last_raw_usage_bytes":GIB,"charged_toman_total":2500},
+              "audit":[{"id":n,"created_at":f"2026-11-15 04:{n:02d}:00",
+                        "event_type":"settled","charged_toman":n}
+                       for n in range(8)],
+              "rates":[],"hold":None,"accrued":2500}
+    read=AsyncMock(return_value=snapshot)
+    monkeypatch.setattr(center,"usage_report",read)
+    callback=SimpleNamespace(
+        data="paygcustomer:detail:7",from_user=SimpleNamespace(id=42),
+        message=SimpleNamespace(edit_text=AsyncMock()),answer=AsyncMock(),
+    )
+    await center.payg_report_details(callback)
+    shown=callback.message.edit_text.await_args.args[0]
+    assert "آخرین ۵ رویداد" in shown
+    assert "04:04:00" in shown
+    assert "04:05:00" not in shown
+    assert "🔙 گزارش خلاصه" in [
+        b.text for row in callback.message.edit_text.await_args.kwargs["reply_markup"].inline_keyboard for b in row]
+    read.assert_awaited_once_with(42,7)
+
+    read.return_value=None
+    callback.message.edit_text.reset_mock()
+    callback.answer.reset_mock()
+    callback.from_user.id=43
+    await center.payg_report_details(callback)
+    callback.answer.assert_awaited_once_with("حساب متعلق به شما نیست",show_alert=True)
+    callback.message.edit_text.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_payg_summary_shows_debt_or_financial_review_without_guessing(monkeypatch):
+    from types import SimpleNamespace
+    import handlers.payg_customer_center as center
+    snapshot={"account":{"cumulative_usage_bytes":GIB,"charged_toman_total":1000},
+              "accrued":2500,"audit":[],"rates":[],"hold":"ambiguous"}
+    monkeypatch.setattr(center,"usage_report",AsyncMock(return_value=snapshot))
+    monkeypatch.setattr(center.payg_service,"get_balance",AsyncMock(return_value=0))
+    callback=SimpleNamespace(data="paygcustomer:report:7",
+        from_user=SimpleNamespace(id=42),message=SimpleNamespace(edit_text=AsyncMock()),
+        answer=AsyncMock())
+    await center.payg_report(callback)
+    text=callback.message.edit_text.await_args.args[0]
+    assert "1,500 تومان" in text
+    assert "نیازمند بررسی" in text
+
+    snapshot["accrued"]=None
+    snapshot["hold"]=None
+    await center.payg_report(callback)
+    text=callback.message.edit_text.await_args.args[0]
+    assert "نیازمند بررسی" in text
+    assert "1,500 تومان" not in text
