@@ -23,7 +23,7 @@ def _back_keyboard() -> InlineKeyboardMarkup:
 
 
 async def _panel_back_keyboard(admin: Any) -> InlineKeyboardMarkup:
-    """Return PAYG panel readers to their dashboard, FIXED to reseller home."""
+    """Return PAYG and FIXED panel readers to their service dashboards."""
     from payg_service import payg_service
     account=await payg_service.get_admin_account(int(admin.id))
     if account and int(account["user_id"])==int(admin.user_id):
@@ -33,7 +33,12 @@ async def _panel_back_keyboard(admin: Any) -> InlineKeyboardMarkup:
                 callback_data=f"paygcustomer:dashboard:{int(account['id'])}",
             )
         ]])
-    return _back_keyboard()
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(
+            text="🔙 داشبورد سرویس",
+            callback_data=f"customer:fixed:{int(admin.id)}",
+        )
+    ]])
 
 
 def _as_non_negative_int(value: Any, default: int = 0) -> int:
