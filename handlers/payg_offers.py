@@ -254,7 +254,7 @@ async def _render_offer(message: Message, user_id: int, source: str, service_id:
     service = await get_service_by_rebecca_id(int(service_id))
     snapshot = await payg_offer_service.snapshot(int(user_id), int(service_id))
     offer = snapshot["offer"]
-    if not service or not offer or not int(offer["enabled"]):
+    if not service or not offer or (not int(offer["enabled"]) and not snapshot["account"]):
         await message.edit_text(
             "⚡ PAYG این سرویس در حال حاضر فعال نیست.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
@@ -276,6 +276,8 @@ async def _render_offer(message: Message, user_id: int, source: str, service_id:
         f"📦 معادل تقریبی موجودی: <b>{float(snapshot['equivalent_gb']):.2f} GB</b>",
     ]
     rows: list[list[InlineKeyboardButton]] = []
+    if account and not int(offer["enabled"]):
+        lines.append("ℹ️ فروش جدید این سرویس متوقف است؛ شارژ حساب‌های موجود فعال می‌ماند.")
     if account:
         used_gb = int(account["cumulative_usage_bytes"] or 0) / (1024 ** 3)
         lines.extend([
@@ -402,9 +404,16 @@ async def _begin_amount(
     account_id: int | None = None,
 ) -> None:
     offer = await payg_offer_service.get_offer(service_id)
-    if not offer or not int(offer["enabled"]):
-        await callback.answer("PAYG این سرویس فعال نیست.", show_alert=True)
+    if not offer or (not int(offer["enabled"]) and account_id is None):
+        await callback.answer("فروش جدید PAYG این سرویس فعال نیست.", show_alert=True)
         return
+    if account_id is not None:
+        account = await payg_offer_service.account_for_user_service(
+            callback.from_user.id, service_id
+        )
+        if not account or int(account["id"]) != int(account_id) or str(account["status"]) not in {"active", "suspended"}:
+            await callback.answer("این حساب دیگر قابل شارژ نیست.", show_alert=True)
+            return
     await state.clear()
     await state.update_data(
         payg_service_id=int(service_id),
