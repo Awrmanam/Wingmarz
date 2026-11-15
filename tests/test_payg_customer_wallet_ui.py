@@ -148,3 +148,27 @@ async def test_customer_dashboard_is_read_only_and_scoped(tmp_path,monkeypatch):
     await center.render_payg_dashboard(message,43,account_id)
     assert "متعلق به شما نیست" in message.edit_text.call_args.args[0]
     assert await service.get_balance(42)==0
+
+
+@pytest.mark.asyncio
+async def test_my_services_shows_fixed_and_payg_without_mixing_renewal(monkeypatch):
+    from types import SimpleNamespace
+    import handlers.payg_customer_center as center
+    monkeypatch.setattr(center,"customer_accounts",AsyncMock(return_value=[
+        {"id":1,"admin_id":420,"service_id":7}
+    ]))
+    monkeypatch.setattr(center,"get_service_by_rebecca_id",AsyncMock(
+        return_value=SimpleNamespace(display_name="ProMax")
+    ))
+    monkeypatch.setattr(center.db,"get_admins_for_user",AsyncMock(return_value=[
+        SimpleNamespace(id=420,admin_name="PAYG panel"),
+        SimpleNamespace(id=421,admin_name="Fixed panel"),
+    ]))
+    monkeypatch.setattr(center.payg_service,"get_admin_account",AsyncMock(return_value=None))
+    message=SimpleNamespace(edit_text=AsyncMock())
+    await center.render_accounts(message,42)
+    keyboard=message.edit_text.call_args.kwargs["reply_markup"]
+    mapping={b.text:b.callback_data for row in keyboard.inline_keyboard for b in row}
+    assert mapping["⚡ PAYG · ProMax"]=="paygcustomer:dashboard:1"
+    assert mapping["📦 FIXED · Fixed panel"]=="admin_renew_panel_421"
+    assert "admin_renew_panel_420" not in mapping.values()
