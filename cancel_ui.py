@@ -10,6 +10,7 @@ from typing import Any
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 from style_engine import style_engine
+from flow_cancel_context import current_fsm_state
 
 CANCEL_CALLBACK = "ui:cancel"
 _CANCEL_WORD = re.compile(r"(?:لغو|انصراف|cancel)",re.IGNORECASE)
@@ -114,6 +115,15 @@ async def decorate_cancel(method: Any) -> None:
                            "SendPhoto","SendDocument","SendVideo"}:
         return
     text=getattr(method,"text",None) or getattr(method,"caption",None) or ""
-    if not isinstance(text,str) or _TERMINAL.search(text) or not _INPUT_PROMPT.search(text):
+    if not isinstance(text,str) or _TERMINAL.search(text):
+        return
+    state=current_fsm_state()
+    active=False
+    if state is not None:
+        try:
+            active=bool(await state.get_state())
+        except Exception:
+            active=False
+    if not active and not _INPUT_PROMPT.search(text):
         return
     method.reply_markup=InlineKeyboardMarkup(inline_keyboard=[[await _cancel_button()]])
