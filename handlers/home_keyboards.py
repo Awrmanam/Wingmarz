@@ -76,8 +76,6 @@ async def customer_hub_keyboard(kind: str, *, reseller: bool) -> InlineKeyboardM
             rows.extend([
                 [await _button(config.BUTTONS["my_info"], "my_info", icon_key="info", fallback="👤"),
                  await _button(config.BUTTONS["my_users"], "my_users", icon_key="users", fallback="👥")],
-                [await _button(config.BUTTONS["reactivate_users"], "reactivate_users",
-                               icon_key="refresh", fallback="🔄")],
             ])
     else:
         raise ValueError("unknown customer hub")
