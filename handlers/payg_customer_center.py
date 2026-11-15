@@ -4,6 +4,7 @@ from __future__ import annotations
 from html import escape
 
 from aiogram import F, Router
+from aiogram.filters import BaseFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -244,4 +245,41 @@ async def wallet_ledger(callback:CallbackQuery):
         filters.append(nav)
     filters.append([_b("🔙 کیف پول","wallet:home")])
     await callback.message.edit_text("\n\n".join(lines),reply_markup=InlineKeyboardMarkup(inline_keyboard=filters))
+    await callback.answer()
+
+
+class LegacyFixedRenewalForPayg(BaseFilter):
+    """Intercept stale fixed-plan buttons before any order-creating handler."""
+    PREFIXES=(
+        "admin_renew_panel_","admin_full_renew_","admin_combo_renew_",
+        "admin_reset_renew_","admin_renew_traffic_","admin_renew_time_",
+        "admin_renew_users_",
+    )
+
+    async def __call__(self,callback:CallbackQuery)->bool:
+        data=str(callback.data or "")
+        if not data.startswith(self.PREFIXES):
+            return False
+        try:
+            # Plan selectors contain both the admin ID and a plan ID.
+            admin_id=int(data.split("_")[-2] if "_plan_" in data else data.split("_")[-1])
+        except (TypeError,ValueError):
+            return False
+        admin=await db.get_admin_by_id(admin_id)
+        if not admin or int(admin.user_id)!=int(callback.from_user.id):
+            return False
+        account=await payg_service.get_admin_account(admin_id)
+        return account is not None
+
+
+@payg_customer_center_router.callback_query(LegacyFixedRenewalForPayg())
+async def redirect_legacy_fixed_renewal(callback:CallbackQuery,state:FSMContext):
+    data=str(callback.data or "")
+    admin_id=int(data.split("_")[-2] if "_plan_" in data else data.split("_")[-1])
+    account=await payg_service.get_admin_account(admin_id)
+    if not account or int(account["user_id"])!=int(callback.from_user.id):
+        await callback.answer("حساب متعلق به شما نیست",show_alert=True)
+        return
+    await state.clear()
+    await render_payg_dashboard(callback.message,callback.from_user.id,int(account["id"]))
     await callback.answer()
