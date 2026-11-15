@@ -173,7 +173,7 @@ async def test_my_services_shows_fixed_and_payg_without_mixing_renewal(monkeypat
     keyboard=message.edit_text.call_args.kwargs["reply_markup"]
     mapping={b.text:b.callback_data for row in keyboard.inline_keyboard for b in row}
     assert mapping["⚡ PAYG · ProMax"]=="paygcustomer:dashboard:1"
-    assert mapping["📦 FIXED · Fixed panel"]=="admin_renew_panel_421"
+    assert mapping["📦 FIXED · Fixed panel"]=="customer:fixed:421"
     assert "admin_renew_panel_420" not in mapping.values()
 
 
@@ -219,7 +219,7 @@ async def test_migrated_payg_panel_never_appears_as_fixed(tmp_path,monkeypatch):
     keyboard=message.edit_text.call_args.kwargs["reply_markup"]
     callbacks=[btn.callback_data for row in keyboard.inline_keyboard for btn in row]
     assert "admin_renew_panel_420" not in callbacks
-    assert "admin_renew_panel_421" in callbacks
+    assert "customer:fixed:421" in callbacks
     assert "سرویس‌های من" in text
     assert "حساب PAYG فعالی ندارید" not in text
     assert await reports.historical_payg_admin_ids(42)=={420}
