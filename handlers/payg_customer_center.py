@@ -200,34 +200,64 @@ async def payg_report(callback:CallbackQuery):
         await callback.answer("حساب متعلق به شما نیست",show_alert=True)
         return
     account=report["account"]
+    balance=await payg_service.get_balance(callback.from_user.id)
+    accrued=report["accrued"]
+    charged=int(account["charged_toman_total"])
     lines=[
         "📊 <b>گزارش مصرف PAYG</b>","",
-        f"مصرف تجمعی: {int(account['cumulative_usage_bytes'])/GIB:.3f} GB",
-        f"آخرین شمارنده ثبت‌شده: {int(account['last_raw_usage_bytes'])/GIB:.3f} GB",
-        f"هزینه تاریخی: {_money(report['accrued']) if report['accrued'] is not None else 'نیازمند بررسی'}",
-        f"برداشت از کیف پول: {_money(account['charged_toman_total'])}",
-        "مصرف روزانه/هفتگی: تنها Snapshotهای ثبت‌شده قابل گزارش‌اند.",
-        "تاریخچه Rebecca پیش از ثبت Snapshot در دسترس نیست.",
-        "",
-        "آخرین رخدادهای مصرف:",
+        f"📦 مصرف کل: <b>{int(account['cumulative_usage_bytes'])/GIB:.2f} GB</b>",
+        f"💸 هزینه مصرف: <b>{_money(accrued) if accrued is not None else 'نیازمند بررسی'}</b>",
+        f"💰 موجودی کیف پول: <b>{_money(balance)}</b>",
     ]
-    for event in report["audit"][:8]:
+    if accrued is not None and int(accrued)>charged:
+        lines.append(f"⚠️ بدهی ثبت‌شده: <b>{_money(int(accrued)-charged)}</b>")
+    if report["hold"]:
+        lines.append("⚠️ بخشی از محاسبه مصرف نیازمند بررسی است.")
+    await callback.message.edit_text("\n".join(lines),reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [_b("📋 جزئیات بیشتر",f"paygcustomer:detail:{account_id}")],
+        [_b("🧾 گردش مالی","wallet:ledger:all:0")],
+        [_b("🔙 داشبورد",f"paygcustomer:dashboard:{account_id}")],
+    ]))
+    await callback.answer()
+
+
+@payg_customer_center_router.callback_query(F.data.startswith("paygcustomer:detail:"))
+async def payg_report_details(callback:CallbackQuery):
+    """Keep minute-level billing events available on demand, not in the default report."""
+    try:
+        account_id=int(callback.data.rsplit(":",1)[-1])
+    except ValueError:
+        await callback.answer("شناسه نامعتبر",show_alert=True)
+        return
+    report=await usage_report(callback.from_user.id,account_id)
+    if not report:
+        await callback.answer("حساب متعلق به شما نیست",show_alert=True)
+        return
+    account=report["account"]
+    lines=[
+        "📋 <b>جزئیات مصرف PAYG</b>","",
+        f"آخرین شمارنده Rebecca: {int(account['last_raw_usage_bytes'])/GIB:.3f} GB",
+        f"برداشت ثبت‌شده: {_money(account['charged_toman_total'])}",
+        "رویدادهای زیر، تسویه‌های دوره‌ای هستند و تراکنش خرید جداگانه نیستند.",
+        "",
+        "آخرین ۵ رویداد:",
+    ]
+    for event in report["audit"][:5]:
         lines.append(
-            f"• #{event['id']} {escape(str(event['created_at']))} "
-            f"{escape(str(event['event_type']))} · {_money(event['charged_toman'])}"
+            f"• {escape(str(event['created_at']))} · {_money(event['charged_toman'])}"
         )
     if not report["audit"]:
-        lines.append("رخداد تاریخی قابل نمایش ثبت نشده است.")
+        lines.append("رویداد مصرفی ثبت نشده است.")
     if report["rates"]:
-        lines.append("\nتغییرات نرخ:")
+        lines.append("\nتغییرات اخیر نرخ:")
         for row in report["rates"][:5]:
             lines.append(
                 f"• {escape(str(row['created_at']))}: "
-                f"{int(row['previous_rate']):,} → {int(row['new_rate']):,} ت/GB"
+                f"{int(row['previous_rate']):,} ← {int(row['new_rate']):,} ت/GB"
             )
+    lines.append("\nگزارش روزانه/هفتگی تنها در صورت وجود داده تاریخی معتبر امکان‌پذیر است.")
     await callback.message.edit_text("\n".join(lines),reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-        [_b("🧾 گردش مالی","wallet:ledger:all:0")],
-        [_b("🔙 داشبورد",f"paygcustomer:dashboard:{account_id}")],
+        [_b("🔙 گزارش خلاصه",f"paygcustomer:report:{account_id}")],
     ]))
     await callback.answer()
 
