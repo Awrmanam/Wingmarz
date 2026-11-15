@@ -631,12 +631,18 @@ class PaygOfferService:
         account_id: int | None = None,
     ) -> int:
         offer = await self.get_offer(service_id)
-        if not offer or not int(offer["enabled"]):
-            raise PaygOfferError("PAYG این سرویس فعال نیست.")
+        if not offer:
+            raise PaygOfferError("تعرفه این سرویس دیگر وجود ندارد.")
         if account_id is not None:
             account = await self.account_for_user_service(int(user_id), int(service_id))
             if not account or int(account["id"]) != int(account_id):
                 raise PaygOfferError("top-up service account ownership mismatch")
+            if str(account["status"]) not in {"active", "suspended"}:
+                raise PaygOfferError("this PAYG account cannot be recharged")
+            # Disabling an offer closes NEW sales only. Existing customers
+            # retain recharge access for their still-billed account.
+        elif not int(offer["enabled"]):
+            raise PaygOfferError("فروش جدید PAYG این سرویس غیرفعال است.")
         amount = int(amount_toman)
         if amount < int(offer["min_topup_toman"]):
             raise PaygOfferError("مبلغ شارژ کمتر از حداقل این سرویس است.")
