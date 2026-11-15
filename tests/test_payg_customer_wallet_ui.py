@@ -174,3 +174,21 @@ async def test_my_services_shows_fixed_and_payg_without_mixing_renewal(monkeypat
     assert mapping["⚡ PAYG · ProMax"]=="paygcustomer:dashboard:1"
     assert mapping["📦 FIXED · Fixed panel"]=="admin_renew_panel_421"
     assert "admin_renew_panel_420" not in mapping.values()
+
+
+@pytest.mark.asyncio
+async def test_legacy_unmapped_account_recharge_uses_original_safe_topup_route(tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    import handlers.payg_customer_center as center
+    service=PaygService(str(tmp_path/"legacy-ui.db"))
+    monkeypatch.setattr(reports,"payg_service",service)
+    monkeypatch.setattr(reports,"payg_offer_service",PaygOfferService(service.db_path))
+    monkeypatch.setattr(center,"payg_service",service)
+    await service.ensure_schema()
+    account_id=seed_account(service.db_path,rate=1200)
+    message=SimpleNamespace(edit_text=AsyncMock())
+    await center.render_payg_dashboard(message,42,account_id)
+    keyboard=message.edit_text.call_args.kwargs["reply_markup"]
+    callbacks=[button.callback_data for row in keyboard.inline_keyboard for button in row]
+    assert f"payg:topup:{account_id}" in callbacks
+    assert not any(x.startswith("admin_full_renew") for x in callbacks)
