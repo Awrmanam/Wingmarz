@@ -130,6 +130,12 @@ class BoldFixBot(Bot):
     async def __call__(self, method, *args: Any, **kwargs: Any):
         """Normalize outgoing formatting and resolve ``{emoji:key}`` placeholders."""
         try:
+            from cancel_ui import decorate_cancel
+            await decorate_cancel(method)
+        except Exception:
+            # Exit-button presentation must never interrupt payment/provisioning.
+            pass
+        try:
             from premium_markup_runtime import style_reply_markup
             markup = getattr(method, "reply_markup", None)
             if markup is not None:
