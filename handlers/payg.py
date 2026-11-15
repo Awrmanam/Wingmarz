@@ -1172,7 +1172,7 @@ async def payg_admin_approve(callback: CallbackQuery):
         balance = await payg_service.get_balance(user_id)
         user_text = f"✅ پرداخت تأیید شد.\n💰 موجودی کیف پول: <b>{_money(balance)}</b>"
         if continuation.get("legacy_initial_needs_service"):
-            user_text += "\\n\\nℹ️ برای فعال‌سازی، از فروشگاه PAYG یک سرویس Rebecca انتخاب کنید. اعتبار شما محفوظ است."
+            user_text += "\n\nℹ️ برای فعال‌سازی، از فروشگاه PAYG یک سرویس Rebecca انتخاب کنید. اعتبار شما محفوظ است."
         if continuation.get("account"):
             account = continuation["account"]
             admin = await db.get_admin_by_id(int(account["admin_id"]))
