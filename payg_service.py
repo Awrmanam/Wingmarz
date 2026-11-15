@@ -940,7 +940,18 @@ class PaygService:
             return {}
         owner = os.getenv("PAYG_OWNER_ID", "").strip()
         if not owner.isdecimal():
-            raise PaygError("PAYG_OWNER_ID must identify the owner")
+            # A misconfigured owner must not bill accounts whose rate can change,
+            # but unrelated PAYG accounts still need timely wallet settlement.
+            async with aiosqlite.connect(self.db_path) as conn:
+                async with conn.execute(
+                    "SELECT t.account_id FROM payg_discount_targets t "
+                    "JOIN payg_accounts a ON a.id=t.account_id "
+                    "WHERE a.status IN ('active','suspended')"
+                ) as cur:
+                    affected = [int(row[0]) for row in await cur.fetchall()]
+            print("PAYG_OWNER_ID is missing; discount accounts require manual review; "
+                  "unaffected PAYG billing continues")
+            return {account_id: "manual_review" for account_id in affected}
         timestamp = int(time.time()) if now is None else int(now)
         async with aiosqlite.connect(self.db_path) as conn:
             conn.row_factory = aiosqlite.Row
