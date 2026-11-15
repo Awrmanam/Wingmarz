@@ -173,3 +173,40 @@ def test_navigation_guard_router_registered_before_legacy_stateful_routers():
 def test_password_redisplay_is_subject_to_same_panel_kyc_gate():
     assert kyc_middleware._target_admin_id("rebecca:credentials:42")==42
     assert kyc_middleware._target_admin_id("rebecca:credentials:not-a-number") is None
+
+
+@pytest.mark.asyncio
+async def test_active_fsm_input_with_no_prompt_keywords_still_gets_cancel(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(cancel_ui,"current_fsm_state",lambda:
+        SimpleNamespace(get_state=AsyncMock(return_value="SomeState:waiting")))
+    monkeypatch.setattr(cancel_ui.style_engine,"styled_button",AsyncMock(
+        side_effect=lambda text, **kw: InlineKeyboardButton(
+            text="❌ لغو",callback_data=kw["callback_data"])))
+    SendMessage=type("SendMessage",(),{})
+    method=SendMessage()
+    method.chat_id=42
+    method.text="شماره فاکتور:"
+    method.reply_markup=None
+    await cancel_ui.decorate_cancel(method)
+    assert method.reply_markup.inline_keyboard[0][0].callback_data=="ui:cancel"
+
+
+@pytest.mark.asyncio
+async def test_outgoing_cancel_context_is_scoped_to_one_event():
+    from flow_cancel_context import FlowCancelContextMiddleware,current_fsm_state
+    state=SimpleNamespace(get_state=AsyncMock(return_value="wait"))
+    async def handler(event,data):
+        assert current_fsm_state() is state
+        return "ok"
+    assert current_fsm_state() is None
+    result=await FlowCancelContextMiddleware()(handler,object(),{"state":state})
+    assert result=="ok"
+    assert current_fsm_state() is None
+
+
+def test_bot_registers_outbound_cancel_and_fsm_context():
+    source=open("bot.py",encoding="utf-8").read()
+    assert "FlowCancelContextMiddleware()" in source
+    code=open("utils/bold_fix_bot.py",encoding="utf-8").read()
+    assert "await decorate_cancel(method)" in code
