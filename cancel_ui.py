@@ -73,7 +73,13 @@ async def decorate_cancel(method: Any) -> None:
             for button in row:
                 cb=str(button.callback_data or "")
                 label=str(button.text or "")
-                if cb==CANCEL_CALLBACK or _CANCEL_WORD.search(label):
+                if cb==CANCEL_CALLBACK:
+                    # Outgoing API messages can pass through formatting more
+                    # than once. Already-canonical buttons must be idempotent.
+                    new_row.append(button)
+                    found=True
+                    continue
+                if _CANCEL_WORD.search(label):
                     # Preserve intentional business actions while using the
                     # configured premium 'cancel' key for visual consistency.
                     if cb and (cb==CANCEL_CALLBACK or
