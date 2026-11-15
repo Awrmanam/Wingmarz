@@ -1189,10 +1189,9 @@ async def payg_admin_approve(callback: CallbackQuery):
         billing = continuation.get("billing")
         if billing and billing.old_status == "suspended" and billing.new_status == "active":
             user_text += "\n\n🟢 پنل PAYG شما مجدداً فعال شد."
-        try:
-            await callback.bot.send_message(user_id, user_text)
-        except Exception:
-            pass
+        await payg_service.send_approval_notice_once(
+            callback.bot, topup_id=topup_id, user_id=user_id, message=user_text
+        )
         try:
             await callback.message.edit_caption(
                 caption=(callback.message.caption or "") + "\n\n✅ تأیید شد",
