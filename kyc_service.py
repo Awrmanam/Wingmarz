@@ -164,6 +164,8 @@ class KycService:
         status: str,
         reason: str | None,
     ) -> bool:
+        if int(reviewer_id) not in config.SUDO_ADMINS:
+            raise PermissionError("KYC reviewer permission required")
         if status not in {"approved", "rejected"}:
             raise ValueError("invalid review status")
         await self.ensure_schema()

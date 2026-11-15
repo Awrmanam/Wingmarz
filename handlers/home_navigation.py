@@ -7,7 +7,7 @@ from aiogram.types import CallbackQuery, Message
 
 import config
 from database import db
-from handlers.home_keyboards import public_home_keyboard, reseller_home_keyboard
+from handlers.home_keyboards import public_home_keyboard, reseller_home_keyboard, customer_hub_keyboard
 from kyc_service import kyc_service
 from trust_service import trust_service
 
@@ -147,6 +147,26 @@ async def role_aware_start(message: Message, state: FSMContext):
                 "Rebecca auto-link failed for Telegram ID %s", user_id
             )
     await render_home(message, user_id, edit=False)
+
+
+@home_navigation_router.callback_query(
+    F.data.in_({"customer:reports", "customer:explore", "customer:account"})
+)
+async def customer_secondary_hub(callback: CallbackQuery, state: FSMContext):
+    """Same clear navigation for public shoppers and existing panel owners."""
+    await state.clear()
+    kind=str(callback.data).rsplit(":",1)[-1]
+    has_panel=await has_admin_account(callback.from_user.id)
+    titles={
+        "reports": "📊 <b>گزارش‌های من</b>\n\nگزارش مربوط به سرویس یا تراکنش خود را انتخاب کنید.",
+        "explore": "🧪 <b>تعرفه‌ها و تست رایگان</b>\n\nپیش از خرید، گزینه موردنظر را بررسی کنید.",
+        "account": "🎧 <b>حساب و پشتیبانی</b>\n\nبرای مدیریت حساب یا درخواست کمک انتخاب کنید.",
+    }
+    await callback.message.edit_text(
+        titles[kind],
+        reply_markup=await customer_hub_keyboard(kind,reseller=has_panel),
+    )
+    await callback.answer()
 
 
 @home_navigation_router.callback_query(

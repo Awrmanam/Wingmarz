@@ -4,6 +4,7 @@ import aiosqlite
 import pytest
 
 from payg_service import GIB, PaygInsufficientFunds, PaygService
+import payg_service as module
 
 
 def run(coro):
@@ -135,7 +136,8 @@ def test_exhausted_wallet_suspends_and_keeps_outstanding_debt(tmp_path):
     run(scenario())
 
 
-def test_topup_approval_is_idempotent(tmp_path):
+def test_topup_approval_is_idempotent(tmp_path, monkeypatch):
+    monkeypatch.setattr(module.config, 'SUDO_ADMINS', [999])
     service = PaygService(str(tmp_path / "payg.db"))
 
     async def scenario():
@@ -158,7 +160,8 @@ def test_payg_routers_precede_legacy_marketplace():
     assert source.index("include_router(payg_router)") < source.index("include_router(service_marketplace_router)")
 
 
-def test_initial_topup_kyc_hold_does_not_credit_until_release(tmp_path):
+def test_initial_topup_kyc_hold_does_not_credit_until_release(tmp_path, monkeypatch):
+    monkeypatch.setattr(module.config, 'SUDO_ADMINS', [999])
     service = PaygService(str(tmp_path / "payg.db"))
 
     async def scenario():
