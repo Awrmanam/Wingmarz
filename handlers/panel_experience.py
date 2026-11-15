@@ -34,6 +34,25 @@ async def _button(text: str, callback_data: str, *, icon_key: str | None = None,
     )
 
 
+async def _payg_account_for_admin(admin, user_id: int):
+    """Authoritative account classification: never infer PAYG from button text."""
+    from payg_service import payg_service
+    if int(admin.user_id) != int(user_id):
+        return None
+    return await payg_service.get_admin_account(int(admin.id))
+
+
+async def _redirect_payg_renew(callback: CallbackQuery, state: FSMContext, admin) -> bool:
+    account = await _payg_account_for_admin(admin, callback.from_user.id)
+    if account is None:
+        return False
+    from handlers.payg_customer_center import render_payg_dashboard
+    await state.clear()
+    await render_payg_dashboard(callback.message, callback.from_user.id, int(account["id"]))
+    await callback.answer()
+    return True
+
+
 async def _category_for_admin(admin) -> ProductCategory | None:
     origin_plan_id = int(getattr(admin, "origin_plan_id", 0) or 0)
     if not origin_plan_id:
@@ -53,7 +72,13 @@ async def _admin_panel_identity(admin) -> tuple[str, str | None]:
 @panel_experience_router.callback_query(F.data == "admin_renew", RebeccaOnly())
 async def canonical_renew_entry(callback: CallbackQuery, state: FSMContext):
     admins = await db.get_admins_for_user(callback.from_user.id)
-    active_admins = [item for item in admins if bool(getattr(item, "is_active", False))]
+    # PAYG accounts remain accessible for recharge even when financially held.
+    from payg_service import payg_service
+    active_admins = [
+        item for item in admins
+        if bool(getattr(item, "is_active", False))
+        or await payg_service.get_admin_account(int(item.id)) is not None
+    ]
     if not active_admins:
         await callback.answer("پنل فعالی ندارید.", show_alert=True)
         return
@@ -104,6 +129,8 @@ async def canonical_renew_panel(callback: CallbackQuery, state: FSMContext):
         await callback.answer("پنل یافت نشد.", show_alert=True)
         return
 
+    if await _redirect_payg_renew(callback, state, admin):
+        return
     await state.update_data(current_admin_id=admin_id)
     panel_name, icon_key = await _admin_panel_identity(admin)
     icon = await style_engine.render_emoji(icon_key, fallback="📦") if icon_key else "📦"
@@ -211,6 +238,8 @@ async def canonical_full_renew(callback: CallbackQuery, state: FSMContext):
     if not admin or int(admin.user_id) != int(callback.from_user.id):
         await callback.answer("پنل یافت نشد.", show_alert=True)
         return
+    if await _redirect_payg_renew(callback, state, admin):
+        return
 
     _, policy = await policy_for_admin(admin)
     if policy.mode != "legacy":
@@ -282,6 +311,8 @@ async def _show_renew_plan_picker(callback: CallbackQuery, state: FSMContext, *,
     if not admin or int(admin.user_id) != int(callback.from_user.id) or not admin.is_active:
         await callback.answer("پنل فعال متعلق به شما یافت نشد.", show_alert=True)
         return
+    if await _redirect_payg_renew(callback, state, admin):
+        return
     action = "reset_time" if restart_time else "both"
     category_id, policy = await policy_for_admin(admin)
     if not category_id or not allows(policy.mode, action):
@@ -350,6 +381,8 @@ async def _place_renew_order(callback: CallbackQuery, state: FSMContext, *, rest
     admin = await db.get_admin_by_id(admin_id)
     if not admin or int(admin.user_id) != int(callback.from_user.id) or not admin.is_active:
         await callback.answer("پنل فعال متعلق به شما یافت نشد.", show_alert=True)
+        return
+    if await _redirect_payg_renew(callback, state, admin):
         return
     action = "reset_time" if restart_time else "both"
     category_id, policy = await policy_for_admin(admin)
