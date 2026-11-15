@@ -29,6 +29,18 @@ async def account_for_customer(user_id: int, account_id: int) -> dict | None:
                  if int(a["id"])==int(account_id)),None)
 
 
+async def historical_payg_admin_ids(user_id: int) -> set[int]:
+    """Include retired PAYG panels so migration cannot label them FIXED."""
+    await payg_service.ensure_schema()
+    async with aiosqlite.connect(payg_service.db_path) as conn:
+        async with conn.execute(
+            "SELECT admin_id FROM payg_accounts WHERE user_id=? AND provider='rebecca'",
+            (int(user_id),),
+        ) as cur:
+            rows = await cur.fetchall()
+    return {int(row[0]) for row in rows if row[0] is not None}
+
+
 async def wallet_summary(user_id: int) -> dict:
     await payg_service.ensure_schema()
     async with aiosqlite.connect(payg_service.db_path) as conn:
