@@ -275,7 +275,7 @@ async def _render_users(callback: CallbackQuery, admin: Any, page: int = 0) -> N
             buttons.append(InlineKeyboardButton(text="◀️ قبلی", callback_data=f"rebecca_users_page:{int(admin.id)}:{page-1}"))
         if (page + 1) * page_size < total:
             buttons.append(InlineKeyboardButton(text="بعدی ▶️", callback_data=f"rebecca_users_page:{int(admin.id)}:{page+1}"))
-        keyboard = ([buttons] if buttons else []) + await _panel_back_keyboard(admin).inline_keyboard
+        keyboard = ([buttons] if buttons else []) + (await _panel_back_keyboard(admin)).inline_keyboard
         await callback.message.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     except Exception:
         await callback.message.edit_text(
