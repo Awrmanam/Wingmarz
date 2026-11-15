@@ -159,6 +159,7 @@ async def test_my_services_shows_fixed_and_payg_without_mixing_renewal(monkeypat
     monkeypatch.setattr(center,"customer_accounts",AsyncMock(return_value=[
         {"id":1,"admin_id":420,"service_id":7}
     ]))
+    monkeypatch.setattr(center,"historical_payg_admin_ids",AsyncMock(return_value={420}))
     monkeypatch.setattr(center,"get_service_by_rebecca_id",AsyncMock(
         return_value=SimpleNamespace(display_name="ProMax")
     ))
@@ -192,3 +193,46 @@ async def test_legacy_unmapped_account_recharge_uses_original_safe_topup_route(t
     callbacks=[button.callback_data for row in keyboard.inline_keyboard for button in row]
     assert f"payg:topup:{account_id}" in callbacks
     assert not any(x.startswith("admin_full_renew") for x in callbacks)
+
+
+@pytest.mark.asyncio
+async def test_migrated_payg_panel_never_appears_as_fixed(tmp_path,monkeypatch):
+    """The retired PAYG admin stays hidden, while the real migrated FIXED panel remains."""
+    from types import SimpleNamespace
+    import handlers.payg_customer_center as center
+    path=str(tmp_path/"migrated.db")
+    service=PaygService(path)
+    await service.ensure_schema()
+    account_id=seed_account(path)
+    with sqlite3.connect(path) as conn:
+        conn.execute("UPDATE payg_accounts SET status='migrated' WHERE id=?",(account_id,))
+    monkeypatch.setattr(reports,"payg_service",service)
+    monkeypatch.setattr(reports,"payg_offer_service",PaygOfferService(path))
+    monkeypatch.setattr(center.db,"get_admins_for_user",AsyncMock(return_value=[
+        SimpleNamespace(id=420,admin_name="Retired PAYG",is_active=False),
+        SimpleNamespace(id=421,admin_name="Migrated FIXED",is_active=True),
+    ]))
+    monkeypatch.setattr(center.payg_service,"get_admin_account",AsyncMock(return_value=None))
+    message=SimpleNamespace(edit_text=AsyncMock())
+    await center.render_accounts(message,42)
+    text=message.edit_text.call_args.args[0]
+    keyboard=message.edit_text.call_args.kwargs["reply_markup"]
+    callbacks=[btn.callback_data for row in keyboard.inline_keyboard for btn in row]
+    assert "admin_renew_panel_420" not in callbacks
+    assert "admin_renew_panel_421" in callbacks
+    assert "سرویس‌های من" in text
+    assert "حساب PAYG فعالی ندارید" not in text
+    assert await reports.historical_payg_admin_ids(42)=={420}
+
+
+@pytest.mark.asyncio
+async def test_no_services_has_true_empty_state(tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    import handlers.payg_customer_center as center
+    service=PaygService(str(tmp_path/"empty.db"))
+    monkeypatch.setattr(reports,"payg_service",service)
+    monkeypatch.setattr(reports,"payg_offer_service",PaygOfferService(service.db_path))
+    monkeypatch.setattr(center.db,"get_admins_for_user",AsyncMock(return_value=[]))
+    message=SimpleNamespace(edit_text=AsyncMock())
+    await center.render_accounts(message,42)
+    assert "هنوز سرویسی" in message.edit_text.call_args.args[0]
