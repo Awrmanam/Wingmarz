@@ -1,5 +1,6 @@
 import re
 from aiogram import Bot
+from aiogram.exceptions import TelegramBadRequest
 from typing import Any, Optional
 
 from .text_utils import convert_markdown_bold_to_html
@@ -30,6 +31,24 @@ def _should_convert_markdown(text: Any, parse_mode: Any = None) -> bool:
     if "```" in text or "`" in text or "**" in text or "__" in text:
         return True
     return bool(_MD_ITALIC_STAR_RE.search(text) or _MD_ITALIC_US_RE.search(text))
+
+
+_IDEMPOTENT_EDIT_METHODS = frozenset({
+    "EditMessageText", "EditMessageReplyMarkup",
+    "EditMessageCaption", "EditMessageMedia",
+})
+
+
+def _is_unchanged_message_edit(method: Any, error: TelegramBadRequest) -> bool:
+    """Telegram rejects identical edits; these are successful UI no-ops.
+
+    Never swallow other BadRequest errors (permissions, invalid markup,
+    deleted messages, blocked users, expired edit windows, etc.).
+    """
+    return (
+        type(method).__name__ in _IDEMPOTENT_EDIT_METHODS
+        and "message is not modified" in str(getattr(error, "message", error)).lower()
+    )
 
 
 class BoldFixBot(Bot):
@@ -175,4 +194,12 @@ class BoldFixBot(Bot):
                         setattr(item, "caption", await premium_ui_service.render_placeholders(cap))
         except Exception:
             pass
-        return await super().__call__(method, *args, **kwargs)
+        try:
+            return await super().__call__(method, *args, **kwargs)
+        except TelegramBadRequest as exc:
+            if _is_unchanged_message_edit(method, exc):
+                # Telegram has already got the requested content/markup.
+                # An edit may normally return Message|True; our callers only
+                # use it for navigation, so return a benign inline-edit ACK.
+                return True
+            raise
