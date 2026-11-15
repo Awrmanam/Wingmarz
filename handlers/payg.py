@@ -182,52 +182,28 @@ async def payg_offer(callback: CallbackQuery, state: FSMContext):
         await callback.answer("نامعتبر", show_alert=True)
         return
     await state.clear()
-    await render_payg_offer(callback.message, callback.from_user.id, parts[3], parts[2])
+    # Old provider-wide offer is no longer a saleable product.
+    from handlers.payg_offers import render_payg_storefront
+    await render_payg_storefront(callback.message, parts[2])
     await callback.answer()
 
 
 @payg_router.callback_query(F.data.startswith("payg:create:"))
 async def payg_create_from_wallet(callback: CallbackQuery, state: FSMContext):
-    provider = (callback.data or "").rsplit(":", 1)[-1]
+    """Stale buttons cannot bypass KYC or the durable Rebecca reservation."""
     await state.clear()
-    try:
-        account = await payg_service.ensure_payg_account(callback.from_user.id, provider)
-        admin = await db.get_admin_by_id(int(account["admin_id"]))
-        if not admin:
-            raise PaygError("local admin missing after provisioning")
-        login_url = admin.login_url or config.REBECCA_LOGIN_URL or config.REBECCA_URL
-        await callback.message.edit_text(
-            credential_message(
-                str(admin.marzban_username), str(admin.marzban_password), str(login_url), "PAYG Rebecca"
-            )
-            + "\n\nاز این لحظه هزینه بر اساس مصرف واقعی از کیف پول کم می‌شود.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="🏠 صفحه اصلی", callback_data="back_to_admin_main")
-            ]]),
-        )
-    except PaygInsufficientFunds as exc:
-        await callback.answer(f"برای شروع {_money(exc.shortfall_toman)} دیگر شارژ کنید.", show_alert=True)
-        return
-    except Exception as exc:
-        await callback.answer(f"ساخت پنل ناموفق بود: {str(exc)[:120]}", show_alert=True)
-        return
-    await callback.answer("پنل PAYG ساخته شد ✅")
+    from handlers.payg_offers import render_payg_storefront
+    await render_payg_storefront(callback.message, "a")
+    await callback.answer("برای ساخت پنل، سرویس Rebecca را از مسیر جدید انتخاب کنید.")
 
 
 @payg_router.callback_query(F.data.startswith("payg:start:"))
 async def payg_start_topup(callback: CallbackQuery, state: FSMContext):
-    provider = (callback.data or "").rsplit(":", 1)[-1]
-    settings = await payg_service.get_settings(provider)
-    if not settings or not int(settings["enabled"]):
-        await callback.answer("PAYG فعال نیست.", show_alert=True)
-        return
+    """Retire provider-wide top-ups; preserve historical account recharge."""
     await state.clear()
-    await state.update_data(payg_provider=provider, payg_purpose="initial", payg_source="p")
-    await state.set_state(PaygUserStates.amount)
-    await callback.message.edit_text(
-        f"💳 مبلغ شارژ اولیه را به تومان ارسال کنید.\n\nحداقل: <b>{_money(int(settings['min_topup_toman']))}</b>"
-    )
-    await callback.answer()
+    from handlers.payg_offers import render_payg_storefront
+    await render_payg_storefront(callback.message, "a")
+    await callback.answer("برای خرید PAYG، یک سرویس مشخص انتخاب کنید.")
 
 
 @payg_router.callback_query(F.data.startswith("payg:topup:"))
@@ -1195,6 +1171,8 @@ async def payg_admin_approve(callback: CallbackQuery):
         continuation = await payg_service.post_topup_approval(topup_id)
         balance = await payg_service.get_balance(user_id)
         user_text = f"✅ پرداخت تأیید شد.\n💰 موجودی کیف پول: <b>{_money(balance)}</b>"
+        if continuation.get("legacy_initial_needs_service"):
+            user_text += "\\n\\nℹ️ برای فعال‌سازی، از فروشگاه PAYG یک سرویس Rebecca انتخاب کنید. اعتبار شما محفوظ است."
         if continuation.get("account"):
             account = continuation["account"]
             admin = await db.get_admin_by_id(int(account["admin_id"]))
