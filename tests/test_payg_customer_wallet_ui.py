@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 import payg_customer_reporting as reports
+from payg_offers_service import PaygOfferService
 from payg_service import PaygService, GIB
 from test_payg_historical_accrual import seed_account
 
@@ -13,6 +14,7 @@ from test_payg_historical_accrual import seed_account
 async def test_wallet_summary_uses_existing_ledger_and_never_mutates_balance(tmp_path,monkeypatch):
     service=PaygService(str(tmp_path/"wallet.db"))
     monkeypatch.setattr(reports,"payg_service",service)
+    monkeypatch.setattr(reports,"payg_offer_service",PaygOfferService(service.db_path))
     await service.ensure_schema()
     account_id=seed_account(service.db_path,raw=GIB,cumulative=GIB,rate=1000,charged=1000)
     await service.credit_wallet(42,6000,kind="topup",reference_type="payg_topup",reference_id=1)
@@ -35,6 +37,7 @@ async def test_wallet_summary_uses_existing_ledger_and_never_mutates_balance(tmp
 async def test_ledger_pagination_filters_and_customer_isolation(tmp_path,monkeypatch):
     service=PaygService(str(tmp_path/"ledger.db"))
     monkeypatch.setattr(reports,"payg_service",service)
+    monkeypatch.setattr(reports,"payg_offer_service",PaygOfferService(service.db_path))
     await service.ensure_schema()
     for n in range(11):
         await service.credit_wallet(42,100,kind="topup",reference_type="test",reference_id=n)
@@ -53,6 +56,7 @@ async def test_ledger_pagination_filters_and_customer_isolation(tmp_path,monkeyp
 async def test_payg_account_mapping_and_reports_are_owner_scoped(tmp_path,monkeypatch):
     service=PaygService(str(tmp_path/"account.db"))
     monkeypatch.setattr(reports,"payg_service",service)
+    monkeypatch.setattr(reports,"payg_offer_service",PaygOfferService(service.db_path))
     await service.ensure_schema()
     account_id=seed_account(service.db_path,rate=2500)
     with sqlite3.connect(service.db_path) as conn:
@@ -74,6 +78,7 @@ async def test_payg_account_mapping_and_reports_are_owner_scoped(tmp_path,monkey
 async def test_legacy_payg_account_without_service_mapping_remains_visible(tmp_path,monkeypatch):
     service=PaygService(str(tmp_path/"legacy.db"))
     monkeypatch.setattr(reports,"payg_service",service)
+    monkeypatch.setattr(reports,"payg_offer_service",PaygOfferService(service.db_path))
     await service.ensure_schema()
     account_id=seed_account(service.db_path,rate=1000)
     account=await reports.account_for_customer(42,account_id)
