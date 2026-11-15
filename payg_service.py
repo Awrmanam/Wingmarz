@@ -1875,6 +1875,39 @@ class PaygService:
             and str(getattr(plan, "rebecca_service_ids", "") or "").strip()
         ]
 
+    async def _migration_service_id(self, account_id: int) -> int:
+        """Migrations require an explicit, verified Rebecca service mapping."""
+        await self.ensure_schema()
+        try:
+            async with aiosqlite.connect(self.db_path) as conn:
+                async with conn.execute(
+                    "SELECT service_id FROM payg_account_services "
+                    "WHERE account_id=? AND provider='rebecca'",
+                    (int(account_id),),
+                ) as cur:
+                    row = await cur.fetchone()
+        except aiosqlite.OperationalError as exc:
+            raise PaygError("PAYG service mapping must be verified before migration") from exc
+        if row is None:
+            raise PaygError("PAYG service mapping must be verified before migration")
+        return int(row[0])
+
+    async def migration_plans_for_account(self, account_id: int) -> list[Any]:
+        service_id = await self._migration_service_id(account_id)
+        return [
+            plan for plan in await self.list_migration_plans()
+            if service_id in parse_service_ids(
+                str(getattr(plan, "rebecca_service_ids", "") or "")
+            )
+        ]
+
+    async def _assert_migration_plan_matches(self, account_id: int, plan: Any) -> None:
+        service_id = await self._migration_service_id(account_id)
+        if service_id not in parse_service_ids(
+            str(getattr(plan, "rebecca_service_ids", "") or "")
+        ):
+            raise PaygError("target FIXED plan belongs to another Rebecca service")
+
     async def get_migration(self, migration_id: int) -> dict[str, Any] | None:
         await self.ensure_schema()
         async with aiosqlite.connect(self.db_path) as conn:
@@ -1899,7 +1932,7 @@ class PaygService:
         price = int(getattr(plan, "price", 0) or 0)
         if price <= 0:
             raise PaygError("target plan price is invalid")
-        parse_service_ids(str(getattr(plan, "rebecca_service_ids", "") or ""))
+        await self._assert_migration_plan_matches(int(account_id), plan)
         await self.ensure_schema()
         async with aiosqlite.connect(self.db_path) as conn:
             conn.row_factory = aiosqlite.Row
@@ -1981,6 +2014,8 @@ class PaygService:
         plan = await db.get_plan_by_id(int(migration["target_plan_id"]))
         if not plan or not bool(getattr(plan, "is_active", True)):
             raise PaygError("migration target plan is unavailable")
+        # Recheck even for an old waiting_funds migration created before this guard.
+        await self._assert_migration_plan_matches(int(account["id"]), plan)
         price = int(migration["price_toman"])
         balance = await self.get_balance(int(migration["user_id"]))
         if balance < price:
