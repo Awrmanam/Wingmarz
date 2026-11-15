@@ -93,7 +93,7 @@ async def render_wallet(message,user_id: int):
     await message.edit_text("\n".join(lines),reply_markup=await _styled_markup([
         [_b("➕ افزایش اعتبار","wallet:topup")],
         [_b("🧾 گردش مالی","wallet:ledger:all:0")],
-        [_b("⚡ حساب‌های PAYG","wallet:accounts")],
+        [_b("📦 سرویس‌های من","wallet:accounts")],
         [_b("🔙 صفحه اصلی","back_to_admin_main")],
     ]))
 
@@ -104,7 +104,7 @@ async def render_accounts(message,user_id: int):
     for account in accounts:
         service_id=account.get("service_id")
         service=await get_service_by_rebecca_id(int(service_id)) if service_id is not None else None
-        label=service.display_name if service else f"حساب #{account['id']}"
+        label=service.display_name if service else str(account.get("display_name_snapshot") or f"حساب #{account['id']}")
         rows.append([_b(f"⚡ PAYG · {label}",f"paygcustomer:dashboard:{account['id']}")])
     # Migrated PAYG accounts are retired, not eligible for FIXED renewal.
     linked={int(a["admin_id"]) for a in accounts}
@@ -116,8 +116,8 @@ async def render_accounts(message,user_id: int):
             if await payg_service.get_admin_account(int(admin.id)):
                 continue
             name=escape(str(getattr(admin,"admin_name",None) or f"پنل {admin.id}"))
-            rows.append([_b(f"📦 FIXED · {name}",f"admin_renew_panel_{int(admin.id)}")])
-    rows.append([_b("🔙 کیف پول","wallet:home")])
+            rows.append([_b(f"📦 FIXED · {name}",f"customer:fixed:{int(admin.id)}")])
+    rows.append([_b("🔙 صفحه اصلی","back_to_admin_main")])
     await message.edit_text(
         "📦 <b>سرویس‌های من</b>\n\nحساب‌های PAYG و پلن‌های کامل شما:"
         if len(rows)>1 else "هنوز سرویسی برای نمایش ندارید.",
@@ -133,14 +133,14 @@ async def render_payg_dashboard(message,user_id: int,account_id: int):
     account=report["account"]
     service_id=account.get("service_id")
     service=await get_service_by_rebecca_id(int(service_id)) if service_id is not None else None
-    title=escape(service.display_name if service else f"حساب {account_id}")
+    title=escape(service.display_name if service else str(account.get("display_name_snapshot") or f"حساب {account_id}"))
     balance=await payg_service.get_balance(user_id)
     due=report["accrued"]
     debt=(max(0,int(due)-int(account["charged_toman_total"])) if due is not None else None)
     discount=report["discount"]
     lines=[
         f"⚡ <b>پنل اعتباری PAYG — {title}</b>","",
-        f"وضعیت: <b>{escape(str(account['status']))}</b>",
+        f"وضعیت: <b>{_status_label(account['status'])}</b>",
         f"نرخ فعلی ثبت‌شده: <b>{_money(account['price_per_gb_toman'])}/GB</b>",
         f"موجودی کیف پول: <b>{_money(balance)}</b>",
         f"مصرف تجمعی: <b>{int(account['cumulative_usage_bytes'])/GIB:.3f} GB</b>",
@@ -163,7 +163,7 @@ async def render_payg_dashboard(message,user_id: int,account_id: int):
         rows.append([_b("💰 افزایش اعتبار",f"payg:topup:{account_id}")])
     rows.extend([
         [_b("📊 گزارش مصرف",f"paygcustomer:report:{account_id}"),
-         _b("🧾 گردش مالی","wallet:ledger:all:0")],
+         _b("🧾 گردش مالی",f"wallet:ledger:all:0:payg:{account_id}")],
         [_b("👥 کاربران پنل",f"users_panel_{account['admin_id']}"),
          _b("🔐 اطلاعات ورود",f"info_panel_{account['admin_id']}")],
     ])
@@ -171,6 +171,46 @@ async def render_payg_dashboard(message,user_id: int,account_id: int):
         rows.append([_b("🔄 تبدیل به پلن کامل",f"paygsvc:migrate:a:{service_id}:{account_id}")])
     rows.append([_b("🔙 سرویس‌های من","wallet:accounts")])
     await message.edit_text("\n".join(lines),reply_markup=await _styled_markup(rows))
+
+
+async def render_fixed_dashboard(message,user_id: int,admin_id: int) -> bool:
+    """Read-only entry for FIXED accounts; renewals stay in canonical policy UI."""
+    admin=await db.get_admin_by_id(int(admin_id))
+    if not admin or int(admin.user_id)!=int(user_id):
+        return False
+    if (await payg_service.get_admin_account(int(admin_id)) is not None
+            or int(admin_id) in await historical_payg_admin_ids(user_id)):
+        return False
+    name=escape(str(getattr(admin,"admin_name",None) or f"پنل {admin_id}"))
+    status="🟢 فعال" if bool(getattr(admin,"is_active",False)) else "⏸ غیرفعال یا منقضی"
+    rows=[
+        [_b("🔄 تمدید و افزایش",f"admin_renew_panel_{int(admin_id)}")],
+        [_b("👤 اطلاعات پنل",f"info_panel_{int(admin_id)}"),
+         _b("📊 گزارش لحظه‌ای",f"report_panel_{int(admin_id)}")],
+        [_b("👥 کاربران پنل",f"users_panel_{int(admin_id)}")],
+        [_b("🔙 سرویس‌های من","wallet:accounts")],
+    ]
+    await message.edit_text(
+        f"📦 <b>سرویس حجمی/زمانی — {name}</b>\\n\\n"
+        f"وضعیت: <b>{status}</b>\\n\\n"
+        "برای تمدید، افزایش حجم یا زمان، گزینه تمدید را انتخاب کنید.",
+        reply_markup=await _styled_markup(rows),
+    )
+    return True
+
+
+@payg_customer_center_router.callback_query(F.data.startswith("customer:fixed:"))
+async def fixed_dashboard(callback:CallbackQuery,state:FSMContext):
+    try:
+        admin_id=int(callback.data.rsplit(":",1)[-1])
+    except (ValueError,TypeError):
+        await callback.answer("شناسه سرویس نامعتبر است",show_alert=True)
+        return
+    await state.clear()
+    if not await render_fixed_dashboard(callback.message,callback.from_user.id,admin_id):
+        await callback.answer("این سرویس در دسترس شما نیست",show_alert=True)
+        return
+    await callback.answer()
 
 
 @payg_customer_center_router.callback_query(F.data=="wallet:home")
@@ -191,11 +231,11 @@ async def wallet_accounts(callback:CallbackQuery,state:FSMContext):
 async def wallet_reports(callback:CallbackQuery,state:FSMContext):
     await state.clear()
     accounts=await customer_accounts(callback.from_user.id)
-    rows=[[_b(f"📊 PAYG · حساب #{a['id']}",f"paygcustomer:report:{a['id']}")]
+    rows=[[_b(f"📊 PAYG · {a.get('display_name_snapshot') or ('حساب #' + str(a['id']))}",f"paygcustomer:report:{a['id']}")]
           for a in accounts]
     rows.append([_b("🔙 صفحه اصلی","back_to_admin_main")])
     await callback.message.edit_text(
-        "📊 <b>گزارش مصرف</b>\\n\\nسرویس اعتباری موردنظر را انتخاب کنید."
+        "📊 <b>گزارش مصرف</b>\n\nسرویس اعتباری موردنظر را انتخاب کنید."
         if accounts else "هنوز حساب PAYG برای گزارش مصرف ندارید.",
         reply_markup=await _styled_markup(rows),
     )
@@ -212,7 +252,7 @@ async def wallet_topup(callback:CallbackQuery,state:FSMContext):
             if a.get("service_id") is not None else f"payg:topup:{a['id']}")]
         for a in accounts
     ]
-    rows.append([_b("🛒 خرید سرویس PAYG","buyflow:payg:a")])
+    rows.append([_b("🛒 خرید سرویس PAYG","buyflow:payg:p")])
     rows.append([_b("🔙 کیف پول","wallet:home")])
     await callback.message.edit_text(
         "💰 <b>افزایش اعتبار</b>\n\nسرویس PAYG موردنظر را انتخاب کنید. "
