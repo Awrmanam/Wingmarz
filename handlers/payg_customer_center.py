@@ -9,7 +9,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 from payg_customer_reporting import (
-    account_for_customer, customer_accounts, ledger_page, usage_report, wallet_summary,
+    account_for_customer, customer_accounts, historical_payg_admin_ids,
+    ledger_page, usage_report, wallet_summary,
 )
 from payg_service import GIB, payg_service
 from database import db
@@ -59,7 +60,9 @@ async def render_accounts(message,user_id: int):
         service=await get_service_by_rebecca_id(int(service_id)) if service_id is not None else None
         label=service.display_name if service else f"حساب #{account['id']}"
         rows.append([_b(f"⚡ PAYG · {label}",f"paygcustomer:dashboard:{account['id']}")])
+    # Migrated PAYG accounts are retired, not eligible for FIXED renewal.
     linked={int(a["admin_id"]) for a in accounts}
+    linked.update(await historical_payg_admin_ids(user_id))
     for admin in await db.get_admins_for_user(int(user_id)):
         if int(admin.id) not in linked:
             # Historical PAYG accounts can lack the service mapping; do not
@@ -70,8 +73,8 @@ async def render_accounts(message,user_id: int):
             rows.append([_b(f"📦 FIXED · {name}",f"admin_renew_panel_{int(admin.id)}")])
     rows.append([_b("🔙 کیف پول","wallet:home")])
     await message.edit_text(
-        "📦 <b>سرویس‌های من · PAYG</b>\n\nحساب‌های اعتباری شما:"
-        if accounts else "حساب PAYG فعالی ندارید.",
+        "📦 <b>سرویس‌های من</b>\n\nحساب‌های PAYG و پلن‌های کامل شما:"
+        if len(rows)>1 else "هنوز سرویسی برای نمایش ندارید.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
     )
 
