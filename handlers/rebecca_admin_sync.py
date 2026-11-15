@@ -22,6 +22,20 @@ def _back_keyboard() -> InlineKeyboardMarkup:
     ]])
 
 
+async def _panel_back_keyboard(admin: Any) -> InlineKeyboardMarkup:
+    """Return PAYG panel readers to their dashboard, FIXED to reseller home."""
+    from payg_service import payg_service
+    account=await payg_service.get_admin_account(int(admin.id))
+    if account and int(account["user_id"])==int(admin.user_id):
+        return InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(
+                text="🔙 داشبورد PAYG",
+                callback_data=f"paygcustomer:dashboard:{int(account['id'])}",
+            )
+        ]])
+    return _back_keyboard()
+
+
 def _as_non_negative_int(value: Any, default: int = 0) -> int:
     if isinstance(value, bool):
         return default
@@ -179,11 +193,11 @@ async def _render_info(callback: CallbackQuery, admin: Any) -> None:
             f"🆔 شناسه مالک: <code>{int(admin.user_id)}</code>",
             "<i>آمار از Rebecca خوانده شده و به‌صورت محلی تخمین زده نشده است.</i>",
         ])
-        await callback.message.edit_text("\n".join(lines), reply_markup=_back_keyboard())
+        await callback.message.edit_text("\n".join(lines), reply_markup=await _panel_back_keyboard(admin))
     except Exception:
         await callback.message.edit_text(
             "⚠️ دریافت اطلاعات زنده Rebecca موقتاً ناموفق بود. دوباره تلاش کنید.",
-            reply_markup=_back_keyboard(),
+            reply_markup=await _panel_back_keyboard(admin),
         )
     await callback.answer()
 
@@ -204,11 +218,11 @@ async def _render_report(callback: CallbackQuery, admin: Any) -> None:
             "",
             "<i>اطلاعات مستقیماً از Rebecca دریافت شده است.</i>",
         ]
-        await callback.message.edit_text("\n".join(lines), reply_markup=_back_keyboard())
+        await callback.message.edit_text("\n".join(lines), reply_markup=await _panel_back_keyboard(admin))
     except Exception:
         await callback.message.edit_text(
             "⚠️ دریافت گزارش زنده Rebecca موقتاً ناموفق بود. دوباره تلاش کنید.",
-            reply_markup=_back_keyboard(),
+            reply_markup=await _panel_back_keyboard(admin),
         )
     await callback.answer()
 
@@ -261,12 +275,12 @@ async def _render_users(callback: CallbackQuery, admin: Any, page: int = 0) -> N
             buttons.append(InlineKeyboardButton(text="◀️ قبلی", callback_data=f"rebecca_users_page:{int(admin.id)}:{page-1}"))
         if (page + 1) * page_size < total:
             buttons.append(InlineKeyboardButton(text="بعدی ▶️", callback_data=f"rebecca_users_page:{int(admin.id)}:{page+1}"))
-        keyboard = ([buttons] if buttons else []) + _back_keyboard().inline_keyboard
+        keyboard = ([buttons] if buttons else []) + await _panel_back_keyboard(admin).inline_keyboard
         await callback.message.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     except Exception:
         await callback.message.edit_text(
             "⚠️ دریافت لیست کاربران Rebecca موقتاً ناموفق بود. دوباره تلاش کنید.",
-            reply_markup=_back_keyboard(),
+            reply_markup=await _panel_back_keyboard(admin),
         )
     await callback.answer()
 
