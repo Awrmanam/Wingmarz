@@ -7,10 +7,12 @@ from __future__ import annotations
 import aiosqlite
 
 from payg_service import payg_service
+from payg_offers_service import payg_offer_service
 
 
 async def customer_accounts(user_id: int) -> list[dict]:
     await payg_service.ensure_schema()
+    await payg_offer_service.ensure_schema()
     async with aiosqlite.connect(payg_service.db_path) as conn:
         conn.row_factory = aiosqlite.Row
         async with conn.execute(
