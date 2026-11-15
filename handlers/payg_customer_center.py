@@ -136,6 +136,21 @@ async def wallet_accounts(callback:CallbackQuery,state:FSMContext):
     await callback.answer()
 
 
+@payg_customer_center_router.callback_query(F.data=="wallet:reports")
+async def wallet_reports(callback:CallbackQuery,state:FSMContext):
+    await state.clear()
+    accounts=await customer_accounts(callback.from_user.id)
+    rows=[[_b(f"📊 PAYG · حساب #{a['id']}",f"paygcustomer:report:{a['id']}")]
+          for a in accounts]
+    rows.append([_b("🔙 صفحه اصلی","back_to_admin_main")])
+    await callback.message.edit_text(
+        "📊 <b>گزارش مصرف</b>\\n\\nسرویس اعتباری موردنظر را انتخاب کنید."
+        if accounts else "هنوز حساب PAYG برای گزارش مصرف ندارید.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+    await callback.answer()
+
+
 @payg_customer_center_router.callback_query(F.data=="wallet:topup")
 async def wallet_topup(callback:CallbackQuery,state:FSMContext):
     await state.clear()
