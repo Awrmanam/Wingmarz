@@ -55,7 +55,7 @@ async def _styled_markup(rows):
                 key="report"
             elif callback.startswith("users_panel_"):
                 key="users"
-            elif callback.startswith("info_panel_"):
+            elif callback.startswith(("info_panel_", "rebecca:credentials:")):
                 key="info"
             elif callback.startswith(("admin_renew_panel_", "paygsvc:migrate:")):
                 key="renew"
@@ -165,7 +165,7 @@ async def render_payg_dashboard(message,user_id: int,account_id: int):
         [_b("📊 گزارش مصرف",f"paygcustomer:report:{account_id}"),
          _b("🧾 گردش مالی",f"wallet:ledger:all:0:payg:{account_id}")],
         [_b("👥 کاربران پنل",f"users_panel_{account['admin_id']}"),
-         _b("🔐 اطلاعات ورود",f"info_panel_{account['admin_id']}")],
+         _b("🔐 اطلاعات ورود",f"rebecca:credentials:{account['admin_id']}")],
     ])
     if service_id is not None:
         rows.append([_b("🔄 تبدیل به پلن کامل",f"paygsvc:migrate:a:{service_id}:{account_id}")])
@@ -187,6 +187,7 @@ async def render_fixed_dashboard(message,user_id: int,admin_id: int) -> bool:
         [_b("🔄 تمدید و افزایش",f"admin_renew_panel_{int(admin_id)}")],
         [_b("👤 اطلاعات پنل",f"info_panel_{int(admin_id)}"),
          _b("📊 گزارش لحظه‌ای",f"report_panel_{int(admin_id)}")],
+        [_b("🔐 اطلاعات ورود",f"rebecca:credentials:{int(admin_id)}")],
         [_b("👥 کاربران پنل",f"users_panel_{int(admin_id)}")],
         [_b("🔙 سرویس‌های من","wallet:accounts")],
     ]
