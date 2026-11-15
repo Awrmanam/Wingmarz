@@ -45,7 +45,7 @@ async def _styled_markup(rows):
                 styled_row.append(button)
                 continue
             label=str(button.text)
-            clean=re.sub(r"^[^\\w@]+", "", label, flags=re.UNICODE).strip() or label
+            clean=re.sub(r"^[^\w@]+", "", label, flags=re.UNICODE).strip() or label
             fallback=label[:len(label)-len(clean)].strip() or None
             if "بازگشت" in clean or clean.startswith(("قبلی", "داشبورد", "گزارش خلاصه")):
                 key="back"
