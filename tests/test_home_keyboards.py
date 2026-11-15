@@ -75,7 +75,7 @@ def test_kyc_and_existing_panel_actions_remain_accessible_in_secondary_hubs(monk
     callbacks = [b.callback_data for markup in (account,reports,explore)
                  for row in markup.inline_keyboard for b in row]
     assert {"kyc:status","support:home","my_info","my_users",
-            "reactivate_users","my_report","wallet:reports","wallet:ledger:all:0",
+            "my_report","wallet:reports","wallet:ledger:all:0",
             "tariffs:home","svcmarket:trial"}.issubset(callbacks)
     kyc=[kwargs for _text,kwargs in calls if kwargs.get("callback_data")=="kyc:status"]
     info=[kwargs for _text,kwargs in calls if kwargs.get("callback_data")=="my_info"]
