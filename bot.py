@@ -28,6 +28,7 @@ from kyc_middleware import KycGateMiddleware, KycMessageGateMiddleware
 from group_ops_middleware import GroupOpsErrorMiddleware, GroupOpsStartMiddleware
 from group_ops_service import group_ops_service
 from forced_join_service import ForcedJoinState, check_membership
+from flow_cancel_context import FlowCancelContextMiddleware
 
 
 # The production systemd unit captures stdout/stderr in journald.
@@ -108,6 +109,10 @@ class MarzbanAdminBot:
         # KYC gates sensitive regular-admin panel actions after forced-join.
         self.dp.message.outer_middleware(KycMessageGateMiddleware())
         self.dp.callback_query.outer_middleware(KycGateMiddleware())
+        # Carries the live FSM state to outgoing Telegram UI decoration,
+        # including text-only input stages that otherwise lack any buttons.
+        self.dp.message.outer_middleware(FlowCancelContextMiddleware())
+        self.dp.callback_query.outer_middleware(FlowCancelContextMiddleware())
         
         # Setup routers - IMPORTANT: Register state-specific routers FIRST
         # Style and Rebecca-specific interceptors must be before the legacy sudo router.
