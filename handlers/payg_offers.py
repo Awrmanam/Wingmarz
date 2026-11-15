@@ -934,9 +934,9 @@ async def service_payg_admin_approve(callback: CallbackQuery):
             service = await get_service_by_rebecca_id(int(result["service_id"]))
             if admin:
                 login_url = admin.login_url or config.REBECCA_LOGIN_URL or config.REBECCA_URL
-                await callback.bot.send_message(
-                    user_id,
-                    "✅ <b>پرداخت تأیید شد و پنل PAYG ساخته شد.</b>\n\n"
+                sent = await payg_service.send_approval_notice_once(
+                    callback.bot, topup_id=topup_id, user_id=user_id,
+                    message="✅ <b>پرداخت تأیید شد و پنل PAYG ساخته شد.</b>\n\n"
                     + credential_message(
                         str(admin.marzban_username),
                         str(admin.marzban_password),
@@ -946,9 +946,9 @@ async def service_payg_admin_approve(callback: CallbackQuery):
                     + f"\n\n💰 موجودی کیف پول: <b>{_money(balance)}</b>",
                 )
         else:
-            await callback.bot.send_message(
-                user_id,
-                f"✅ شارژ PAYG تأیید شد.\n💰 موجودی کیف پول: <b>{_money(balance)}</b>",
+            sent = await payg_service.send_approval_notice_once(
+                callback.bot, topup_id=topup_id, user_id=user_id,
+                message=f"✅ شارژ PAYG تأیید شد.\n💰 موجودی کیف پول: <b>{_money(balance)}</b>",
             )
         try:
             await callback.message.edit_reply_markup(reply_markup=None)
