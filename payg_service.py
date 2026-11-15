@@ -92,6 +92,15 @@ class PaygService:
                 );
                 CREATE INDEX IF NOT EXISTS idx_wallet_ledger_user
                     ON wallet_ledger(user_id, id DESC);
+                -- One customer-facing delivery reservation per approved top-up.
+                -- This is notification state, never another financial ledger.
+                CREATE TABLE IF NOT EXISTS payg_approval_notices (
+                    topup_id INTEGER PRIMARY KEY,
+                    status TEXT NOT NULL DEFAULT 'sending'
+                        CHECK(status IN ('sending','sent','unknown')),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
                 CREATE TABLE IF NOT EXISTS payg_settings (
                     provider TEXT PRIMARY KEY,
                     enabled INTEGER NOT NULL DEFAULT 0,
@@ -712,6 +721,49 @@ class PaygService:
             )
             await conn.commit()
         return (await self.get_topup(topup_id)) or topup
+
+    async def send_approval_notice_once(
+        self, bot: Any, *, topup_id: int, user_id: int, message: str
+    ) -> bool:
+        """Reserve before Telegram I/O: repeated admin callbacks cannot spam users.
+
+        An ambiguous delivery failure becomes 'unknown' for manual review;
+        retrying blindly would risk sending the same notification twice.
+        This never controls wallet crediting, provisioning or reconciliation.
+        """
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            await conn.execute("BEGIN IMMEDIATE")
+            async with conn.execute(
+                "SELECT user_id,status FROM payg_topups WHERE id=?", (int(topup_id),)
+            ) as cur:
+                topup = await cur.fetchone()
+            if not topup or int(topup[0]) != int(user_id) or topup[1] != "approved":
+                await conn.rollback()
+                raise PaygError("approval notice requires an approved, owned top-up")
+            cur = await conn.execute(
+                "INSERT OR IGNORE INTO payg_approval_notices(topup_id,status) "
+                "VALUES(?,'sending')", (int(topup_id),)
+            )
+            reserved = cur.rowcount == 1
+            await conn.commit()
+        if not reserved:
+            return False
+        status = "sent"
+        try:
+            await bot.send_message(int(user_id), str(message))
+        except Exception:
+            status = "unknown"
+            # Delivery may already have reached Telegram despite a timeout.
+            # The operator can inspect the notice state, not auto-retry it.
+        async with aiosqlite.connect(self.db_path) as conn:
+            await conn.execute(
+                "UPDATE payg_approval_notices SET status=?,"
+                "updated_at=CURRENT_TIMESTAMP WHERE topup_id=? AND status='sending'",
+                (status, int(topup_id)),
+            )
+            await conn.commit()
+        return status == "sent"
 
     async def reject_topup(self, topup_id: int, actor_id: int) -> bool:
         if int(actor_id) not in config.SUDO_ADMINS:
