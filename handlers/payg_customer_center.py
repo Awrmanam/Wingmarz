@@ -109,7 +109,9 @@ async def render_payg_dashboard(message,user_id: int,account_id: int):
     if service_id is not None:
         rows.append([_b("💰 افزایش اعتبار",f"paygsvc:topup:a:{service_id}:{account_id}")])
     else:
-        rows.append([_b("💰 افزایش اعتبار","wallet:topup")])
+        # Old provider-wide PAYG accounts may predate service mapping.
+        # Their existing account-specific top-up route remains supported.
+        rows.append([_b("💰 افزایش اعتبار",f"payg:topup:{account_id}")])
     rows.extend([
         [_b("📊 گزارش مصرف",f"paygcustomer:report:{account_id}"),
          _b("🧾 گردش مالی","wallet:ledger:all:0")],
@@ -156,8 +158,10 @@ async def wallet_topup(callback:CallbackQuery,state:FSMContext):
     await state.clear()
     accounts=await customer_accounts(callback.from_user.id)
     rows=[
-        [_b(f"⚡ شارژ حساب #{a['id']}",f"paygsvc:topup:a:{a['service_id']}:{a['id']}" )]
-        for a in accounts if a.get("service_id") is not None
+        [_b(f"⚡ شارژ حساب #{a['id']}",
+            f"paygsvc:topup:a:{a['service_id']}:{a['id']}"
+            if a.get("service_id") is not None else f"payg:topup:{a['id']}")]
+        for a in accounts
     ]
     rows.append([_b("🛒 خرید سرویس PAYG","buyflow:payg:a")])
     rows.append([_b("🔙 کیف پول","wallet:home")])
