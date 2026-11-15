@@ -73,6 +73,8 @@ async def reseller_home_keyboard() -> InlineKeyboardMarkup:
         ],
         [await _button("سرویس‌های من", "wallet:accounts", icon_key="plan", fallback="📦"),
          await _button("کیف پول من", "wallet:home", icon_key="wallet", fallback="💰")],
+        [await _button("گزارش مصرف PAYG", "wallet:reports", icon_key="report", fallback="📊"),
+         await _button("گردش مالی", "wallet:ledger:all:0", icon_key="receipt", fallback="🧾")],
         [
             await _button("تعرفه‌ها", "tariffs:home", icon_key="price", fallback="💰"),
             await _button("تست رایگان", "svcmarket:trial", icon_key="test", fallback="🧪"),
