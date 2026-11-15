@@ -39,6 +39,8 @@ async def public_home_keyboard() -> InlineKeyboardMarkup:
         [await _button("خرید سرویس", "public_buy_reseller", icon_key="buy", fallback="🛒")],
         [await _button("سرویس‌های من", "wallet:accounts", icon_key="plan", fallback="📦"),
          await _button("کیف پول من", "wallet:home", icon_key="wallet", fallback="💰")],
+        [await _button("گزارش مصرف PAYG", "wallet:reports", icon_key="report", fallback="📊"),
+         await _button("گردش مالی", "wallet:ledger:all:0", icon_key="receipt", fallback="🧾")],
         [
             await _button("تعرفه‌ها", "tariffs:home", icon_key="price", fallback="💰"),
             await _button("تست رایگان", "svcmarket:trial", icon_key="test", fallback="🧪"),
@@ -66,9 +68,11 @@ async def reseller_home_keyboard() -> InlineKeyboardMarkup:
             await _button(config.BUTTONS["reactivate_users"], "reactivate_users", icon_key="refresh", fallback="🔄"),
         ],
         [
-            await _button("خرید پنل نمایندگی", "admin_buy_reseller", icon_key="buy", fallback="🛒"),
+            await _button("خرید سرویس", "admin_buy_reseller", icon_key="buy", fallback="🛒"),
             await _button(config.BUTTONS["renew"], "admin_renew", icon_key="renew", fallback="🔄"),
         ],
+        [await _button("سرویس‌های من", "wallet:accounts", icon_key="plan", fallback="📦"),
+         await _button("کیف پول من", "wallet:home", icon_key="wallet", fallback="💰")],
         [
             await _button("تعرفه‌ها", "tariffs:home", icon_key="price", fallback="💰"),
             await _button("تست رایگان", "svcmarket:trial", icon_key="test", fallback="🧪"),
