@@ -1286,84 +1286,16 @@ class PaygService:
         raise PaygError("could not allocate a unique Rebecca username")
 
     async def ensure_payg_account(self, user_id: int, provider: str = "rebecca") -> dict[str, Any]:
+        """Read-only compatibility: legacy users must never provision unsafely.
+
+        New accounts use PaygOfferService.provision with an explicit service ID,
+        KYC, durable reservation and manual reconciliation on remote ambiguity.
+        Historical accounts keep their existing billing/top-up paths.
+        """
         existing = await self.get_user_account(user_id, provider)
         if existing:
             return existing
-        if provider != "rebecca":
-            raise PaygError("Sanaei PAYG provisioning is not implemented yet")
-        settings = await self.get_settings(provider)
-        if not settings or not int(settings["enabled"]):
-            raise PaygError("PAYG is disabled")
-        rate = int(settings["price_per_gb_toman"] or 0)
-        minimum = int(settings["min_topup_toman"] or 0)
-        if rate <= 0:
-            raise PaygError("PAYG rate is not configured")
-        service_ids = parse_service_ids(str(settings["service_ids"] or ""))
-        balance = await self.get_balance(user_id)
-        if balance < minimum:
-            raise PaygInsufficientFunds(minimum - balance)
-
-        username = await self._unique_rebecca_username(f"payg{int(user_id)}")
-        password = secrets.token_urlsafe(10)
-        created_remote = False
-        try:
-            await rebecca_api.create_admin_verified(
-                username,
-                password,
-                int(user_id),
-                data_limit=None,
-                expire=None,
-                users_limit=int(settings["max_users"]),
-                services=service_ids,
-            )
-            created_remote = True
-            baseline = await rebecca_api.get_admin_usage(username)
-            admin_model = AdminModel(
-                user_id=int(user_id),
-                admin_name=str(settings["display_name"] or "PAYG Rebecca"),
-                marzban_username=username,
-                marzban_password=password,
-                max_users=int(settings["max_users"]),
-                max_total_time=_LONG_VALIDITY_DAYS * 86400,
-                max_total_traffic=0,
-                validity_days=_LONG_VALIDITY_DAYS,
-                is_active=True,
-                origin_plan_id=None,
-                allow_incremental_renewal=False,
-            )
-            if not await db.add_admin(admin_model):
-                raise PaygError("failed to save PAYG admin locally")
-            local = await db.get_admin_by_marzban_username(username)
-            if not local or local.id is None:
-                raise PaygError("PAYG admin local lookup failed")
-            async with aiosqlite.connect(self.db_path) as conn:
-                cur = await conn.execute(
-                    """
-                    INSERT INTO payg_accounts(
-                        user_id,admin_id,provider,status,price_per_gb_toman,last_raw_usage_bytes
-                    ) VALUES(?,?,?,?,?,?)
-                    """,
-                    (int(user_id), int(local.id), provider, "active", rate, int(baseline)),
-                )
-                await conn.commit()
-                account_id = int(cur.lastrowid)
-            account = await self.get_account(account_id)
-            if not account:
-                raise PaygError("PAYG account creation failed")
-            return account
-        except Exception:
-            if created_remote:
-                try:
-                    await rebecca_api.delete_admin(username)
-                except Exception:
-                    pass
-            local = await db.get_admin_by_marzban_username(username)
-            if local and local.id:
-                try:
-                    await db.remove_admin_by_id(int(local.id))
-                except Exception:
-                    pass
-            raise
+        raise PaygError("legacy PAYG creation retired; choose a Rebecca service in the new PAYG storefront")
 
     async def settle_usage(
         self, account_id: int, raw_usage_bytes: int, *,
