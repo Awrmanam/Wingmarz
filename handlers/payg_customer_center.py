@@ -191,8 +191,8 @@ async def render_fixed_dashboard(message,user_id: int,admin_id: int) -> bool:
         [_b("🔙 سرویس‌های من","wallet:accounts")],
     ]
     await message.edit_text(
-        f"📦 <b>سرویس حجمی/زمانی — {name}</b>\\n\\n"
-        f"وضعیت: <b>{status}</b>\\n\\n"
+        f"📦 <b>سرویس حجمی/زمانی — {name}</b>\n\n"
+        f"وضعیت: <b>{status}</b>\n\n"
         "برای تمدید، افزایش حجم یا زمان، گزینه تمدید را انتخاب کنید.",
         reply_markup=await _styled_markup(rows),
     )
@@ -301,7 +301,7 @@ async def payg_report(callback:CallbackQuery):
         lines.append("⚠️ بخشی از محاسبه مصرف نیازمند بررسی است.")
     await callback.message.edit_text("\n".join(lines),reply_markup=await _styled_markup([
         [_b("📋 جزئیات بیشتر",f"paygcustomer:detail:{account_id}")],
-        [_b("🧾 گردش مالی","wallet:ledger:all:0")],
+        [_b("🧾 گردش مالی",f"wallet:ledger:all:0:payg:{account_id}")],
         [_b("🔙 داشبورد",f"paygcustomer:dashboard:{account_id}")],
     ]))
     await callback.answer()
@@ -351,10 +351,24 @@ async def payg_report_details(callback:CallbackQuery):
 @payg_customer_center_router.callback_query(F.data.startswith("wallet:ledger:"))
 async def wallet_ledger(callback:CallbackQuery):
     parts=(callback.data or "").split(":")
-    if len(parts)!=4 or not parts[3].isdigit():
+    if len(parts) not in {4,6} or not parts[3].isdigit():
         await callback.answer("درخواست نامعتبر",show_alert=True)
         return
     category,page=parts[2],int(parts[3])
+    origin=""
+    back="wallet:home"
+    back_label="🔙 کیف پول"
+    if len(parts)==6:
+        if parts[4]!="payg" or not parts[5].isdigit():
+            await callback.answer("درخواست نامعتبر",show_alert=True)
+            return
+        account_id=int(parts[5])
+        if not await account_for_customer(callback.from_user.id,account_id):
+            await callback.answer("حساب متعلق به شما نیست",show_alert=True)
+            return
+        origin=f":payg:{account_id}"
+        back=f"paygcustomer:dashboard:{account_id}"
+        back_label="🔙 داشبورد PAYG"
     try:
         rows,more=await ledger_page(callback.from_user.id,category,page)
     except ValueError:
@@ -373,15 +387,15 @@ async def wallet_ledger(callback:CallbackQuery):
         )
     if not rows:
         lines.append("تراکنشی ثبت نشده است.")
-    filters=[[_b(label,f"wallet:ledger:{key}:0")] for key,label in names.items()]
+    filters=[[_b(label,f"wallet:ledger:{key}:0{origin}")] for key,label in names.items()]
     nav=[]
     if page:
-        nav.append(_b("◀ قبلی",f"wallet:ledger:{category}:{page-1}"))
+        nav.append(_b("◀ قبلی",f"wallet:ledger:{category}:{page-1}{origin}"))
     if more:
-        nav.append(_b("بعدی ▶",f"wallet:ledger:{category}:{page+1}"))
+        nav.append(_b("بعدی ▶",f"wallet:ledger:{category}:{page+1}{origin}"))
     if nav:
         filters.append(nav)
-    filters.append([_b("🔙 کیف پول","wallet:home")])
+    filters.append([_b(back_label,back)])
     await callback.message.edit_text("\n\n".join(lines),reply_markup=await _styled_markup(filters))
     await callback.answer()
 
