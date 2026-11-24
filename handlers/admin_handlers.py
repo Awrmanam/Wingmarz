@@ -504,7 +504,13 @@ async def _renewal_rates_if_allowed(callback: CallbackQuery, admin, action: str,
     if not admin or int(admin.user_id) != int(callback.from_user.id):
         await callback.answer("این پنل متعلق به حساب شما نیست.", show_alert=True)
         return None
-    _, policy = await policy_for_admin(admin)
+    category_id, policy = await policy_for_admin(admin)
+    if config.PANEL_PROVIDER == "rebecca" and category_id is None:
+        await callback.answer(
+            "سرویس Rebecca این پنل قابل تأیید نیست؛ تعرفه تمدید نمایش داده نمی‌شود.",
+            show_alert=True,
+        )
+        return None
     current_quota = getattr(admin, "max_total_traffic", None)
     # Old/manual admin rows may not carry a local quota snapshot at all.
     # Only an explicit zero marks unlimited; unknown values are checked live
@@ -665,10 +671,25 @@ async def admin_full_renew_plan_selected(callback: CallbackQuery):
         await callback.answer("پنل یافت نشد.", show_alert=True)
         return
     plan = await db.get_plan_by_id(plan_id)
-    if not plan:
-        await callback.answer("پلن انتخابی یافت نشد.", show_alert=True)
+    if not plan or not bool(getattr(plan,"is_active",False)) or int(getattr(plan,"price",0) or 0) <= 0:
+        await callback.answer("پلن فعال و قیمت‌دار یافت نشد.", show_alert=True)
         return
-    _, policy = await policy_for_admin(admin)
+    category_id, policy = await policy_for_admin(admin)
+    if config.PANEL_PROVIDER == "rebecca":
+        if category_id is None:
+            await callback.answer(
+                "سرویس واقعی پنل در Rebecca قابل تأیید نیست؛ سفارش ثبت نشد.",
+                show_alert=True,
+            )
+            return
+        from product_catalog import product_catalog
+        allowed_plans = await product_catalog.plans_for_category(category_id, only_active=True)
+        if not any(int(candidate.id) == int(plan_id) for candidate in allowed_plans):
+            await callback.answer(
+                "این پلن متعلق به سرویس پنل شما نیست؛ سفارش ثبت نشد.",
+                show_alert=True,
+            )
+            return
     if policy.mode != "legacy":
         await callback.answer("روش تمدید این پنل تغییر کرده؛ از منوی جدید استفاده کنید.", show_alert=True)
         return
