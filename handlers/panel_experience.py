@@ -11,7 +11,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup
 import config
 from database import db
 from product_catalog import ProductCategory, product_catalog
-from renewal_policy import allows, policy_for_admin, rates_for_admin
+from renewal_policy import allows, policy_for_admin, rates_for_admin, _category_id_for_admin
 from rebecca_api import rebecca_api
 from style_engine import style_engine
 from utils.notify import format_traffic_size, seconds_to_days
@@ -54,10 +54,9 @@ async def _redirect_payg_renew(callback: CallbackQuery, state: FSMContext, admin
 
 
 async def _category_for_admin(admin) -> ProductCategory | None:
-    origin_plan_id = int(getattr(admin, "origin_plan_id", 0) or 0)
-    if not origin_plan_id:
-        return None
-    return await product_catalog.category_for_plan(origin_plan_id)
+    """Use the SAME verified service mapping as renewal pricing and orders."""
+    category_id = await _category_id_for_admin(admin)
+    return await product_catalog.get_category(category_id) if category_id else None
 
 
 async def _admin_panel_identity(admin) -> tuple[str, str | None]:
@@ -131,13 +130,22 @@ async def canonical_renew_panel(callback: CallbackQuery, state: FSMContext):
 
     if await _redirect_payg_renew(callback, state, admin):
         return
+    category_id, policy = await policy_for_admin(admin)
+    if category_id is None:
+        await callback.answer(
+            "سرویس این پنل در Rebecca یا کاتالوگ ربات مشخص نیست؛ "
+            "برای تنظیم تعرفه تمدید با پشتیبانی تماس بگیرید.",
+            show_alert=True,
+        )
+        return
     await state.update_data(current_admin_id=admin_id)
-    panel_name, icon_key = await _admin_panel_identity(admin)
+    category = await product_catalog.get_category(category_id)
+    panel_name = category.name if category else str(getattr(admin,"admin_name",None) or "پنل")
+    icon_key = await product_catalog.resolve_panel_icon_key(category) if category else None
     icon = await style_engine.render_emoji(icon_key, fallback="📦") if icon_key else "📦"
     heading = f"{icon} <b>{escape(panel_name)}</b>"
 
-    rates = await rates_for_admin(admin)
-    category_id, policy = await policy_for_admin(admin)
+    rates = await rates_for_admin(admin, policy=policy)
     if policy.mode != "legacy":
         unlimited_traffic = int(getattr(admin, "max_total_traffic", 0) or 0) == 0
         rows = []
@@ -185,37 +193,41 @@ async def canonical_renew_panel(callback: CallbackQuery, state: FSMContext):
     except Exception:
         allow_incremental = True
 
+    # A manually linked Rebecca admin has no origin_plan_id. Incremental
+    # renewal and full plan renewal are independent choices for legacy policy.
+    # Full plans must belong to the admin's exact Rebecca service.
+    plans = [
+        p for p in await product_catalog.plans_for_category(category_id, only_active=True)
+        if int(getattr(p, "price", 0) or 0) > 0
+    ]
+    rows = []
     if allow_incremental:
-        rows = [
-            [await _button(
+        if rates["per_gb_toman"] > 0 and int(getattr(admin, "max_total_traffic", 0) or 0) > 0:
+            rows.append([await _button(
                 f"حجم · 1GB = {rates['per_gb_toman']:,} ت",
-                f"admin_renew_traffic_{admin_id}",
-                fallback="➕",
-            )],
-            [await _button(
+                f"admin_renew_traffic_{admin_id}", fallback="➕",
+            )])
+        if rates["per_30days_toman"] > 0:
+            rows.append([await _button(
                 f"زمان · 30 روز = {rates['per_30days_toman']:,} ت",
-                f"admin_renew_time_{admin_id}",
-                fallback="➕",
-            )],
-            [await _button(
+                f"admin_renew_time_{admin_id}", fallback="➕",
+            )])
+        if rates["per_user_toman"] > 0:
+            rows.append([await _button(
                 f"کاربر · 1 نفر = {rates['per_user_toman']:,} ت",
-                f"admin_renew_users_{admin_id}",
-                fallback="➕",
-            )],
-            [await _button("بازگشت", "admin_renew", icon_key="back", fallback="⬅️")],
-        ]
-        intro = str(config.MESSAGES.get("renew_intro", "مقدار موردنظر برای افزایش را انتخاب کنید."))
+                f"admin_renew_users_{admin_id}", fallback="➕",
+            )])
+    if plans:
+        rows.append([await _button(
+            "تمدید کامل · انتخاب پلن",
+            f"admin_full_renew_{admin_id}", icon_key="renew", fallback="🔁",
+        )])
+    rows.append([await _button("بازگشت", "admin_renew", icon_key="back", fallback="⬅️")])
+    if len(rows) == 1:
+        intro = "برای این سرویس هنوز تعرفه یا پلن تمدید قابل‌فروشی تعریف نشده است."
     else:
-        rows = [
-            [await _button(
-                "تمدید کامل و انتخاب پلن",
-                f"admin_full_renew_{admin_id}",
-                icon_key="renew",
-                fallback="🔁",
-            )],
-            [await _button("بازگشت", "admin_renew", icon_key="back", fallback="⬅️")],
-        ]
-        intro = "برای این پنل تمدید کامل پلن فعال است."
+        intro = ("روش تمدید را انتخاب کنید. مبالغ افزایش تدریجی از تعرفه "
+                 "اختصاصی همین سرویس و تمدید کامل از قیمت پلن‌های همین سرویس محاسبه می‌شوند.")
 
     await callback.message.edit_text(
         f"{heading}\n\n{intro}",
@@ -246,27 +258,19 @@ async def canonical_full_renew(callback: CallbackQuery, state: FSMContext):
         await callback.answer("این پنل از روش‌های تمدید جدید استفاده می‌کند.", show_alert=True)
         return
 
-    try:
-        override = getattr(admin, "allow_incremental_renewal", None)
-        if override is not None and bool(override):
-            await callback.answer("برای این پنل افزایش تدریجی فعال است.", show_alert=True)
-            return
-        origin_plan = await db.get_plan_by_id(int(getattr(admin, "origin_plan_id", 0) or 0))
-        if origin_plan and bool(getattr(origin_plan, "allow_incremental_renewal", True)) and override is None:
-            await callback.answer("برای این پنل افزایش تدریجی فعال است.", show_alert=True)
-            return
-    except Exception:
-        origin_plan = None
-
     category = await _category_for_admin(admin)
-    if category:
-        plans = await product_catalog.plans_for_category(category.id, only_active=True)
-        panel_name = category.name
-        icon_key = await product_catalog.resolve_panel_icon_key(category)
-    else:
-        # Compatibility for old/manual accounts without origin_plan_id.
-        plans = await db.get_plans(only_active=True)
-        panel_name, icon_key = await _admin_panel_identity(admin)
+    if not category:
+        await callback.answer(
+            "سرویس واقعی این پنل قابل شناسایی نیست؛ تمدید کامل ممکن نیست.",
+            show_alert=True,
+        )
+        return
+    plans = [
+        p for p in await product_catalog.plans_for_category(category.id, only_active=True)
+        if int(getattr(p, "price", 0) or 0) > 0
+    ]
+    panel_name = category.name
+    icon_key = await product_catalog.resolve_panel_icon_key(category)
 
     if not plans:
         await callback.answer("هیچ پلن فعالی برای تمدید این پنل موجود نیست.", show_alert=True)
