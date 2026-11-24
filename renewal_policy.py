@@ -137,40 +137,43 @@ def _rebecca_admin_service_id(remote: object) -> int | None:
 
 
 async def _category_id_for_admin(admin) -> int | None:
-    """Resolve a FIXED admin's category from exact Rebecca assignment.
+    """Resolve a FIXED admin's service without relying on origin_plan_id.
 
-    For manual admins, origin_plan_id is typically NULL; their live Rebecca
-    service ID is the only authoritative product identity. Existing purchased
-    admins with one explicitly mapped origin plan can still renew when Rebecca
-    is temporarily offline, without picking a random multi-service category.
+    Purchase-created accounts retain their unique catalog mapping without
+    extra network requests. Manually linked admins (no origin plan), and
+    unresolvable historical plans, use a read-only, exact Rebecca assignment.
     """
     plan_id = int(getattr(admin, "origin_plan_id", 0) or 0)
-    origin_id: int | None = None
     if plan_id > 0:
         plan = await db.get_plan_by_id(plan_id)
         if plan:
-            origin_services = set(service_marketplace_service.plan_service_ids(plan))
-            if len(origin_services) == 1:
-                origin_id = next(iter(origin_services))
+            candidates = set(service_marketplace_service.plan_service_ids(plan))
+            if candidates:
+                categories = await product_catalog.categories(active_only=False)
+                matches = [
+                    category for category in categories
+                    if int(category.rebecca_service_id) in candidates
+                ]
+                if len(matches) == 1:
+                    return int(matches[0].id)
 
-    service_id: int | None = None
+    # Manual admins lack origin_plan_id. Never guess from Telegram label or
+    # product name: verify the exact remote username and one service ID.
     username = str(getattr(admin, "marzban_username", "") or "").strip()
-    if username:
-        from rebecca_api import RebeccaAPIError, rebecca_api
-        try:
-            remote = await rebecca_api.find_admin(username)
-        except RebeccaAPIError:
-            remote = None
-        if (isinstance(remote, dict)
-                and str(remote.get("username", "")) == username):
-            service_id = _rebecca_admin_service_id(remote)
-
-    # A purchased plan can supply one trusted local service ID when Rebecca
-    # has no usable assignment; a manually added admin cannot.
-    resolved_id = service_id if service_id is not None else origin_id
-    if resolved_id is None:
+    if not username:
         return None
-    category = await product_catalog.get_category_by_service(resolved_id)
+    from rebecca_api import RebeccaAPIError, rebecca_api
+    try:
+        remote = await rebecca_api.find_admin(username)
+    except RebeccaAPIError:
+        return None
+    if (not isinstance(remote, dict)
+            or str(remote.get("username", "")) != username):
+        return None
+    service_id = _rebecca_admin_service_id(remote)
+    if service_id is None:
+        return None
+    category = await product_catalog.get_category_by_service(service_id)
     return int(category.id) if category else None
 
 
