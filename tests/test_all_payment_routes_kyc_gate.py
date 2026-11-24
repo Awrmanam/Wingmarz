@@ -106,7 +106,7 @@ def test_all_reseller_renewals_use_single_payment_guard(monkeypatch, name, data)
         id=12, user_id=42, is_active=True,
     )))
     monkeypatch.setattr(admin_handlers.db, "get_plan_by_id", AsyncMock(return_value=SimpleNamespace(
-        id=7, price=22000, name="Pro",
+        id=7, price=22000, name="Pro", is_active=True,
     )))
     monkeypatch.setattr(admin_handlers.db, "get_billing_rates", AsyncMock(return_value={
         "per_gb_toman": 100, "per_30days_toman": 1000, "per_user_toman": 100,

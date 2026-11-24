@@ -7,6 +7,7 @@ import kyc_ui_registry as _kyc_ui_registry  # noqa: F401
 import config
 
 from .style_admin import style_admin_router
+from .navigation_guard import navigation_guard_router
 from .kyc import kyc_router
 from purchase_kyc_flow import checkout_kyc_router
 from .group_ops import group_ops_router
@@ -17,6 +18,7 @@ from .operations_bootstrap import operations_bootstrap_router
 from .product_center import product_center_router
 from .renewal_settings import renewal_settings_router
 from .plan_storefront import plan_storefront_router
+from .payg_customer_center import payg_customer_center_router
 from .panel_experience import panel_experience_router
 from .rebecca_admin_sync import rebecca_admin_sync_router
 from .payg_offers import payg_offers_router
@@ -37,6 +39,8 @@ from .support_v2 import support_v2_router
 from .tariffs import tariffs_router
 from .control_center import control_center_router
 
+# First: cancel/state exit and compatibility callbacks must preempt stale handlers.
+style_admin_router.include_router(navigation_guard_router)
 style_admin_router.include_router(group_ops_router)
 style_admin_router.include_router(reseller_management_router)
 style_admin_router.include_router(kyc_router)
@@ -51,6 +55,7 @@ style_admin_router.include_router(product_center_router)
 style_admin_router.include_router(renewal_settings_router)
 style_admin_router.include_router(plan_storefront_router)
 # Renewal/extension also resolves panel identity through the same catalog.
+style_admin_router.include_router(payg_customer_center_router)
 style_admin_router.include_router(panel_experience_router)
 # In Rebecca mode, account info/report/users must be sourced from Rebecca's
 # live APIs before the legacy Marzban-backed admin router can consume them.

@@ -77,6 +77,8 @@ class TrustService:
         }
 
     async def set_manual_trusted(self, user_id: int, trusted: bool, actor_id: int) -> None:
+        if int(actor_id) not in config.SUDO_ADMINS:
+            raise PermissionError("manual trust operator permission required")
         await self.ensure_schema()
         async with aiosqlite.connect(self.db_path) as conn:
             await conn.execute(
@@ -95,7 +97,9 @@ class TrustService:
             )
             await conn.commit()
 
-    async def set_auto_approve(self, user_id: int, enabled: bool) -> None:
+    async def set_auto_approve(self, user_id: int, enabled: bool, actor_id: int | None = None) -> None:
+        if actor_id is None or int(actor_id) not in config.SUDO_ADMINS:
+            raise PermissionError("auto-approve operator permission required")
         await self.ensure_schema()
         if enabled and not await self.is_identity_approved(user_id):
             raise ValueError("user must be KYC-approved or manually trusted")

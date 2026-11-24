@@ -97,24 +97,84 @@ async def save_rate(category_id: int, field: str, value: int | None) -> RenewalP
     return updated
 
 
-async def _category_id_for_admin(admin) -> int | None:
-    """Never guess a category when the originating plan maps to multiple panels.
+def _rebecca_admin_service_id(remote: object) -> int | None:
+    """Return one exact service assignment, never a name-based guess.
 
-    Shared products need an explicit, unambiguous category mapping before
-    the system can safely apply service-specific prices and policies.
+    Rebecca admin records may expose service_id, service_ids or a services
+    array of ids/objects. Missing/malformed/multiple mappings are ambiguous,
+    so no service-specific quote may be created from those records.
+    """
+    if not isinstance(remote, dict):
+        return None
+    values: set[int] = set()
+    saw_mapping = False
+
+    def read_id(value: object) -> int | None:
+        if isinstance(value, dict):
+            value = value.get("service_id", value.get("id"))
+        if isinstance(value, bool) or not isinstance(value, (int, str)):
+            return None
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
+
+    for field in ("service_id", "service_ids", "services"):
+        if field not in remote or remote[field] is None:
+            continue
+        saw_mapping = True
+        raw = remote[field]
+        items = raw if isinstance(raw, list) else [raw]
+        if not items:
+            return None
+        for item in items:
+            service_id = read_id(item)
+            if service_id is None:
+                return None
+            values.add(service_id)
+    return next(iter(values)) if saw_mapping and len(values) == 1 else None
+
+
+async def _category_id_for_admin(admin) -> int | None:
+    """Resolve a FIXED admin's service without relying on origin_plan_id.
+
+    Purchase-created accounts retain their unique catalog mapping without
+    extra network requests. Manually linked admins (no origin plan), and
+    unresolvable historical plans, use a read-only, exact Rebecca assignment.
     """
     plan_id = int(getattr(admin, "origin_plan_id", 0) or 0)
-    if plan_id <= 0:
+    if plan_id > 0:
+        plan = await db.get_plan_by_id(plan_id)
+        if plan:
+            candidates = set(service_marketplace_service.plan_service_ids(plan))
+            if candidates:
+                categories = await product_catalog.categories(active_only=False)
+                matches = [
+                    category for category in categories
+                    if int(category.rebecca_service_id) in candidates
+                ]
+                if len(matches) == 1:
+                    return int(matches[0].id)
+
+    # Manual admins lack origin_plan_id. Never guess from Telegram label or
+    # product name: verify the exact remote username and one service ID.
+    username = str(getattr(admin, "marzban_username", "") or "").strip()
+    if not username:
         return None
-    plan = await db.get_plan_by_id(plan_id)
-    if not plan:
+    from rebecca_api import RebeccaAPIError, rebecca_api
+    try:
+        remote = await rebecca_api.find_admin(username)
+    except RebeccaAPIError:
         return None
-    service_ids = set(service_marketplace_service.plan_service_ids(plan))
-    if not service_ids:
+    if (not isinstance(remote, dict)
+            or str(remote.get("username", "")) != username):
         return None
-    categories = await product_catalog.categories(active_only=False)
-    matched = [category for category in categories if int(category.rebecca_service_id) in service_ids]
-    return int(matched[0].id) if len(matched) == 1 else None
+    service_id = _rebecca_admin_service_id(remote)
+    if service_id is None:
+        return None
+    category = await product_catalog.get_category_by_service(service_id)
+    return int(category.id) if category else None
 
 
 async def policy_for_admin(admin) -> tuple[int | None, RenewalPolicy]:
@@ -124,9 +184,10 @@ async def policy_for_admin(admin) -> tuple[int | None, RenewalPolicy]:
     return category_id, await get_policy(category_id)
 
 
-async def rates_for_admin(admin) -> dict[str, int]:
+async def rates_for_admin(admin, *, policy: RenewalPolicy | None = None) -> dict[str, int]:
     base = await db.get_billing_rates()
-    _, policy = await policy_for_admin(admin)
+    if policy is None:
+        _, policy = await policy_for_admin(admin)
     return {
         field: int(getattr(policy, field) if getattr(policy, field) is not None else base[field])
         for field in RATE_FIELDS

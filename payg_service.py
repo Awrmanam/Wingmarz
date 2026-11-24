@@ -92,7 +92,15 @@ class PaygService:
                 );
                 CREATE INDEX IF NOT EXISTS idx_wallet_ledger_user
                     ON wallet_ledger(user_id, id DESC);
-
+                -- One customer-facing delivery reservation per approved top-up.
+                -- This is notification state, never another financial ledger.
+                CREATE TABLE IF NOT EXISTS payg_approval_notices (
+                    topup_id INTEGER PRIMARY KEY,
+                    status TEXT NOT NULL DEFAULT 'sending'
+                        CHECK(status IN ('sending','sent','unknown')),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
                 CREATE TABLE IF NOT EXISTS payg_settings (
                     provider TEXT PRIMARY KEY,
                     enabled INTEGER NOT NULL DEFAULT 0,
@@ -119,6 +127,64 @@ class PaygService:
                 );
                 CREATE INDEX IF NOT EXISTS idx_payg_accounts_user
                     ON payg_accounts(user_id, provider, status);
+
+                -- Historical monetary target is fixed at the last observed counter.
+                -- New consumption accrues at the then-current rate only.
+                CREATE TABLE IF NOT EXISTS payg_billing_state (
+                    account_id INTEGER PRIMARY KEY,
+                    accrued_toman INTEGER NOT NULL CHECK(accrued_toman >= 0),
+                    remainder_numerator INTEGER NOT NULL DEFAULT 0
+                        CHECK(remainder_numerator >= 0),
+                    last_priced_bytes INTEGER NOT NULL CHECK(last_priced_bytes >= 0)
+                );
+                CREATE TABLE IF NOT EXISTS payg_discount_targets (
+                    account_id INTEGER PRIMARY KEY,
+                    base_rate INTEGER NOT NULL CHECK(base_rate > 0),
+                    desired_rate INTEGER,
+                    last_error TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE IF NOT EXISTS payg_customer_discounts (
+                    account_id INTEGER PRIMARY KEY,
+                    mode TEXT NOT NULL CHECK(mode IN ('fixed','percent')),
+                    value INTEGER NOT NULL CHECK(value >= 0),
+                    starts_at INTEGER NOT NULL,
+                    expires_at INTEGER,
+                    updated_by INTEGER NOT NULL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE IF NOT EXISTS payg_customer_discount_audit (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    account_id INTEGER NOT NULL,
+                    actor_id INTEGER NOT NULL,
+                    action TEXT NOT NULL,
+                    previous_mode TEXT,
+                    previous_value INTEGER,
+                    new_mode TEXT,
+                    new_value INTEGER,
+                    starts_at INTEGER,
+                    expires_at INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE IF NOT EXISTS payg_rate_switches (
+                    account_id INTEGER PRIMARY KEY,
+                    actor_id INTEGER NOT NULL,
+                    requested_rate INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE IF NOT EXISTS payg_rate_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    account_id INTEGER NOT NULL,
+                    actor_id INTEGER NOT NULL,
+                    previous_rate INTEGER NOT NULL,
+                    new_rate INTEGER NOT NULL,
+                    boundary_raw_bytes INTEGER NOT NULL,
+                    boundary_cumulative_bytes INTEGER NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE INDEX IF NOT EXISTS idx_payg_rate_history_account
+                    ON payg_rate_history(account_id,id DESC);
 
                 CREATE TABLE IF NOT EXISTS payg_topups (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -242,21 +308,37 @@ class PaygService:
             else:
                 fields["service_ids"] = ""
         await self.ensure_schema()
+        # Validate the prospective configuration before committing any changes.
+        # Keep the read, validation and write under one lock to avoid races.
         setters = ",".join(f"{key}=?" for key in fields)
         async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("BEGIN IMMEDIATE")
+            async with conn.execute(
+                "SELECT * FROM payg_settings WHERE provider=?", (str(provider),)
+            ) as cur:
+                current = await cur.fetchone()
+            if current is None:
+                await conn.rollback()
+                raise PaygError("PAYG settings row missing")
+            proposed = {**dict(current), **fields}
+            if int(proposed["enabled"]):
+                if int(proposed["price_per_gb_toman"] or 0) <= 0:
+                    await conn.rollback()
+                    raise PaygError("PAYG rate must be positive before enabling")
+                try:
+                    service_ids = parse_service_ids(str(proposed["service_ids"] or ""))
+                    if not service_ids:
+                        raise ValueError("empty service IDs")
+                except ValueError as exc:
+                    await conn.rollback()
+                    raise PaygError("PAYG service IDs must be valid before enabling") from exc
             await conn.execute(
                 f"UPDATE payg_settings SET {setters},updated_at=CURRENT_TIMESTAMP WHERE provider=?",
                 [*fields.values(), str(provider)],
             )
             await conn.commit()
-        settings = await self.get_settings(provider)
-        if not settings:
-            raise PaygError("PAYG settings row missing")
-        if settings["enabled"]:
-            if int(settings["price_per_gb_toman"] or 0) <= 0:
-                raise PaygError("PAYG rate must be positive before enabling")
-            parse_service_ids(str(settings["service_ids"] or ""))
-        return settings
+        return (await self.get_settings(provider)) or proposed
 
     async def set_enabled(self, provider: str, enabled: bool) -> dict[str, Any]:
         if enabled:
@@ -309,6 +391,25 @@ class PaygService:
         await self.ensure_schema()
         async with aiosqlite.connect(self.db_path) as conn:
             await conn.execute("BEGIN IMMEDIATE")
+            # An operation may be retried after a timeout or process restart.
+            # The ledger is authoritative: never post the same credit twice.
+            if reference_id is not None and (
+                (kind == "topup" and reference_type == "payg_topup")
+                or (kind == "migration_refund" and reference_type == "payg_migration")
+            ):
+                async with conn.execute(
+                    "SELECT user_id,amount_toman FROM wallet_ledger "
+                    "WHERE kind=? AND reference_type=? AND reference_id=?",
+                    (kind, reference_type, int(reference_id)),
+                ) as cur:
+                    prior = await cur.fetchone()
+                if prior is not None:
+                    if int(prior[0]) != int(user_id) or int(prior[1]) != amount:
+                        await conn.rollback()
+                        raise PaygError("conflicting repeated wallet credit")
+                    balance = await self._balance_in_conn(conn, int(user_id))
+                    await conn.rollback()
+                    return balance
             balance = await self._balance_in_conn(conn, int(user_id))
             new_balance = balance + amount
             await self._write_balance_in_conn(conn, int(user_id), new_balance)
@@ -340,6 +441,29 @@ class PaygService:
         await self.ensure_schema()
         async with aiosqlite.connect(self.db_path) as conn:
             await conn.execute("BEGIN IMMEDIATE")
+            if kind == "fixed_plan_purchase" and reference_type == "payg_migration" and reference_id is not None:
+                async with conn.execute(
+                    "SELECT user_id,amount_toman FROM wallet_ledger "
+                    "WHERE kind=? AND reference_type=? AND reference_id=?",
+                    (kind, reference_type, int(reference_id)),
+                ) as cur:
+                    prior = await cur.fetchone()
+                if prior is not None:
+                    if int(prior[0]) != int(user_id) or int(prior[1]) != -amount:
+                        await conn.rollback()
+                        raise PaygError("conflicting repeated wallet debit")
+                    async with conn.execute(
+                        "SELECT 1 FROM wallet_ledger WHERE kind='migration_refund' "
+                        "AND reference_type='payg_migration' AND reference_id=?",
+                        (int(reference_id),),
+                    ) as cur:
+                        refunded = await cur.fetchone()
+                    if refunded:
+                        await conn.rollback()
+                        raise PaygError("refunded migration cannot be debited again")
+                    balance = await self._balance_in_conn(conn, int(user_id))
+                    await conn.rollback()
+                    return balance
             balance = await self._balance_in_conn(conn, int(user_id))
             if balance < amount:
                 await conn.rollback()
@@ -398,6 +522,27 @@ class PaygService:
             raise PaygError("top-up amount must be positive")
         await self.ensure_schema()
         async with aiosqlite.connect(self.db_path) as conn:
+            # Caller-supplied account/migration IDs must never attach a user's
+            # payment to a different customer's service or migration.
+            if account_id is not None:
+                async with conn.execute(
+                    "SELECT user_id,provider,status FROM payg_accounts WHERE id=?",
+                    (int(account_id),),
+                ) as cur:
+                    owner = await cur.fetchone()
+                if (owner is None or int(owner[0]) != int(user_id)
+                    or str(owner[1]) != str(provider) or str(owner[2]) == "migrated"):
+                    raise PaygError("top-up account does not belong to this customer")
+            if migration_id is not None:
+                async with conn.execute(
+                    "SELECT user_id,account_id FROM payg_migrations WHERE id=?",
+                    (int(migration_id),),
+                ) as cur:
+                    migration = await cur.fetchone()
+                if migration is None or int(migration[0]) != int(user_id):
+                    raise PaygError("top-up migration does not belong to this customer")
+                if account_id is not None and int(migration[1]) != int(account_id):
+                    raise PaygError("top-up migration account mismatch")
             cur = await conn.execute(
                 """
                 INSERT INTO payg_topups(
@@ -433,6 +578,8 @@ class PaygService:
 
     async def hold_topup_for_kyc(self, topup_id: int, actor_id: int) -> dict[str, Any]:
         """Verify payment without crediting wallet until KYC is approved."""
+        if int(actor_id) not in config.SUDO_ADMINS:
+            raise PaygError("operator permission required")
         await self.ensure_schema()
         async with aiosqlite.connect(self.db_path) as conn:
             conn.row_factory = aiosqlite.Row
@@ -524,6 +671,8 @@ class PaygService:
 
     async def approve_topup(self, topup_id: int, actor_id: int) -> dict[str, Any]:
         """Atomically approve once and credit the wallet exactly once."""
+        if int(actor_id) not in config.SUDO_ADMINS:
+            raise PaygError("operator permission required")
         await self.ensure_schema()
         async with aiosqlite.connect(self.db_path) as conn:
             conn.row_factory = aiosqlite.Row
@@ -535,7 +684,16 @@ class PaygService:
                 raise PaygError("top-up not found")
             topup = dict(row)
             if topup["status"] == "approved":
+                # Approved state and its ledger posting must agree.
+                async with conn.execute(
+                    "SELECT COUNT(*) FROM wallet_ledger "
+                    "WHERE kind='topup' AND reference_type='payg_topup' AND reference_id=?",
+                    (int(topup_id),),
+                ) as cur:
+                    count = (await cur.fetchone())[0]
                 await conn.rollback()
+                if count != 1:
+                    raise PaygError("approved top-up has inconsistent ledger")
                 return topup
             if topup["status"] not in {"submitted", "paid_awaiting_kyc"}:
                 await conn.rollback()
@@ -564,7 +722,52 @@ class PaygService:
             await conn.commit()
         return (await self.get_topup(topup_id)) or topup
 
+    async def send_approval_notice_once(
+        self, bot: Any, *, topup_id: int, user_id: int, message: str
+    ) -> bool:
+        """Reserve before Telegram I/O: repeated admin callbacks cannot spam users.
+
+        An ambiguous delivery failure becomes 'unknown' for manual review;
+        retrying blindly would risk sending the same notification twice.
+        This never controls wallet crediting, provisioning or reconciliation.
+        """
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            await conn.execute("BEGIN IMMEDIATE")
+            async with conn.execute(
+                "SELECT user_id,status FROM payg_topups WHERE id=?", (int(topup_id),)
+            ) as cur:
+                topup = await cur.fetchone()
+            if not topup or int(topup[0]) != int(user_id) or topup[1] != "approved":
+                await conn.rollback()
+                raise PaygError("approval notice requires an approved, owned top-up")
+            cur = await conn.execute(
+                "INSERT OR IGNORE INTO payg_approval_notices(topup_id,status) "
+                "VALUES(?,'sending')", (int(topup_id),)
+            )
+            reserved = cur.rowcount == 1
+            await conn.commit()
+        if not reserved:
+            return False
+        status = "sent"
+        try:
+            await bot.send_message(int(user_id), str(message))
+        except Exception:
+            status = "unknown"
+            # Delivery may already have reached Telegram despite a timeout.
+            # The operator can inspect the notice state, not auto-retry it.
+        async with aiosqlite.connect(self.db_path) as conn:
+            await conn.execute(
+                "UPDATE payg_approval_notices SET status=?,"
+                "updated_at=CURRENT_TIMESTAMP WHERE topup_id=? AND status='sending'",
+                (status, int(topup_id)),
+            )
+            await conn.commit()
+        return status == "sent"
+
     async def reject_topup(self, topup_id: int, actor_id: int) -> bool:
+        if int(actor_id) not in config.SUDO_ADMINS:
+            raise PaygError("operator permission required")
         await self.ensure_schema()
         async with aiosqlite.connect(self.db_path) as conn:
             cur = await conn.execute(
@@ -619,6 +822,493 @@ class PaygService:
                 row = await cur.fetchone()
         return dict(row) if row else None
 
+    async def get_accrued_target(self, account_id: int) -> int:
+        """Return the immutable monetary accrual for observed usage."""
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            async with conn.execute(
+                "SELECT accrued_toman FROM payg_billing_state WHERE account_id=?",
+                (int(account_id),),
+            ) as cur:
+                row = await cur.fetchone()
+            if row is not None:
+                return int(row[0])
+            async with conn.execute(
+                "SELECT cumulative_usage_bytes,price_per_gb_toman "
+                "FROM payg_accounts WHERE id=?", (int(account_id),),
+            ) as cur:
+                account = await cur.fetchone()
+            if account is None:
+                raise PaygError("PAYG account not found")
+            # The legacy fallback is valid only for a single unchanged rate.
+            # A missing historical ledger must not silently reprice past bytes.
+            async with conn.execute(
+                "SELECT 1 FROM payg_rate_history WHERE account_id=? LIMIT 1",
+                (int(account_id),),
+            ) as cur:
+                if await cur.fetchone():
+                    raise PaygError("historical accrual missing for changed-rate account")
+            return int(account[0]) * int(account[1]) // GIB
+
+    @staticmethod
+    def discount_rate(base_rate: int, mode: str, value: int) -> int:
+        """Fixed overrides percentage; never stack two discounts."""
+        base, amount = int(base_rate), int(value)
+        if base <= 0:
+            raise PaygError("base PAYG rate must be positive")
+        if mode == "fixed" and amount > 0:
+            return amount
+        if mode == "percent" and 0 <= amount < 100:
+            return max(1, base * (100 - amount) // 100)
+        raise PaygError("invalid discount configuration")
+
+    async def get_customer_discount(self, account_id: int) -> dict[str, Any] | None:
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            async with conn.execute(
+                "SELECT * FROM payg_customer_discounts WHERE account_id=?",
+                (int(account_id),),
+            ) as cur:
+                row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def configure_customer_discount(
+        self, account_id: int, actor_id: int, *, mode: str,
+        value: int, base_rate: int, starts_at: int,
+        expires_at: int | None = None,
+    ) -> None:
+        """Owner-only future discount configuration, no historical repricing.
+
+        The discount is stored separately from the current billing rate.
+        Activation must use switch_rate_after_rebecca_sync at the boundary.
+        """
+        import os
+        owner = os.getenv("PAYG_OWNER_ID", "").strip()
+        if not owner.isdecimal() or int(actor_id) != int(owner):
+            raise PaygError("owner permission required")
+        self.discount_rate(base_rate, mode, value)
+        if expires_at is not None and int(expires_at) <= int(starts_at):
+            raise PaygError("discount expiration must follow start")
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("BEGIN IMMEDIATE")
+            async with conn.execute(
+                "SELECT mode,value FROM payg_customer_discounts WHERE account_id=?",
+                (int(account_id),),
+            ) as cur:
+                previous = await cur.fetchone()
+            async with conn.execute(
+                "SELECT 1 FROM payg_accounts WHERE id=?", (int(account_id),),
+            ) as cur:
+                exists = await cur.fetchone()
+            if not exists:
+                await conn.rollback()
+                raise PaygError("PAYG account not found")
+            await conn.execute(
+                "INSERT INTO payg_customer_discounts"
+                "(account_id,mode,value,starts_at,expires_at,updated_by)"
+                "VALUES(?,?,?,?,?,?) ON CONFLICT(account_id) DO UPDATE SET "
+                "mode=excluded.mode,value=excluded.value,"
+                "starts_at=excluded.starts_at,expires_at=excluded.expires_at,"
+                "updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP",
+                (int(account_id),str(mode),int(value),int(starts_at),
+                 int(expires_at) if expires_at is not None else None,int(actor_id)),
+            )
+            await conn.execute(
+                "INSERT INTO payg_customer_discount_audit "
+                "(account_id,actor_id,action,previous_mode,previous_value,"
+                "new_mode,new_value,starts_at,expires_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
+                (int(account_id),int(actor_id),"upsert",
+                 str(previous["mode"]) if previous else None,
+                 int(previous["value"]) if previous else None,
+                 str(mode),int(value),int(starts_at),
+                 int(expires_at) if expires_at is not None else None),
+            )
+            await conn.execute(
+                "INSERT INTO payg_discount_targets(account_id,base_rate) VALUES(?,?) "
+                "ON CONFLICT(account_id) DO UPDATE SET base_rate=excluded.base_rate,"
+                "desired_rate=NULL,updated_at=CURRENT_TIMESTAMP",
+                (int(account_id),int(base_rate)),
+            )
+            await conn.commit()
+
+    async def cancel_customer_discount(self, account_id: int, actor_id: int) -> bool:
+        """Remove scheduled policy and record the actor; billing rate is unchanged.
+
+        Restoring the public rate requires a fresh Rebecca-sampled rate switch.
+        """
+        import os
+        owner = os.getenv("PAYG_OWNER_ID", "").strip()
+        if not owner.isdecimal() or int(actor_id) != int(owner):
+            raise PaygError("owner permission required")
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("BEGIN IMMEDIATE")
+            async with conn.execute(
+                "SELECT mode,value FROM payg_customer_discounts WHERE account_id=?",
+                (int(account_id),),
+            ) as cur:
+                previous = await cur.fetchone()
+            if previous is None:
+                await conn.rollback()
+                return False
+            await conn.execute(
+                "DELETE FROM payg_customer_discounts WHERE account_id=?",
+                (int(account_id),),
+            )
+            await conn.execute(
+                "UPDATE payg_discount_targets SET desired_rate=base_rate,"
+                "updated_at=CURRENT_TIMESTAMP WHERE account_id=?",
+                (int(account_id),),
+            )
+            await conn.execute(
+                "INSERT INTO payg_customer_discount_audit "
+                "(account_id,actor_id,action,previous_mode,previous_value) "
+                "VALUES(?,?,'cancel',?,?)",
+                (int(account_id),int(actor_id),
+                 str(previous["mode"]),int(previous["value"])),
+            )
+            await conn.commit()
+        return True
+
+    async def reconcile_customer_discounts(self, *, now: int | None = None) -> dict[int, str]:
+        """Run on every PAYG scheduler tick, including after a restart.
+
+        One policy per account: fixed OR percent, never stacked. Rate changes
+        require a fresh Rebecca counter; failed transitions stay pending.
+        """
+        import os
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            async with conn.execute(
+                "SELECT 1 FROM payg_discount_targets LIMIT 1",
+            ) as cur:
+                has_policies = await cur.fetchone()
+        if has_policies is None:
+            return {}
+        owner = os.getenv("PAYG_OWNER_ID", "").strip()
+        if not owner.isdecimal():
+            # A misconfigured owner must not bill accounts whose rate can change,
+            # but unrelated PAYG accounts still need timely wallet settlement.
+            async with aiosqlite.connect(self.db_path) as conn:
+                async with conn.execute(
+                    "SELECT t.account_id FROM payg_discount_targets t "
+                    "JOIN payg_accounts a ON a.id=t.account_id "
+                    "WHERE a.status IN ('active','suspended')"
+                ) as cur:
+                    affected = [int(row[0]) for row in await cur.fetchall()]
+            print("PAYG_OWNER_ID is missing; discount accounts require manual review; "
+                  "unaffected PAYG billing continues")
+            return {account_id: "manual_review" for account_id in affected}
+        timestamp = int(time.time()) if now is None else int(now)
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            async with conn.execute(
+                "SELECT t.account_id,t.base_rate,t.desired_rate,t.last_error,"
+                "d.mode,d.value,d.starts_at,d.expires_at,"
+                "a.price_per_gb_toman,a.status FROM payg_discount_targets t "
+                "JOIN payg_accounts a ON a.id=t.account_id "
+                "LEFT JOIN payg_customer_discounts d ON d.account_id=t.account_id "
+                "WHERE a.status IN ('active','suspended')",
+            ) as cur:
+                rows = await cur.fetchall()
+        results: dict[int, str] = {}
+        for row in rows:
+            account_id = int(row["account_id"])
+            base = int(row["base_rate"])
+            active = (row["mode"] is not None
+                      and timestamp >= int(row["starts_at"])
+                      and (row["expires_at"] is None
+                           or timestamp < int(row["expires_at"])))
+            desired = (self.discount_rate(base,str(row["mode"]),int(row["value"]))
+                       if active else base)
+            if row["desired_rate"] is not None:
+                desired = int(row["desired_rate"])
+            # Once a boundary was missed while Rebecca was unavailable, the
+            # recovered cumulative counter cannot attribute bytes to either
+            # side of the time boundary. Never auto-retry and charge them at
+            # an arbitrary rate. Require audited operator reconciliation.
+            if row["last_error"] is not None:
+                results[account_id] = "manual_review"
+                continue
+            if int(row["price_per_gb_toman"]) == desired:
+                results[account_id] = "current"
+                if row["desired_rate"] is not None:
+                    async with aiosqlite.connect(self.db_path) as conn:
+                        await conn.execute(
+                            "UPDATE payg_discount_targets SET desired_rate=NULL,"
+                            "last_error=NULL WHERE account_id=? AND desired_rate=?",
+                            (account_id,desired),
+                        )
+                        await conn.commit()
+                continue
+            try:
+                await self.switch_rate_after_rebecca_sync(
+                    account_id,int(owner),desired,
+                )
+            except Exception as exc:
+                async with aiosqlite.connect(self.db_path) as conn:
+                    await conn.execute(
+                        "UPDATE payg_discount_targets SET last_error=?,"
+                        "updated_at=CURRENT_TIMESTAMP WHERE account_id=?",
+                        (str(exc)[:400],account_id),
+                    )
+                    await conn.commit()
+                results[account_id] = "pending"
+            else:
+                async with aiosqlite.connect(self.db_path) as conn:
+                    await conn.execute(
+                        "UPDATE payg_discount_targets SET desired_rate=NULL,"
+                        "last_error=NULL,updated_at=CURRENT_TIMESTAMP "
+                        "WHERE account_id=?",
+                        (account_id,),
+                    )
+                    await conn.commit()
+                results[account_id] = "applied"
+        return results
+
+    async def resolve_discount_boundary_without_charge(
+        self, account_id: int, actor_id: int, *, reason: str,
+    ) -> None:
+        """Owner-authorized write-off of ambiguous bytes, never silent repricing.
+
+        Requires a live Rebecca counter. Existing accrued debt is preserved.
+        The skipped raw interval and chosen effective rate are audit logged.
+        """
+        import os
+        owner = os.getenv("PAYG_OWNER_ID", "").strip()
+        if not owner.isdecimal() or int(actor_id) != int(owner):
+            raise PaygError("owner permission required")
+        if len(reason.strip()) < 12:
+            raise PaygError("a meaningful reconciliation reason is required")
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            async with conn.execute(
+                "SELECT a.admin_id,a.last_raw_usage_bytes,t.base_rate,"
+                "t.desired_rate,t.last_error,d.mode,d.value,d.starts_at,d.expires_at "
+                "FROM payg_accounts a JOIN payg_discount_targets t "
+                "ON t.account_id=a.id LEFT JOIN payg_customer_discounts d "
+                "ON d.account_id=a.id WHERE a.id=? AND a.status!='migrated'",
+                (int(account_id),),
+            ) as cur:
+                row = await cur.fetchone()
+        if row is None or row["last_error"] is None:
+            raise PaygError("no disputed discount boundary to resolve")
+        admin = await db.get_admin_by_id(int(row["admin_id"]))
+        if not admin or not admin.marzban_username:
+            raise PaygError("Rebecca admin missing")
+        raw = int(await rebecca_api.get_admin_usage(admin.marzban_username))
+        if raw < int(row["last_raw_usage_bytes"]):
+            raise PaygError("Rebecca counter regression requires separate review")
+        now = int(time.time())
+        active = (row["mode"] is not None and now >= int(row["starts_at"])
+                  and (row["expires_at"] is None or now < int(row["expires_at"])))
+        target = (self.discount_rate(int(row["base_rate"]),str(row["mode"]),int(row["value"]))
+                  if active else int(row["base_rate"]))
+        if row["desired_rate"] is not None:
+            target = int(row["desired_rate"])
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("BEGIN IMMEDIATE")
+            async with conn.execute(
+                "SELECT last_raw_usage_bytes,price_per_gb_toman,status FROM payg_accounts WHERE id=?",
+                (int(account_id),),
+            ) as cur:
+                current = await cur.fetchone()
+            if (current is None or str(current["status"]) == "migrated"
+                or int(current["last_raw_usage_bytes"]) != int(row["last_raw_usage_bytes"])):
+                await conn.rollback()
+                raise PaygError("counter changed during reconciliation")
+            async with conn.execute(
+                "SELECT 1 FROM payg_rate_switches WHERE account_id=?",
+                (int(account_id),),
+            ) as cur:
+                switch = await cur.fetchone()
+            if switch:
+                await conn.rollback()
+                raise PaygError("another rate switch is in progress")
+            # Freeze the legacy accrued obligation at the OLD rate before
+            # recording a new rate-history entry. A missing ledger on an
+            # already switched account is ambiguous and must fail closed.
+            async with conn.execute(
+                "SELECT 1 FROM payg_billing_state WHERE account_id=?",
+                (int(account_id),),
+            ) as cur:
+                billing_exists = await cur.fetchone()
+            if not billing_exists:
+                async with conn.execute(
+                    "SELECT 1 FROM payg_rate_history WHERE account_id=? LIMIT 1",
+                    (int(account_id),),
+                ) as cur:
+                    if await cur.fetchone():
+                        await conn.rollback()
+                        raise PaygError("historical accrual missing; manual review required")
+                async with conn.execute(
+                    "SELECT cumulative_usage_bytes FROM payg_accounts WHERE id=?",
+                    (int(account_id),),
+                ) as cur:
+                    old_cumulative = int((await cur.fetchone())[0])
+                old_numerator = old_cumulative * int(current["price_per_gb_toman"])
+                await conn.execute(
+                    "INSERT INTO payg_billing_state"
+                    "(account_id,accrued_toman,remainder_numerator,last_priced_bytes)"
+                    "VALUES(?,?,?,?)",
+                    (int(account_id),old_numerator // GIB,
+                     old_numerator % GIB,old_cumulative),
+                )
+            await conn.execute(
+                "UPDATE payg_accounts SET last_raw_usage_bytes=?,"
+                "price_per_gb_toman=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (raw,target,int(account_id)),
+            )
+            await conn.execute(
+                "INSERT INTO payg_usage_audit"
+                "(account_id,event_type,previous_raw_bytes,observed_raw_bytes,note)"
+                "VALUES(?,'discount_boundary_writeoff',?,?,?)",
+                (int(account_id),int(row["last_raw_usage_bytes"]),raw,
+                 f"owner={actor_id}; {reason.strip()[:300]}"),
+            )
+            await conn.execute(
+                "INSERT INTO payg_rate_history"
+                "(account_id,actor_id,previous_rate,new_rate,"
+                "boundary_raw_bytes,boundary_cumulative_bytes) "
+                "SELECT id,?,?,?, ?,cumulative_usage_bytes FROM payg_accounts WHERE id=?",
+                (int(actor_id),int(current["price_per_gb_toman"]),target,raw,int(account_id)),
+            )
+            await conn.execute(
+                "UPDATE payg_discount_targets SET last_error=NULL,desired_rate=NULL,"
+                "updated_at=CURRENT_TIMESTAMP WHERE account_id=?",
+                (int(account_id),),
+            )
+            await conn.commit()
+
+    async def switch_rate_after_rebecca_sync(
+        self, account_id: int, actor_id: int, new_rate: int,
+    ) -> None:
+        """Fence scheduler billing, sample Rebecca, settle old price, then switch.
+
+        A pending row survives process crashes. An operator must inspect and
+        clear stale reservations rather than silently reprice ambiguous bytes.
+        """
+        import os
+        owner = os.getenv("PAYG_OWNER_ID", "").strip()
+        if not owner.isdecimal() or int(actor_id) != int(owner):
+            raise PaygError("owner permission required")
+        if int(new_rate) <= 0:
+            raise PaygError("PAYG rate must be positive")
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            await conn.execute("BEGIN IMMEDIATE")
+            async with conn.execute(
+                "SELECT admin_id,status FROM payg_accounts WHERE id=?",
+                (int(account_id),),
+            ) as cur:
+                account = await cur.fetchone()
+            if account is None or str(account[1]) == "migrated":
+                await conn.rollback()
+                raise PaygError("PAYG account not found")
+            await conn.execute(
+                "INSERT INTO payg_rate_switches(account_id,actor_id,requested_rate)"
+                " VALUES(?,?,?)",
+                (int(account_id),int(actor_id),int(new_rate)),
+            )
+            await conn.commit()
+        try:
+            admin = await db.get_admin_by_id(int(account[0]))
+            if not admin or not admin.marzban_username:
+                raise PaygError("Rebecca admin missing")
+            raw = int(await rebecca_api.get_admin_usage(admin.marzban_username))
+            if raw < 0:
+                raise PaygError("invalid Rebecca usage counter")
+            await self.settle_usage(
+                int(account_id), raw, _rate_switch_actor=int(actor_id),
+            )
+            await self.change_account_rate(
+                int(account_id), int(actor_id), int(new_rate),
+                verified_raw_usage_bytes=raw,
+            )
+        finally:
+            # On an ambiguous failure the old rate is preserved; the next
+            # attempt must obtain a fresh counter, not reuse the old sample.
+            async with aiosqlite.connect(self.db_path) as conn:
+                await conn.execute(
+                    "DELETE FROM payg_rate_switches "
+                    "WHERE account_id=? AND actor_id=?",
+                    (int(account_id),int(actor_id)),
+                )
+                await conn.commit()
+
+    async def change_account_rate(
+        self, account_id: int, actor_id: int, new_rate: int,
+        *, verified_raw_usage_bytes: int,
+    ) -> None:
+        """Owner-only rate switch at an exact, already-settled usage boundary.
+
+        Caller must obtain a fresh Rebecca counter and settle it first.
+        A mismatch refuses the change rather than assigning unobserved
+        consumption to the wrong price.
+        """
+        # Explicit dedicated owner identity; never treat every sudo as owner.
+        import os
+        owner = os.getenv("PAYG_OWNER_ID", "").strip()
+        if not owner.isdecimal():
+            raise PaygError("PAYG_OWNER_ID must identify the owner")
+        if int(actor_id) != int(owner):
+            raise PaygError("owner permission required")
+        rate = int(new_rate)
+        if rate <= 0:
+            raise PaygError("PAYG rate must be positive")
+        await self.ensure_schema()
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("BEGIN IMMEDIATE")
+            async with conn.execute(
+                "SELECT * FROM payg_accounts WHERE id=?", (int(account_id),),
+            ) as cur:
+                account = await cur.fetchone()
+            if account is None or account["status"] == "migrated":
+                await conn.rollback()
+                raise PaygError("active PAYG account not found")
+            if int(account["last_raw_usage_bytes"]) != int(verified_raw_usage_bytes):
+                await conn.rollback()
+                raise PaygError("unsettled usage at rate-change boundary")
+            async with conn.execute(
+                "SELECT 1 FROM payg_counter_reviews "
+                "WHERE account_id=? AND status='pending'", (int(account_id),),
+            ) as cur:
+                pending = await cur.fetchone()
+            if pending:
+                await conn.rollback()
+                raise PaygError("pending counter review blocks rate change")
+            previous = int(account["price_per_gb_toman"])
+            cumulative = int(account["cumulative_usage_bytes"])
+            await conn.execute(
+                "INSERT OR IGNORE INTO payg_billing_state"
+                "(account_id,accrued_toman,remainder_numerator,last_priced_bytes) "
+                "VALUES(?,?,?,?)",
+                (int(account_id), cumulative * previous // GIB,
+                 cumulative * previous % GIB, cumulative),
+            )
+            await conn.execute(
+                "UPDATE payg_accounts SET price_per_gb_toman=?,"
+                "updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (rate, int(account_id)),
+            )
+            await conn.execute(
+                "INSERT INTO payg_rate_history "
+                "(account_id,actor_id,previous_rate,new_rate,"
+                "boundary_raw_bytes,boundary_cumulative_bytes) "
+                "VALUES(?,?,?,?,?,?)",
+                (int(account_id),int(actor_id),previous,rate,
+                 int(verified_raw_usage_bytes),cumulative),
+            )
+            await conn.commit()
+
     async def account_snapshot(self, user_id: int, provider: str = "rebecca") -> dict[str, Any]:
         settings = await self.get_settings(provider)
         account = await self.get_user_account(user_id, provider)
@@ -626,7 +1316,7 @@ class PaygService:
         rate = int((account or settings or {}).get("price_per_gb_toman") or 0)
         outstanding = 0
         if account and rate > 0:
-            target = int(account["cumulative_usage_bytes"]) * rate // GIB
+            target = await self.get_accrued_target(int(account["id"]))
             outstanding = max(0, target - int(account["charged_toman_total"]))
         return {
             "settings": settings,
@@ -648,86 +1338,21 @@ class PaygService:
         raise PaygError("could not allocate a unique Rebecca username")
 
     async def ensure_payg_account(self, user_id: int, provider: str = "rebecca") -> dict[str, Any]:
+        """Read-only compatibility: legacy users must never provision unsafely.
+
+        New accounts use PaygOfferService.provision with an explicit service ID,
+        KYC, durable reservation and manual reconciliation on remote ambiguity.
+        Historical accounts keep their existing billing/top-up paths.
+        """
         existing = await self.get_user_account(user_id, provider)
         if existing:
             return existing
-        if provider != "rebecca":
-            raise PaygError("Sanaei PAYG provisioning is not implemented yet")
-        settings = await self.get_settings(provider)
-        if not settings or not int(settings["enabled"]):
-            raise PaygError("PAYG is disabled")
-        rate = int(settings["price_per_gb_toman"] or 0)
-        minimum = int(settings["min_topup_toman"] or 0)
-        if rate <= 0:
-            raise PaygError("PAYG rate is not configured")
-        service_ids = parse_service_ids(str(settings["service_ids"] or ""))
-        balance = await self.get_balance(user_id)
-        if balance < minimum:
-            raise PaygInsufficientFunds(minimum - balance)
+        raise PaygError("legacy PAYG creation retired; choose a Rebecca service in the new PAYG storefront")
 
-        username = await self._unique_rebecca_username(f"payg{int(user_id)}")
-        password = secrets.token_urlsafe(10)
-        created_remote = False
-        try:
-            await rebecca_api.create_admin_verified(
-                username,
-                password,
-                int(user_id),
-                data_limit=None,
-                expire=None,
-                users_limit=int(settings["max_users"]),
-                services=service_ids,
-            )
-            created_remote = True
-            baseline = await rebecca_api.get_admin_usage(username)
-            admin_model = AdminModel(
-                user_id=int(user_id),
-                admin_name=str(settings["display_name"] or "PAYG Rebecca"),
-                marzban_username=username,
-                marzban_password=password,
-                max_users=int(settings["max_users"]),
-                max_total_time=_LONG_VALIDITY_DAYS * 86400,
-                max_total_traffic=0,
-                validity_days=_LONG_VALIDITY_DAYS,
-                is_active=True,
-                origin_plan_id=None,
-                allow_incremental_renewal=False,
-            )
-            if not await db.add_admin(admin_model):
-                raise PaygError("failed to save PAYG admin locally")
-            local = await db.get_admin_by_marzban_username(username)
-            if not local or local.id is None:
-                raise PaygError("PAYG admin local lookup failed")
-            async with aiosqlite.connect(self.db_path) as conn:
-                cur = await conn.execute(
-                    """
-                    INSERT INTO payg_accounts(
-                        user_id,admin_id,provider,status,price_per_gb_toman,last_raw_usage_bytes
-                    ) VALUES(?,?,?,?,?,?)
-                    """,
-                    (int(user_id), int(local.id), provider, "active", rate, int(baseline)),
-                )
-                await conn.commit()
-                account_id = int(cur.lastrowid)
-            account = await self.get_account(account_id)
-            if not account:
-                raise PaygError("PAYG account creation failed")
-            return account
-        except Exception:
-            if created_remote:
-                try:
-                    await rebecca_api.delete_admin(username)
-                except Exception:
-                    pass
-            local = await db.get_admin_by_marzban_username(username)
-            if local and local.id:
-                try:
-                    await db.remove_admin_by_id(int(local.id))
-                except Exception:
-                    pass
-            raise
-
-    async def settle_usage(self, account_id: int, raw_usage_bytes: int) -> BillingResult:
+    async def settle_usage(
+        self, account_id: int, raw_usage_bytes: int, *,
+        _rate_switch_actor: int | None = None,
+    ) -> BillingResult:
         raw = int(raw_usage_bytes)
         if raw < 0:
             raise PaygError("Rebecca usage counter is negative; billing refused")
@@ -741,6 +1366,24 @@ class PaygService:
                 await conn.rollback()
                 raise PaygError("PAYG account not found")
             account = dict(row)
+            async with conn.execute(
+                "SELECT last_error FROM payg_discount_targets WHERE account_id=?",
+                (int(account_id),),
+            ) as cur:
+                pending_discount = await cur.fetchone()
+            if pending_discount is not None and pending_discount[0] is not None and _rate_switch_actor is None:
+                await conn.rollback()
+                raise PaygError("pending discount boundary; ordinary billing paused")
+            async with conn.execute(
+                "SELECT actor_id FROM payg_rate_switches WHERE account_id=?",
+                (int(account_id),),
+            ) as cur:
+                switch = await cur.fetchone()
+            if switch is not None and (
+                _rate_switch_actor is None or int(switch[0]) != int(_rate_switch_actor)
+            ):
+                await conn.rollback()
+                raise PaygError("rate switch pending; scheduler billing paused")
             old_status = str(account["status"])
             if old_status == "migrated":
                 await conn.rollback()
@@ -798,7 +1441,32 @@ class PaygService:
             delta_bytes = raw - last_raw
             cumulative = int(account["cumulative_usage_bytes"] or 0) + max(0, delta_bytes)
             rate = int(account["price_per_gb_toman"])
-            target_charge = cumulative * rate // GIB
+            # Legacy accounts start from their existing monetary obligation.
+            # Never multiply historical bytes by a newly changed rate.
+            await conn.execute(
+                "INSERT OR IGNORE INTO payg_billing_state"
+                "(account_id,accrued_toman,remainder_numerator,last_priced_bytes) "
+                "VALUES(?,?,?,?)",
+                (int(account_id),
+                 int(account["cumulative_usage_bytes"] or 0) * rate // GIB,
+                 (int(account["cumulative_usage_bytes"] or 0) * rate) % GIB,
+                 int(account["cumulative_usage_bytes"] or 0)),
+            )
+            async with conn.execute(
+                "SELECT * FROM payg_billing_state WHERE account_id=?",
+                (int(account_id),),
+            ) as cur:
+                pricing = await cur.fetchone()
+            if int(pricing["last_priced_bytes"]) != cumulative - delta_bytes:
+                await conn.rollback()
+                raise PaygError("billing state and usage counter diverged")
+            numerator = int(pricing["remainder_numerator"]) + delta_bytes * rate
+            target_charge = int(pricing["accrued_toman"]) + numerator // GIB
+            await conn.execute(
+                "UPDATE payg_billing_state SET accrued_toman=?,"
+                "remainder_numerator=?,last_priced_bytes=? WHERE account_id=?",
+                (target_charge, numerator % GIB, cumulative, int(account_id)),
+            )
             charged_total = int(account["charged_toman_total"] or 0)
             due = max(0, target_charge - charged_total)
             user_id = int(account["user_id"])
@@ -887,8 +1555,7 @@ class PaygService:
         for item in items:
             item["outstanding_toman"] = max(
                 0,
-                int(item["cumulative_usage_bytes"]) *
-                int(item["price_per_gb_toman"]) // GIB
+                await self.get_accrued_target(int(item["id"]))
                 - int(item["charged_toman_total"]),
             )
         return items
@@ -1026,10 +1693,59 @@ class PaygService:
                 if await cur.fetchone():
                     await conn.rollback()
                     raise PaygError("resolve the counter review before releasing this account")
+            async with conn.execute(
+                "SELECT 1 FROM payg_discount_targets WHERE account_id=? "
+                "AND last_error IS NOT NULL",
+                (int(account_id),),
+            ) as cur:
+                if await cur.fetchone():
+                    await conn.rollback()
+                    raise PaygError("resolve disputed discount boundary before releasing hold")
+            async with conn.execute(
+                "SELECT 1 FROM payg_rate_switches WHERE account_id=?",
+                (int(account_id),),
+            ) as cur:
+                if await cur.fetchone():
+                    await conn.rollback()
+                    raise PaygError("rate switch pending; cannot release financial hold")
             balance = await self._balance_in_conn(conn,int(account["user_id"]))
-            due = (int(account["cumulative_usage_bytes"]) *
-                   int(account["price_per_gb_toman"]) // GIB
-                   - int(account["charged_toman_total"]))
+            # Historical rate switches make cumulative_bytes * CURRENT_rate
+            # financially invalid. Read the authoritative accrued ledger.
+            async with conn.execute(
+                "SELECT accrued_toman FROM payg_billing_state WHERE account_id=?",
+                (int(account_id),),
+            ) as cur:
+                accrued_row = await cur.fetchone()
+            if accrued_row is None:
+                # Pre-upgrade legacy account: reconstruct only when no rate
+                # history exists. Repricing a changed-rate account is unsafe.
+                async with conn.execute(
+                    "SELECT 1 FROM payg_rate_history WHERE account_id=? LIMIT 1",
+                    (int(account_id),),
+                ) as cur:
+                    changed_rate = await cur.fetchone()
+                if changed_rate:
+                    await conn.rollback()
+                    raise PaygError("historical billing state missing; manual review required")
+                legacy_accrued = (
+                    int(account["cumulative_usage_bytes"])
+                    * int(account["price_per_gb_toman"]) // GIB
+                )
+                await conn.execute(
+                    "INSERT OR IGNORE INTO payg_billing_state"
+                    "(account_id,accrued_toman,remainder_numerator,last_priced_bytes)"
+                    "VALUES(?,?,?,?)",
+                    (int(account_id),legacy_accrued,
+                     (int(account["cumulative_usage_bytes"]) *
+                      int(account["price_per_gb_toman"])) % GIB,
+                     int(account["cumulative_usage_bytes"])),
+                )
+                async with conn.execute(
+                    "SELECT accrued_toman FROM payg_billing_state WHERE account_id=?",
+                    (int(account_id),),
+                ) as cur:
+                    accrued_row = await cur.fetchone()
+            due = int(accrued_row["accrued_toman"]) - int(account["charged_toman_total"])
             if due > 0 or balance <= 0:
                 await conn.rollback()
                 raise PaygError("outstanding usage debt or empty wallet")
@@ -1105,6 +1821,16 @@ class PaygService:
         return result
 
     async def sync_all_accounts(self) -> list[BillingResult]:
+        # Apply due policy transitions before billing at the scheduler's rate.
+        # If Rebecca is unavailable, a pending transition must block ordinary
+        # settlement rather than silently bill at an outdated price.
+        try:
+            transitions = await self.reconcile_customer_discounts()
+        except PaygError as exc:
+            # Fail closed: an unknown transition state must never cause
+            # consumption to be billed at a potentially obsolete rate.
+            print(f"PAYG discount reconciliation unavailable; billing paused: {exc}")
+            return []
         await self.ensure_schema()
         async with aiosqlite.connect(self.db_path) as conn:
             async with conn.execute(
@@ -1114,6 +1840,8 @@ class PaygService:
         results: list[BillingResult] = []
         for account_id in ids:
             try:
+                if transitions.get(account_id) in {"pending","manual_review"}:
+                    continue
                 results.append(await self.sync_account(account_id))
             except Exception as exc:
                 print(f"PAYG billing sync failed for account {account_id}: {type(exc).__name__}: {exc}")
@@ -1130,6 +1858,44 @@ class PaygService:
             if int(getattr(plan, "price", 0) or 0) > 0
             and str(getattr(plan, "rebecca_service_ids", "") or "").strip()
         ]
+
+    async def _migration_service_id(self, account_id: int) -> int:
+        """Migrations require an explicit, verified Rebecca service mapping."""
+        await self.ensure_schema()
+        try:
+            async with aiosqlite.connect(self.db_path) as conn:
+                async with conn.execute(
+                    "SELECT service_id FROM payg_account_services "
+                    "WHERE account_id=? AND provider='rebecca'",
+                    (int(account_id),),
+                ) as cur:
+                    row = await cur.fetchone()
+        except aiosqlite.OperationalError as exc:
+            raise PaygError("PAYG service mapping must be verified before migration") from exc
+        if row is None:
+            raise PaygError("PAYG service mapping must be verified before migration")
+        return int(row[0])
+
+    async def migration_plans_for_account(self, account_id: int) -> list[Any]:
+        service_id = await self._migration_service_id(account_id)
+        plans = []
+        for plan in await self.list_migration_plans():
+            try:
+                ids = parse_service_ids(str(getattr(plan, "rebecca_service_ids", "") or ""))
+            except ValueError:
+                continue
+            if service_id in ids:
+                plans.append(plan)
+        return plans
+
+    async def _assert_migration_plan_matches(self, account_id: int, plan: Any) -> None:
+        service_id = await self._migration_service_id(account_id)
+        try:
+            ids = parse_service_ids(str(getattr(plan, "rebecca_service_ids", "") or ""))
+        except ValueError as exc:
+            raise PaygError("target FIXED plan has invalid Rebecca service IDs") from exc
+        if service_id not in ids:
+            raise PaygError("target FIXED plan belongs to another Rebecca service")
 
     async def get_migration(self, migration_id: int) -> dict[str, Any] | None:
         await self.ensure_schema()
@@ -1155,7 +1921,7 @@ class PaygService:
         price = int(getattr(plan, "price", 0) or 0)
         if price <= 0:
             raise PaygError("target plan price is invalid")
-        parse_service_ids(str(getattr(plan, "rebecca_service_ids", "") or ""))
+        await self._assert_migration_plan_matches(int(account_id), plan)
         await self.ensure_schema()
         async with aiosqlite.connect(self.db_path) as conn:
             conn.row_factory = aiosqlite.Row
@@ -1237,6 +2003,8 @@ class PaygService:
         plan = await db.get_plan_by_id(int(migration["target_plan_id"]))
         if not plan or not bool(getattr(plan, "is_active", True)):
             raise PaygError("migration target plan is unavailable")
+        # Recheck even for an old waiting_funds migration created before this guard.
+        await self._assert_migration_plan_matches(int(account["id"]), plan)
         price = int(migration["price_toman"])
         balance = await self.get_balance(int(migration["user_id"]))
         if balance < price:
@@ -1382,9 +2150,14 @@ class PaygService:
         result: dict[str, Any] = {"topup": topup}
         purpose = str(topup["purpose"])
         if purpose == "initial":
-            result["account"] = await self.ensure_payg_account(
-                int(topup["user_id"]), str(topup["provider"])
-            )
+            # Old payment callbacks may arrive after the legacy CREATE route is
+            # retired. Preserve credited wallet funds and require KYC-gated,
+            # service-specific provisioning instead of guessing a service ID.
+            account = await self.get_user_account(int(topup["user_id"]), str(topup["provider"]))
+            if account:
+                result["account"] = account
+            else:
+                result["legacy_initial_needs_service"] = True
         elif purpose == "migration" and topup.get("migration_id"):
             migration_id = int(topup["migration_id"])
             migration = await self.get_migration(migration_id)

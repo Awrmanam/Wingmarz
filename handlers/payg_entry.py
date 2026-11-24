@@ -87,29 +87,15 @@ async def fixed_purchase_selected(callback: CallbackQuery, state: FSMContext):
 
 
 @payg_entry_router.callback_query(F.data == "sudo_menu_sales")
-async def sales_menu_with_payg(callback: CallbackQuery):
+async def sales_menu_with_payg(callback: CallbackQuery, state: FSMContext):
+    """Retired mixed sales/finance menu: route stale buttons to canonical sales."""
     if callback.from_user.id not in config.SUDO_ADMINS:
+        await callback.answer("غیرمجاز", show_alert=True)
         return
-    await callback.message.edit_text(
-        "💳 فروش و مالی:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🛒 مدیریت فروش", callback_data="sales_manage")],
-            [
-                InlineKeyboardButton(text=config.BUTTONS["sales_cards"], callback_data="sales_cards"),
-                InlineKeyboardButton(text=config.BUTTONS["set_billing"], callback_data="set_billing"),
-            ],
-            [InlineKeyboardButton(
-                text="⚡ تعرفه‌های PAYG بر اساس سرویس",
-                callback_data="paygsvcadmin:home",
-            )],
-            [InlineKeyboardButton(text="🔌 سرویس‌های Rebecca", callback_data="rebecca_services")],
-            [InlineKeyboardButton(text="🧾 بازبینی مالی PAYG", callback_data="paygaudit:root")],
-            [InlineKeyboardButton(text=config.BUTTONS["set_login_url"], callback_data="set_login_url")],
-            [InlineKeyboardButton(text=config.BUTTONS["back"], callback_data="back_to_main")],
-        ]),
-    )
+    await state.clear()
+    from handlers.operations import _render_hub
+    await _render_hub(callback.message, "sales")
     await callback.answer()
-
 
 @payg_entry_router.message(Command("payg"))
 async def payg_admin_command(message: Message, state: FSMContext):

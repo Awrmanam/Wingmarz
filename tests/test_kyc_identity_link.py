@@ -24,7 +24,9 @@ def test_kyc_default_is_required_and_can_be_exempted(tmp_path):
     run(scenario())
 
 
-def test_kyc_submission_review_and_resubmission(tmp_path):
+def test_kyc_submission_review_and_resubmission(tmp_path, monkeypatch):
+    import kyc_service as kyc_module
+    monkeypatch.setattr(kyc_module.config, "SUDO_ADMINS", [999])
     service = KycService(str(tmp_path / "kyc.db"))
 
     async def scenario():

@@ -22,6 +22,34 @@ def _back_keyboard() -> InlineKeyboardMarkup:
     ]])
 
 
+async def _panel_back_keyboard(admin: Any) -> InlineKeyboardMarkup:
+    """Return PAYG and FIXED panel readers to their service dashboards."""
+    from payg_service import payg_service
+    account=await payg_service.get_admin_account(int(admin.id))
+    if account and int(account["user_id"])==int(admin.user_id):
+        return InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(
+                text="🔙 داشبورد PAYG",
+                callback_data=f"paygcustomer:dashboard:{int(account['id'])}",
+            )
+        ]])
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(
+            text="🔙 داشبورد سرویس",
+            callback_data=f"customer:fixed:{int(admin.id)}",
+        )
+    ]])
+
+
+async def _panel_info_keyboard(admin: Any) -> InlineKeyboardMarkup:
+    rows=[[
+        InlineKeyboardButton(text="🔐 مشاهده اطلاعات ورود",
+                             callback_data=f"rebecca:credentials:{int(admin.id)}")
+    ]]
+    rows.extend((await _panel_back_keyboard(admin)).inline_keyboard)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def _as_non_negative_int(value: Any, default: int = 0) -> int:
     if isinstance(value, bool):
         return default
@@ -179,11 +207,11 @@ async def _render_info(callback: CallbackQuery, admin: Any) -> None:
             f"🆔 شناسه مالک: <code>{int(admin.user_id)}</code>",
             "<i>آمار از Rebecca خوانده شده و به‌صورت محلی تخمین زده نشده است.</i>",
         ])
-        await callback.message.edit_text("\n".join(lines), reply_markup=_back_keyboard())
+        await callback.message.edit_text("\n".join(lines), reply_markup=await _panel_info_keyboard(admin))
     except Exception:
         await callback.message.edit_text(
             "⚠️ دریافت اطلاعات زنده Rebecca موقتاً ناموفق بود. دوباره تلاش کنید.",
-            reply_markup=_back_keyboard(),
+            reply_markup=await _panel_info_keyboard(admin),
         )
     await callback.answer()
 
@@ -204,11 +232,11 @@ async def _render_report(callback: CallbackQuery, admin: Any) -> None:
             "",
             "<i>اطلاعات مستقیماً از Rebecca دریافت شده است.</i>",
         ]
-        await callback.message.edit_text("\n".join(lines), reply_markup=_back_keyboard())
+        await callback.message.edit_text("\n".join(lines), reply_markup=await _panel_back_keyboard(admin))
     except Exception:
         await callback.message.edit_text(
             "⚠️ دریافت گزارش زنده Rebecca موقتاً ناموفق بود. دوباره تلاش کنید.",
-            reply_markup=_back_keyboard(),
+            reply_markup=await _panel_back_keyboard(admin),
         )
     await callback.answer()
 
@@ -261,12 +289,12 @@ async def _render_users(callback: CallbackQuery, admin: Any, page: int = 0) -> N
             buttons.append(InlineKeyboardButton(text="◀️ قبلی", callback_data=f"rebecca_users_page:{int(admin.id)}:{page-1}"))
         if (page + 1) * page_size < total:
             buttons.append(InlineKeyboardButton(text="بعدی ▶️", callback_data=f"rebecca_users_page:{int(admin.id)}:{page+1}"))
-        keyboard = ([buttons] if buttons else []) + _back_keyboard().inline_keyboard
+        keyboard = ([buttons] if buttons else []) + (await _panel_back_keyboard(admin)).inline_keyboard
         await callback.message.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     except Exception:
         await callback.message.edit_text(
             "⚠️ دریافت لیست کاربران Rebecca موقتاً ناموفق بود. دوباره تلاش کنید.",
-            reply_markup=_back_keyboard(),
+            reply_markup=await _panel_back_keyboard(admin),
         )
     await callback.answer()
 
@@ -333,6 +361,53 @@ async def rebecca_info_panel(callback: CallbackQuery):
     admin = await _selected_admin(callback, "info_panel_")
     if admin:
         await _render_info(callback, admin)
+
+
+@rebecca_admin_sync_router.callback_query(F.data.startswith("rebecca:credentials:"))
+async def rebecca_panel_credentials(callback: CallbackQuery) -> None:
+    """Reveal a recorded secret only to the Telegram owner in a private chat."""
+    chat=getattr(callback.message,"chat",None)
+    if str(getattr(chat,"type",None))!="private":
+        await callback.answer("اطلاعات ورود فقط در گفت‌وگوی خصوصی ربات قابل نمایش است.",show_alert=True)
+        return
+    try:
+        panel_id=int((callback.data or "").rsplit(":",1)[-1])
+    except (ValueError,TypeError):
+        await callback.answer("شناسه پنل نامعتبر است.",show_alert=True)
+        return
+    admin=await db.get_admin_by_id(panel_id)
+    if not admin or int(admin.user_id)!=int(callback.from_user.id):
+        await callback.answer("دسترسی به این پنل مجاز نیست.",show_alert=True)
+        return
+    password=str(getattr(admin,"marzban_password",None) or "").strip()
+    username=str(getattr(admin,"marzban_username",None) or "").strip()
+    if not username or not password:
+        await callback.answer(
+            "رمز این پنل در ربات ذخیره نشده؛ برای بازیابی با پشتیبانی تماس بگیرید.",
+            show_alert=True,
+        )
+        return
+    # Never reconstruct or log secrets missing from the local record.
+    login_url=str(getattr(admin,"login_url",None)
+                  or config.REBECCA_LOGIN_URL or config.REBECCA_URL or "").strip()
+    name=escape(str(getattr(admin,"admin_name",None) or username))
+    body=[
+        f"🔐 <b>اطلاعات ورود پنل {name}</b>","",
+        f"👤 نام کاربری: <code>{escape(username)}</code>",
+        f"🔑 رمز ثبت‌شده: <tg-spoiler>{escape(password)}</tg-spoiler>",
+    ]
+    if login_url.startswith(("https://","http://")):
+        body.append(f'🌐 آدرس ورود: <a href="{escape(login_url,quote=True)}">{escape(login_url)}</a>')
+    else:
+        body.append("🌐 آدرس ورود: با پشتیبانی هماهنگ کنید.")
+    body.append("\n<i>برای امنیت، رمز فقط در پیام خصوصی نمایش داده شده است. اگر رمز پنل را تغییر داده‌اید، ممکن است رمز ثبت‌شده قدیمی باشد.</i>")
+    await callback.bot.send_message(
+        callback.from_user.id,
+        "\n".join(body),
+        reply_markup=await _panel_back_keyboard(admin),
+        parse_mode="HTML",
+    )
+    await callback.answer("اطلاعات ورود در پیام خصوصی ارسال شد.")
 
 
 @rebecca_admin_sync_router.callback_query(F.data.startswith("report_panel_"))

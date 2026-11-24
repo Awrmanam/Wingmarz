@@ -254,7 +254,7 @@ async def _render_offer(message: Message, user_id: int, source: str, service_id:
     service = await get_service_by_rebecca_id(int(service_id))
     snapshot = await payg_offer_service.snapshot(int(user_id), int(service_id))
     offer = snapshot["offer"]
-    if not service or not offer or not int(offer["enabled"]):
+    if not service or not offer or (not int(offer["enabled"]) and not snapshot["account"]):
         await message.edit_text(
             "⚡ PAYG این سرویس در حال حاضر فعال نیست.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
@@ -276,6 +276,8 @@ async def _render_offer(message: Message, user_id: int, source: str, service_id:
         f"📦 معادل تقریبی موجودی: <b>{float(snapshot['equivalent_gb']):.2f} GB</b>",
     ]
     rows: list[list[InlineKeyboardButton]] = []
+    if account and not int(offer["enabled"]):
+        lines.append("ℹ️ فروش جدید این سرویس متوقف است؛ شارژ حساب‌های موجود فعال می‌ماند.")
     if account:
         used_gb = int(account["cumulative_usage_bytes"] or 0) / (1024 ** 3)
         lines.extend([
@@ -402,9 +404,16 @@ async def _begin_amount(
     account_id: int | None = None,
 ) -> None:
     offer = await payg_offer_service.get_offer(service_id)
-    if not offer or not int(offer["enabled"]):
-        await callback.answer("PAYG این سرویس فعال نیست.", show_alert=True)
+    if not offer or (not int(offer["enabled"]) and account_id is None):
+        await callback.answer("فروش جدید PAYG این سرویس فعال نیست.", show_alert=True)
         return
+    if account_id is not None:
+        account = await payg_offer_service.account_for_user_service(
+            callback.from_user.id, service_id
+        )
+        if not account or int(account["id"]) != int(account_id) or str(account["status"]) not in {"active", "suspended"}:
+            await callback.answer("این حساب دیگر قابل شارژ نیست.", show_alert=True)
+            return
     await state.clear()
     await state.update_data(
         payg_service_id=int(service_id),
@@ -719,7 +728,8 @@ async def render_admin_home(message: Message) -> None:
             "هنوز هیچ سرویس Rebecca ثبت نشده است. ابتدا سرویس را اضافه کنید.",
         ])
     rows.extend([
-                [InlineKeyboardButton(text="🔙 مالی و پرداخت‌ها", callback_data="ops:hub:finance")],
+        [InlineKeyboardButton(text="🎯 تخفیف اختصاصی مشتریان", callback_data="paygadmin:discounts")],
+        [InlineKeyboardButton(text="🔙 مالی و پرداخت‌ها", callback_data="ops:hub:finance")],
     ])
     await message.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
@@ -924,9 +934,9 @@ async def service_payg_admin_approve(callback: CallbackQuery):
             service = await get_service_by_rebecca_id(int(result["service_id"]))
             if admin:
                 login_url = admin.login_url or config.REBECCA_LOGIN_URL or config.REBECCA_URL
-                await callback.bot.send_message(
-                    user_id,
-                    "✅ <b>پرداخت تأیید شد و پنل PAYG ساخته شد.</b>\n\n"
+                sent = await payg_service.send_approval_notice_once(
+                    callback.bot, topup_id=topup_id, user_id=user_id,
+                    message="✅ <b>پرداخت تأیید شد و پنل PAYG ساخته شد.</b>\n\n"
                     + credential_message(
                         str(admin.marzban_username),
                         str(admin.marzban_password),
@@ -936,9 +946,9 @@ async def service_payg_admin_approve(callback: CallbackQuery):
                     + f"\n\n💰 موجودی کیف پول: <b>{_money(balance)}</b>",
                 )
         else:
-            await callback.bot.send_message(
-                user_id,
-                f"✅ شارژ PAYG تأیید شد.\n💰 موجودی کیف پول: <b>{_money(balance)}</b>",
+            sent = await payg_service.send_approval_notice_once(
+                callback.bot, topup_id=topup_id, user_id=user_id,
+                message=f"✅ شارژ PAYG تأیید شد.\n💰 موجودی کیف پول: <b>{_money(balance)}</b>",
             )
         try:
             await callback.message.edit_reply_markup(reply_markup=None)
