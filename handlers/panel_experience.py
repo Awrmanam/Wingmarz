@@ -139,9 +139,7 @@ async def canonical_renew_panel(callback: CallbackQuery, state: FSMContext):
         )
         return
     await state.update_data(current_admin_id=admin_id)
-    category = await product_catalog.get_category(category_id)
-    panel_name = category.name if category else str(getattr(admin,"admin_name",None) or "پنل")
-    icon_key = await product_catalog.resolve_panel_icon_key(category) if category else None
+    panel_name, icon_key = await _admin_panel_identity(admin)
     icon = await style_engine.render_emoji(icon_key, fallback="📦") if icon_key else "📦"
     heading = f"{icon} <b>{escape(panel_name)}</b>"
 
