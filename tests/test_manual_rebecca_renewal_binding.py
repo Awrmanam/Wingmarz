@@ -121,6 +121,7 @@ async def test_manually_added_fixed_dashboard_shows_specific_incremental_and_ful
     monkeypatch.setattr(experience.db,"get_admin_by_id",AsyncMock(return_value=admin))
     monkeypatch.setattr(experience,"_redirect_payg_renew",AsyncMock(return_value=False))
     monkeypatch.setattr(experience,"_button",fake_button)
+    monkeypatch.setattr(experience,"_admin_panel_identity",AsyncMock(return_value=("ProMax",None)))
     monkeypatch.setattr(experience,"policy_for_admin",
                         AsyncMock(return_value=(77,RenewalPolicy())))
     monkeypatch.setattr(experience,"rates_for_admin",AsyncMock(return_value={
@@ -163,6 +164,7 @@ async def test_full_plan_picker_works_without_origin_plan_and_lists_only_own_ser
 
 @pytest.mark.asyncio
 async def test_legacy_full_plan_callback_cannot_buy_plan_of_another_rebecca_service(monkeypatch):
+    monkeypatch.setattr(legacy.config,"PANEL_PROVIDER","rebecca")
     admin=manual_admin()
     other_plan=plan(92,service="15")
     monkeypatch.setattr(legacy.db,"get_admin_by_id",AsyncMock(return_value=admin))
@@ -180,6 +182,7 @@ async def test_legacy_full_plan_callback_cannot_buy_plan_of_another_rebecca_serv
 
 @pytest.mark.asyncio
 async def test_full_plan_callback_fails_closed_if_manual_service_unverifiable(monkeypatch):
+    monkeypatch.setattr(legacy.config,"PANEL_PROVIDER","rebecca")
     admin=manual_admin()
     monkeypatch.setattr(legacy.db,"get_admin_by_id",AsyncMock(return_value=admin))
     monkeypatch.setattr(legacy.db,"get_plan_by_id",AsyncMock(return_value=plan()))
