@@ -436,14 +436,29 @@ class FastlyStore:
         async with aiosqlite.connect(self.db_path) as conn:
             conn.row_factory = aiosqlite.Row
             async with conn.execute(
-                """SELECT oi.id,oi.order_id,o.title_snapshot,oi.warranty_expires_at
+                """SELECT oi.id,oi.order_id,oi.replaces_item_id,o.warranty_replacements_snapshot,
+                          o.title_snapshot,oi.warranty_expires_at
                    FROM fastly_order_items oi JOIN fastly_orders o ON o.id=oi.order_id
                    WHERE o.buyer_id=? AND o.state='allocated'
                    AND oi.warranty_expires_at>? AND o.warranty_replacements_snapshot>0
                    AND NOT EXISTS(SELECT 1 FROM fastly_order_items new WHERE new.replaces_item_id=oi.id)
                    ORDER BY oi.id DESC LIMIT 40""", (int(buyer), now),
             ) as cur:
-                return [dict(row) for row in await cur.fetchall()]
+                candidates = [dict(row) for row in await cur.fetchall()]
+            filtered = []
+            for item in candidates:
+                count = 0
+                parent = item["replaces_item_id"]
+                while parent:
+                    count += 1
+                    previous = await self._one(
+                        conn, "SELECT replaces_item_id FROM fastly_order_items WHERE id=?",
+                        (int(parent),),
+                    )
+                    parent = previous["replaces_item_id"] if previous else None
+                if count < int(item["warranty_replacements_snapshot"]):
+                    filtered.append(item)
+            return filtered
 
     async def claim(self, buyer: int, item_id: int, reason: str, note: str = "") -> int:
         if reason not in {"blocked","login","quality","other"} or len(note) > 500:
