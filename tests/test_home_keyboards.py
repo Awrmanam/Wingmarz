@@ -22,6 +22,7 @@ def test_public_home_keyboard_uses_runtime_style_engine(monkeypatch):
 
     assert callbacks == [
         "public_buy_reseller",
+        "fastly:home",
         "tariffs:home",
         "svcmarket:trial",
         "kyc:status",
@@ -45,6 +46,7 @@ def test_reseller_home_keyboard_preserves_business_callbacks(monkeypatch):
         "reactivate_users",
         "admin_buy_reseller",
         "admin_renew",
+        "fastly:home",
         "tariffs:home",
         "svcmarket:trial",
         "kyc:status",

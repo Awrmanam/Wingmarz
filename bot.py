@@ -19,6 +19,7 @@ from handlers.sudo_handlers import sudo_router
 from handlers.rebecca_services import rebecca_services_router
 from handlers.admin_handlers import admin_router
 from handlers.public_handlers import public_router
+from handlers.fastly_store import fastly_router
 from scheduler import init_scheduler
 from style_engine import style_engine
 from utils.bold_fix_bot import BoldFixBot
@@ -107,6 +108,10 @@ class MarzbanAdminBot:
         logger.info("Registering rebecca_services_router...")
         self.dp.include_router(rebecca_services_router)
         logger.info("✅ rebecca_services_router registered successfully")
+        # Independent digital-store callbacks and FSM states must not be
+        # intercepted by the legacy panel purchase handlers.
+        self.dp.include_router(fastly_router)
+        logger.info("Fastly storefront router registered")
         logger.info("Registering sudo_router (FSM-aware)...")
         self.dp.include_router(sudo_router)
         logger.info("✅ sudo_router registered successfully")

@@ -465,6 +465,20 @@ async def kyc_review_approve(callback: CallbackQuery):
         "kyc",
         f"✅ KYC کاربر <code>{user_id}</code> توسط <code>{callback.from_user.id}</code> تأیید شد.",
     )
+    # A Fastly order reuses this very same approved identity, not a second
+    # document collection or the legacy single-slot checkout resume record.
+    try:
+        from fastly_store_service import fastly_store
+        if await fastly_store.orders(buyer=user_id, state="pending", limit=1):
+            await callback.bot.send_message(
+                user_id,
+                "🛍 برای ادامه سفارش اکانت، از «سفارش‌های من» وارد شو.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="🧾 ادامه خرید اکانت", callback_data="fastly:orders")
+                ]]),
+            )
+    except Exception:
+        logger.warning("Could not send Fastly KYC resume notice for Telegram ID %s", user_id)
     await callback.answer("KYC تأیید شد")
 
 

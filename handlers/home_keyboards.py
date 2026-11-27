@@ -37,6 +37,7 @@ async def public_home_keyboard() -> InlineKeyboardMarkup:
     """
     return InlineKeyboardMarkup(inline_keyboard=[
         [await _button("خرید پنل نمایندگی", "public_buy_reseller", icon_key="buy", fallback="🛒")],
+        [await _button("خرید اکانت Fastly", "fastly:home", fallback="🌐")],
         [
             await _button("تعرفه‌ها", "tariffs:home", icon_key="price", fallback="💰"),
             await _button("تست رایگان", "svcmarket:trial", icon_key="test", fallback="🧪"),
@@ -67,6 +68,7 @@ async def reseller_home_keyboard() -> InlineKeyboardMarkup:
             await _button("خرید پنل نمایندگی", "admin_buy_reseller", icon_key="buy", fallback="🛒"),
             await _button(config.BUTTONS["renew"], "admin_renew", icon_key="renew", fallback="🔄"),
         ],
+        [await _button("خرید اکانت Fastly", "fastly:home", fallback="🌐")],
         [
             await _button("تعرفه‌ها", "tariffs:home", icon_key="price", fallback="💰"),
             await _button("تست رایگان", "svcmarket:trial", icon_key="test", fallback="🧪"),
