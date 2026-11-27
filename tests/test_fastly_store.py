@@ -125,14 +125,16 @@ def test_same_receipt_image_cannot_be_used_twice(store):
 def test_payment_confirmed_stock_shortage_can_be_fulfilled_after_restock(store):
     async def scenario():
         pid=await _product(store)
-        await store.add_stock(pid,[("a@test.invalid","a")],999)
+        await store.add_stock(pid,[("a@test.invalid","a"),("c@test.invalid","c")],999)
         oid=await _paid_order(store,200,pid,2)
+        other=await _paid_order(store,201,pid,1)
+        assert await store.approve(other,999)=="allocated"
         assert await store.approve(oid,999)=="out_of_stock"
         assert (await store.order(oid))["state"]=="out_of_stock"
         await store.add_stock(pid,[("b@test.invalid","b")],999)
         assert await store.approve(oid,999)=="allocated"
         assert await store.approve(oid,999)=="already_allocated"
-        assert (await store.stats())["sold_units"]==2
+        assert (await store.stats())["sold_units"]==3
     asyncio.run(scenario())
 
 
