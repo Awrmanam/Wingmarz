@@ -27,8 +27,9 @@ def test_public_home_keyboard_uses_runtime_style_engine(monkeypatch):
         "customer:reports",
         "customer:explore",
         "customer:account",
+        "fastly:home",
     ]
-    assert len(callbacks) == 6
+    assert len(callbacks) == 7
     assert all("callback_data" in kwargs for _text, kwargs in calls)
 
 
@@ -47,8 +48,9 @@ def test_reseller_home_keyboard_preserves_business_callbacks(monkeypatch):
         "customer:reports",
         "customer:explore",
         "customer:account",
+        "fastly:home",
     ]
-    assert len(callbacks) == 6
+    assert len(callbacks) == 7
 
 
 
