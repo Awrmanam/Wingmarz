@@ -391,7 +391,10 @@ async def receipt_value(message: Message,state:FSMContext):
         await message.answer("برای ادامه، احراز هویت باید تأیید شده باشه.")
         return
     try:
-        ok = await fastly_store.submit_receipt(ident,_uid(message),message.photo[-1].file_id)
+        ok = await fastly_store.submit_receipt(
+            ident,_uid(message),message.photo[-1].file_id,
+            message.photo[-1].file_unique_id,
+        )
         if not ok:
             raise FastlyStoreError("سفارش قبلاً بررسی شده یا متعلق به شما نیست.")
     except Exception as exc:
