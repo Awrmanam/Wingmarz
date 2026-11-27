@@ -124,10 +124,10 @@ UI_TITLES.update({
 # Digital-store copy stays in the existing editable Premium UI catalog.
 # Product-specific usage rules are separately snapshotted at order creation.
 UI_MESSAGES.update({
-    "fastly_home": "{emoji:shop} <b>اکانت‌های آماده</b>\n\nمدل موردنظرت رو انتخاب کن. قیمت و موجودی هر مدل پایینش مشخصه.",
+    "fastly_home": "🛍 <b>اکانت‌های آماده</b>\n\nمدل موردنظرت رو انتخاب کن. قیمت و موجودی هر مدل پایینش مشخصه.",
     "fastly_product": "<b>{title}</b>\n\n{description}\n\nقیمت هر اکانت: <b>{price} تومان</b>\nموجودی: <b>{stock} عدد</b>\nضمانت: <b>{warranty}</b>",
     "fastly_order": "🧾 <b>سفارش #{order_id}</b>\n\n{title}\nتعداد: <b>{quantity} عدد</b>\nمبلغ: <b>{total} تومان</b>\nوضعیت: <b>{status}</b>",
-    "fastly_kyc": "{emoji:kyc} <b>تأیید حساب</b>\n\nبرای خرید اکانت هم از همون احراز هویت یک‌باره ربات استفاده می‌کنیم. اگه قبلاً تأیید شدی، نیازی به ارسال دوباره مدرک نیست.\n\nبعد از تأیید، از «سفارش‌های من» پرداخت رو ادامه بده.",
+    "fastly_kyc": "🪪 <b>تأیید حساب</b>\n\nبرای خرید اکانت هم از همون احراز هویت یک‌باره ربات استفاده می‌کنیم. اگه قبلاً تأیید شدی، نیازی به ارسال دوباره مدرک نیست.\n\nبعد از تأیید، از «سفارش‌های من» پرداخت رو ادامه بده.",
     "fastly_payment": "💳 <b>پرداخت سفارش #{order_id}</b>\n\nمبلغ: <b>{total} تومان</b>\n\n<b>کارت‌های مقصد</b>\n{cards}\n\nبعد از واریز از کارت متعلق به خودت، تصویر رسید رو ثبت کن. رسید پس از تطبیق واقعی توسط مدیر تأیید می‌شه.",
     "fastly_receipt_received": "✅ رسید سفارش <b>#{order_id}</b> ثبت شد. بعد از بررسی و تأیید پرداخت، همین‌جا خبرت می‌کنیم.",
     "fastly_ready": "✅ پرداخت سفارش <b>#{order_id}</b> تأیید شد. اکانت‌ها آماده دریافت‌اند؛ از دکمه زیر ابتدا قوانین استفاده رو بخون.",
