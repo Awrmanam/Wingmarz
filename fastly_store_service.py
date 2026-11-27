@@ -245,6 +245,16 @@ class FastlyStore:
         now = int(time.time())
         reason = reason if reason in {"first","extra","blocked","login","quality","other"} else "other"
         async with aiosqlite.connect(self.db_path) as conn:
+            await conn.execute("BEGIN IMMEDIATE")
+            recent = await self._one(
+                conn, "SELECT id FROM fastly_orders WHERE buyer_id=? AND product_id=? "
+                "AND quantity=? AND reason_code=? AND state='pending' AND created_at>=? "
+                "ORDER BY id DESC LIMIT 1",
+                (int(buyer), int(product_id), int(qty), reason, now-300),
+            )
+            if recent:
+                await conn.rollback()
+                return int(recent["id"])
             cur = await conn.execute(
                 "INSERT INTO fastly_orders(buyer_id,product_id,quantity,title_snapshot,"
                 "unit_price_snapshot,total_toman,warranty_days_snapshot,"
