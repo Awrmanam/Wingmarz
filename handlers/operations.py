@@ -60,6 +60,7 @@ HUB_MENUS = {
             ("cc:orders:0", "سفارش‌های در انتظار", "orders", "🧾"),
             ("sudo_renew_review", "تمدیدهای نیازمند بررسی", "orders", "⚠️"),
             ("sales_manage", "محصولات و پلن‌ها", "plan", "📦"),
+            ("fastlyadmin:home", "مدیریت فروشگاه Fastly", "plan", "🌐"),
             ("cc:test", "تست رایگان", "test", "🧪"),
             ("cc:discounts", "کدهای تخفیف", "discount", "🎟"),
         ),
