@@ -24,7 +24,7 @@ async def _product(store, *, warranty=0, replacements=0, price=120000):
 
 async def _paid_order(store, buyer, product, qty=1):
     ident=await store.make_order(buyer,product,qty,"first")
-    assert await store.submit_receipt(ident,buyer,"fake-file-id")
+    assert await store.submit_receipt(ident,buyer,f"fake-{ident}",f"unique-{ident}")
     return ident
 
 
