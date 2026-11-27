@@ -647,6 +647,8 @@ async def admin_item(callback:CallbackQuery):
     ]
     rows += [
         [await _button("ورود اکانت‌ها",f"fastlyadmin:stock:{ident}","🔐")],
+        [await _button("بررسی موجودی آزاد",f"fastlyadmin:inventory:a:{ident}:0","📋")],
+        [await _button("اکانت‌های قرنطینه",f"fastlyadmin:inventory:q:{ident}:0","⚠️")],
         [await _button("غیرفعال کردن" if product["enabled"] else "فعال کردن",
                        f"fastlyadmin:toggle:{ident}","🔄")],
         [await _button("بازگشت","fastlyadmin:products","↩️")],
@@ -1032,3 +1034,65 @@ async def admin_stats(callback:CallbackQuery):
         reply_markup=_kb([[await _button("بازگشت","fastlyadmin:home","↩️")]]),
     )
     await callback.answer()
+
+
+@fastly_router.callback_query(F.data.startswith("fastlyadmin:inventory:"))
+async def admin_inventory(callback: CallbackQuery):
+    if not await _staff_guard(callback):
+        return
+    try:
+        _, _, mode, pid, offset = callback.data.split(":")
+        product_id, start = int(pid), int(offset)
+        state = "available" if mode == "a" else "quarantined" if mode == "q" else None
+        if state is None:
+            raise FastlyStoreError("وضعیت موجودی نامعتبر است.")
+        items = await fastly_store.stock_items(product_id, state, start, 15)
+    except Exception as exc:
+        await callback.answer(_error(exc), show_alert=True)
+        return
+    action = "fastlyadmin:preq" if state == "available" else "fastlyadmin:restore"
+    rows = [[await _button(f"#{i['id']} · {i['masked']}",
+                           f"{action}:{i['id']}:{product_id}", "🔐")] for i in items]
+    nav = []
+    if start > 0:
+        nav.append(await _button("قبلی", f"fastlyadmin:inventory:{mode}:{product_id}:{max(0,start-15)}", "⬅️"))
+    if len(items) == 15:
+        nav.append(await _button("بعدی", f"fastlyadmin:inventory:{mode}:{product_id}:{start+15}", "➡️"))
+    if nav:
+        rows.append(nav)
+    rows.append([await _button("بازگشت", f"fastlyadmin:item:{product_id}", "↩️")])
+    await callback.message.edit_text(
+        f"🔐 <b>{'موجودی آزاد' if state=='available' else 'قرنطینه'}</b> · محصول #{product_id}\n\n"
+        + ("برای تغییر وضعیت، روی یک شناسه بزن." if items else "موردی در این صفحه نیست."),
+        reply_markup=_kb(rows),
+    )
+    await callback.answer()
+
+
+@fastly_router.callback_query(F.data.startswith("fastlyadmin:preq:"))
+async def quarantine_confirm(callback: CallbackQuery):
+    if not await _staff_guard(callback):
+        return
+    _, _, item, product = callback.data.split(":")
+    await callback.message.edit_text(
+        f"⚠️ اکانت موجودی #{int(item)} از فروش خارج و قرنطینه بشه؟",
+        reply_markup=_kb([
+            [await _button("بله، قرنطینه کن", f"fastlyadmin:quarantine:{item}:{product}", "✅")],
+            [await _button("انصراف", f"fastlyadmin:inventory:a:{product}:0", "↩️")],
+        ]),
+    )
+    await callback.answer()
+
+
+@fastly_router.callback_query(F.data.startswith("fastlyadmin:quarantine:"))
+@fastly_router.callback_query(F.data.startswith("fastlyadmin:restore:"))
+async def change_stock_state(callback: CallbackQuery):
+    if not await _staff_guard(callback):
+        return
+    _, action, item, product = callback.data.split(":")
+    state = "quarantined" if action == "quarantine" else "available"
+    if not await fastly_store.stock_state(int(item), int(product), state, _uid(callback)):
+        await callback.answer("وضعیت عوض نشد؛ شاید این اکانت قبلاً فروخته شده.", show_alert=True)
+        return
+    await callback.answer("وضعیت موجودی تغییر کرد.")
+    await _admin_home(callback.message)
