@@ -7,7 +7,7 @@ from html import escape
 
 from aiogram import F, Router
 from aiogram.dispatcher.middlewares.base import BaseMiddleware
-from aiogram.filters import Command
+from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -57,6 +57,20 @@ class FastlyStates(StatesGroup):
     product_rules = State()
     edit_product = State()
     claim_note = State()
+
+
+@fastly_router.message(CommandStart(), StateFilter(*FastlyStates.__all_states__))
+async def fastly_cancel_on_start(message: Message, state: FSMContext):
+    """An active stock/receipt FSM must never swallow /start as secret input."""
+    await state.clear()
+    from handlers.home_navigation import render_home
+    await render_home(message, message.from_user.id, edit=False)
+
+
+@fastly_router.message(Command("cancel"), StateFilter(*FastlyStates.__all_states__))
+async def fastly_cancel(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("عملیات لغو شد. از /start دوباره شروع کن.")
 
 
 def _uid(event) -> int:
@@ -354,6 +368,8 @@ async def send_receipt(callback: CallbackQuery,state: FSMContext):
 
 @fastly_router.message(FastlyStates.receipt)
 async def receipt_value(message: Message,state:FSMContext):
+    if message.chat.type != "private":
+        await message.answer("رسید رو فقط در گفتگوی خصوصی بفرست."); return
     if not message.photo:
         await message.answer("برای ثبت پرداخت، عکس رسید رو به‌صورت Photo بفرست.")
         return
@@ -821,6 +837,7 @@ async def stock_value(message:Message,state:FSMContext):
 async def pending_orders(callback:CallbackQuery):
     if not await _staff_guard(callback):return
     orders=await fastly_store.orders(state="submitted")
+    orders+=await fastly_store.orders(state="out_of_stock")
     rows=[
         [await _button(f"#{o['id']} · {o['quantity']} عدد · {o['total_toman']:,} تومان",
                        f"fastlyadmin:review:{o['id']}","🧾")]
@@ -850,8 +867,10 @@ async def review_order(callback:CallbackQuery):
         f"وضعیت: {escape(order['state'])}\n\n"
         "تأیید فقط پس از تطبیق تراکنش واقعی بانکی.",
         reply_markup=_kb([
-            [await _button("تأیید و تحویل",f"fastlyadmin:approve:{ident}","✅")],
-            [await _button("رد رسید",f"fastlyadmin:reject:{ident}","❌")],
+            [await _button("تخصیص موجودی" if order["state"]=="out_of_stock" else "تأیید و تحویل",
+                           f"fastlyadmin:approve:{ident}","✅")],
+            *([[await _button("رد رسید",f"fastlyadmin:reject:{ident}","❌")]]
+              if order["state"]=="submitted" else []),
             [await _button("بازگشت","fastlyadmin:orders","↩️")],
         ]),
     )
