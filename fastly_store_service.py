@@ -324,9 +324,7 @@ class FastlyStore:
                 raise FastlyStoreError("سفارش وجود ندارد.")
             if order["state"] == "allocated":
                 await conn.rollback(); return "already_allocated"
-            if order["state"] == "out_of_stock":
-                await conn.rollback(); return "out_of_stock"
-            if order["state"] != "submitted":
+            if order["state"] not in {"submitted", "out_of_stock"}:
                 raise FastlyStoreError("سفارش آماده تأیید نیست.")
             async with conn.execute(
                 "SELECT id FROM fastly_inventory WHERE product_id=? AND state='available' "
@@ -567,6 +565,7 @@ class FastlyStore:
                 "orders": "SELECT count(*) FROM fastly_orders",
                 "paid_orders": "SELECT count(*) FROM fastly_orders WHERE state='allocated'",
                 "pending": "SELECT count(*) FROM fastly_orders WHERE state='submitted'",
+                "shortage": "SELECT count(*) FROM fastly_orders WHERE state='out_of_stock'",
                 "sold_units": "SELECT COALESCE(sum(quantity),0) FROM fastly_orders WHERE state='allocated'",
                 "replacements": "SELECT count(*) FROM fastly_claims WHERE state='replaced'",
                 "claims_pending": "SELECT count(*) FROM fastly_claims WHERE state IN ('pending','awaiting_stock')",
