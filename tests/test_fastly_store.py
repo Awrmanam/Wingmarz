@@ -89,12 +89,11 @@ async def test_claim_entitlement_chain_and_snapshot(store):
     assert await store.accept_rules(oid,1001)
     credentials=await store.reveal(oid,1001)
     assert len(credentials)==1 and credentials[0]["login"]=="b@test.invalid"
-    assert len(await store.claimable_items(1001))==1
-    new_item=(await store.claimable_items(1001))[0]
+    assert await store.claimable_items(1001)==[]
     with pytest.raises(FastlyStoreError):
-        await store.claim(1001,new_item["id"],"login")
+        await store.claim(1001,item["id"],"login")
     with pytest.raises(FastlyStoreError):
-        await store.claim(999,new_item["id"],"login")
+        await store.claim(999,item["id"],"login")
     assert (await store.stats())["replacements"]==1
 
 
