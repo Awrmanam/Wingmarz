@@ -1,0 +1,31 @@
+name: Verify Fastly Store on Live Wingmarz Baseline
+
+on:
+  push:
+    branches:
+      - feat/fastly-on-live-1c42e1d-20261127
+  workflow_dispatch:
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.11']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt pytest
+      - name: Compile source
+        run: python -m compileall -q bot.py handlers fastly_store_service.py message_catalog.py tests
+      - name: Digital storefront tests
+        run: python -m pytest -q tests/test_fastly_store.py tests/test_fastly_navigation.py tests/test_home_keyboards.py
+      - name: Entire Wingmarz suite
+        run: timeout 700s python -m pytest -q
+      - name: Patch whitespace
+        run: git diff --check
