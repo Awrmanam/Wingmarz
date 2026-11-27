@@ -106,7 +106,7 @@ async def _home(message: Message):
     rows = [
         [await _button(f"{p['title']} · {p['price_toman']:,} تومان · {p['stock']} عدد",
                        f"fastly:product:{p['id']}", "📦")]
-        for p in products if p["stock"] > 0
+        for p in products
     ]
     if not rows:
         rows = [[await _button("سفارش‌های من", "fastly:orders", "🧾")]]
@@ -782,8 +782,8 @@ async def stock_value(message:Message,state:FSMContext):
     try:
         if message.document:
             doc=message.document
-            if not doc.file_name or not doc.file_name.lower().endswith((".txt",".csv")) or (doc.file_size or 0)>100_000:
-                raise FastlyStoreError("فقط فایل TXT یا CSV حداکثر ۱۰۰ کیلوبایت.")
+            if not doc.file_name or not doc.file_name.lower().endswith(".txt") or (doc.file_size or 0)>100_000:
+                raise FastlyStoreError("فقط فایل TXT حداکثر ۱۰۰ کیلوبایت.")
             stream=io.BytesIO()
             await message.bot.download(doc,destination=stream)
             content=stream.getvalue().decode("utf-8-sig")
