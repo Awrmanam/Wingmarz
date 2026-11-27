@@ -87,7 +87,8 @@ class FastlyStore:
                     rules_snapshot TEXT NOT NULL, reason_code TEXT NOT NULL DEFAULT 'first',
                     state TEXT NOT NULL DEFAULT 'pending'
                       CHECK(state IN ('pending','submitted','allocated','out_of_stock','rejected')),
-                    receipt_file_id TEXT, approved_by INTEGER, reviewed_at INTEGER,
+                    receipt_file_id TEXT, receipt_unique_id TEXT UNIQUE,
+                    approved_by INTEGER, reviewed_at INTEGER,
                     revealed_at INTEGER, rules_accepted_at INTEGER, created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL
                 );
@@ -300,14 +301,19 @@ class FastlyStore:
                 (int(buyer),)
             ))
 
-    async def submit_receipt(self, order_id: int, buyer: int, file_id: str) -> bool:
+    async def submit_receipt(self, order_id: int, buyer: int, file_id: str,
+                             file_unique_id: str | None = None) -> bool:
         await self.init()
         async with aiosqlite.connect(self.db_path) as conn:
-            cur = await conn.execute(
-                "UPDATE fastly_orders SET state='submitted',receipt_file_id=?,updated_at=? "
-                "WHERE id=? AND buyer_id=? AND state='pending'",
-                (str(file_id), int(time.time()), int(order_id), int(buyer)),
-            )
+            try:
+                cur = await conn.execute(
+                    "UPDATE fastly_orders SET state='submitted',receipt_file_id=?,receipt_unique_id=?,updated_at=? "
+                    "WHERE id=? AND buyer_id=? AND state='pending'",
+                    (str(file_id), str(file_unique_id) if file_unique_id else None,
+                     int(time.time()), int(order_id), int(buyer)),
+                )
+            except aiosqlite.IntegrityError as exc:
+                raise FastlyStoreError("این تصویر رسید قبلاً برای سفارش دیگری استفاده شده است.") from exc
             if cur.rowcount:
                 await self._audit(conn, buyer, "payment.receipt", "order", order_id)
             await conn.commit()
