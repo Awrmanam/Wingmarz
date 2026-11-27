@@ -107,3 +107,46 @@ def test_rejected_receipt_never_allocates(store):
         assert (await store.product(pid))["stock"]==1
     asyncio.run(scenario())
 
+
+
+def test_same_receipt_image_cannot_be_used_twice(store):
+    async def scenario():
+        pid = await _product(store)
+        await store.add_stock(pid,[("a@test.invalid","a"),("b@test.invalid","b")],999)
+        a=await store.make_order(100,pid,1,"first")
+        b=await store.make_order(200,pid,1,"first")
+        assert await store.submit_receipt(a,100,"file-A","photo-unique-ID")
+        with pytest.raises(FastlyStoreError,match="قبلاً"):
+            await store.submit_receipt(b,200,"file-B","photo-unique-ID")
+        assert (await store.order(b))["state"]=="pending"
+    asyncio.run(scenario())
+
+
+def test_payment_confirmed_stock_shortage_can_be_fulfilled_after_restock(store):
+    async def scenario():
+        pid=await _product(store)
+        await store.add_stock(pid,[("a@test.invalid","a")],999)
+        oid=await _paid_order(store,200,pid,2)
+        assert await store.approve(oid,999)=="out_of_stock"
+        assert (await store.order(oid))["state"]=="out_of_stock"
+        await store.add_stock(pid,[("b@test.invalid","b")],999)
+        assert await store.approve(oid,999)=="allocated"
+        assert await store.approve(oid,999)=="already_allocated"
+        assert (await store.stats())["sold_units"]==2
+    asyncio.run(scenario())
+
+
+def test_masked_inventory_quarantine_and_restoration(store):
+    async def scenario():
+        pid=await _product(store)
+        await store.add_stock(pid,[("john@example.invalid","secret")],999)
+        items=await store.stock_items(pid)
+        assert len(items)==1 and items[0]["masked"]=="jo***@example.invalid"
+        assert "secret" not in str(items)
+        ident=items[0]["id"]
+        assert await store.stock_state(ident,pid,"quarantined",999)
+        assert (await store.product(pid))["stock"]==0
+        assert not await store.stock_state(ident,pid,"quarantined",999)
+        assert await store.stock_state(ident,pid,"available",999)
+        assert (await store.product(pid))["stock"]==1
+    asyncio.run(scenario())
