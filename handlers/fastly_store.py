@@ -31,6 +31,18 @@ class FastlyPrivateMiddleware(BaseMiddleware):
         if getattr(chat, "type", None) != "private" or int(getattr(chat, "id", 0)) != int(event.from_user.id):
             await event.answer("این بخش فقط در گفتگوی خصوصی ربات قابل استفاده است.", show_alert=True)
             return None
+        name = str(event.data or "")
+        new_sales = ("fastly:product:", "fastly:qty:", "fastly:qtycustom:",
+                     "fastly:choose:", "fastly:reason:")
+        if name.startswith(new_sales) and not fastly_store.is_enabled():
+            await event.answer("فروش اکانت فعلاً غیرفعال است.", show_alert=True)
+            return None
+        if name.startswith(new_sales + ("fastly:pay:", "fastly:receipt:")):
+            try:
+                fastly_store._cipher()
+            except FastlyStoreError:
+                await event.answer("فروشگاه هنوز آماده تحویل امن نیست.", show_alert=True)
+                return None
         return await handler(event, data)
 
 
