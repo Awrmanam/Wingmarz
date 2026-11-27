@@ -88,7 +88,7 @@ class FastlyStore:
                     state TEXT NOT NULL DEFAULT 'pending'
                       CHECK(state IN ('pending','submitted','allocated','out_of_stock','rejected')),
                     receipt_file_id TEXT, approved_by INTEGER, reviewed_at INTEGER,
-                    revealed_at INTEGER, created_at INTEGER NOT NULL,
+                    revealed_at INTEGER, rules_accepted_at INTEGER, created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_fastly_orders_buyer
@@ -366,11 +366,31 @@ class FastlyStore:
             await conn.commit()
             return bool(cur.rowcount)
 
+    async def accept_rules(self, order_id: int, buyer: int) -> bool:
+        await self.init()
+        async with aiosqlite.connect(self.db_path) as conn:
+            cur = await conn.execute(
+                "UPDATE fastly_orders SET rules_accepted_at=COALESCE(rules_accepted_at,?),updated_at=? "
+                "WHERE id=? AND buyer_id=? AND state='allocated'",
+                (int(time.time()), int(time.time()), int(order_id), int(buyer)),
+            )
+            await conn.commit()
+            return bool(cur.rowcount)
+
+    async def claim_record(self, claim_id: int) -> dict | None:
+        await self.init()
+        async with aiosqlite.connect(self.db_path) as conn:
+            return await self._one(
+                conn, "SELECT * FROM fastly_claims WHERE id=?", (int(claim_id),)
+            )
+
     async def reveal(self, order_id: int, buyer: int) -> list[dict]:
         """Only the buyer can decrypt, only after allocation and approval."""
         order = await self.order(order_id, buyer=buyer)
         if not order or order["state"] != "allocated":
             raise FastlyStoreError("دسترسی به این سفارش مجاز نیست.")
+        if not order["rules_accepted_at"]:
+            raise FastlyStoreError("ابتدا قوانین استفاده را تأیید کنید.")
         cipher = self._cipher()
         async with aiosqlite.connect(self.db_path) as conn:
             conn.row_factory = aiosqlite.Row
