@@ -6,6 +6,7 @@ import logging
 from html import escape
 
 from aiogram import F, Router
+from aiogram.dispatcher.middlewares.base import BaseMiddleware
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -21,6 +22,19 @@ from trust_service import trust_service
 
 logger = logging.getLogger(__name__)
 fastly_router = Router(name="fastly_store")
+
+
+class FastlyPrivateMiddleware(BaseMiddleware):
+    """No credentials or payment steps can execute from groups/channels."""
+    async def __call__(self, handler, event, data):
+        chat = getattr(getattr(event, "message", None), "chat", None)
+        if getattr(chat, "type", None) != "private" or int(getattr(chat, "id", 0)) != int(event.from_user.id):
+            await event.answer("این بخش فقط در گفتگوی خصوصی ربات قابل استفاده است.", show_alert=True)
+            return None
+        return await handler(event, data)
+
+
+fastly_router.callback_query.outer_middleware(FastlyPrivateMiddleware())
 
 REASONS = {
     "extra": "اکانت بیشتری می‌خواهم",
@@ -401,6 +415,9 @@ async def accept_rules(callback: CallbackQuery):
 
 
 async def _send_credentials(message:Message,ident:int,buyer:int,*,edit:bool):
+    if str(getattr(message.chat, "type", "")) != "private" or int(message.chat.id) != int(buyer):
+        await message.answer("تحویل اکانت فقط در گفتگوی خصوصی خریدار انجام می‌شود.")
+        return
     try:
         rows = await fastly_store.reveal(ident,buyer)
     except Exception as exc:
@@ -544,7 +561,7 @@ async def _admin_home(message:Message):
 
 @fastly_router.message(Command("fastly_admin"))
 async def admin_command(message:Message):
-    if not _staff(message):
+    if not _staff(message) or message.chat.type != "private":
         return
     stats=await fastly_store.stats()
     await message.answer(
