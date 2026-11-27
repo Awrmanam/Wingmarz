@@ -39,6 +39,7 @@ async def _customer_home(*, reseller: bool) -> InlineKeyboardMarkup:
          await _button("گزارش‌های من", "customer:reports", icon_key="report", fallback="📊")],
         [await _button("تعرفه و تست", "customer:explore", icon_key="price", fallback="🧪"),
          await _button("حساب و پشتیبانی", "customer:account", icon_key="support", fallback="🎧")],
+        [await _button("خرید اکانت Fastly", "fastly:home", fallback="🌐")],
     ])
 
 
