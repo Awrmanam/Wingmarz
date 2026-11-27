@@ -120,3 +120,32 @@ UI_TITLES.update({
     'sales_username_prompt': 'درخواست نام کاربری خرید',
     'sales_discount_prompt': 'راهنمای کد تخفیف خرید',
 })
+
+# Digital-store copy stays in the existing editable Premium UI catalog.
+# Product-specific usage rules are separately snapshotted at order creation.
+UI_MESSAGES.update({
+    "fastly_home": "{emoji:shop} <b>اکانت‌های آماده</b>\n\nمدل موردنظرت رو انتخاب کن. قیمت و موجودی هر مدل پایینش مشخصه.",
+    "fastly_product": "<b>{title}</b>\n\n{description}\n\nقیمت هر اکانت: <b>{price} تومان</b>\nموجودی: <b>{stock} عدد</b>\nضمانت: <b>{warranty}</b>",
+    "fastly_order": "🧾 <b>سفارش #{order_id}</b>\n\n{title}\nتعداد: <b>{quantity} عدد</b>\nمبلغ: <b>{total} تومان</b>\nوضعیت: <b>{status}</b>",
+    "fastly_kyc": "{emoji:kyc} <b>تأیید حساب</b>\n\nبرای خرید اکانت هم از همون احراز هویت یک‌باره ربات استفاده می‌کنیم. اگه قبلاً تأیید شدی، نیازی به ارسال دوباره مدرک نیست.\n\nبعد از تأیید، از «سفارش‌های من» پرداخت رو ادامه بده.",
+    "fastly_payment": "💳 <b>پرداخت سفارش #{order_id}</b>\n\nمبلغ: <b>{total} تومان</b>\n\n<b>کارت‌های مقصد</b>\n{cards}\n\nبعد از واریز از کارت متعلق به خودت، تصویر رسید رو ثبت کن. رسید پس از تطبیق واقعی توسط مدیر تأیید می‌شه.",
+    "fastly_receipt_received": "✅ رسید سفارش <b>#{order_id}</b> ثبت شد. بعد از بررسی و تأیید پرداخت، همین‌جا خبرت می‌کنیم.",
+    "fastly_ready": "✅ پرداخت سفارش <b>#{order_id}</b> تأیید شد. اکانت‌ها آماده دریافت‌اند؛ از دکمه زیر ابتدا قوانین استفاده رو بخون.",
+    "fastly_rules": "📋 <b>قوانین سفارش #{order_id}</b>\n\n{rules}\n\nبا انتخاب دکمه پایین، تأیید می‌کنی که این شرایط رو خوندی.",
+    "fastly_claim_created": "🛡 درخواست تعویض <b>#{claim_id}</b> ثبت شد. نتیجه بررسی مدیر رو همین‌جا می‌فرستیم.",
+    "fastly_out_of_stock": "⚠️ پرداخت سفارش <b>#{order_id}</b> تأیید شده، اما موجودی کافی برای تحویل نداریم. سفارش گم نشده؛ پشتیبانی باید موجودی یا بازپرداخت رو پیگیری کنه.",
+    "fastly_rejected": "رسید سفارش <b>#{order_id}</b> تأیید نشد. برای بررسی پرداخت و ارسال مدرک صحیح، با پشتیبانی در ارتباط باش.",
+})
+UI_TITLES.update({
+    "fastly_home": "فستلی — صفحه فروشگاه",
+    "fastly_product": "فستلی — جزئیات محصول",
+    "fastly_order": "فستلی — خلاصه سفارش",
+    "fastly_kyc": "فستلی — احراز هویت پیش از پرداخت",
+    "fastly_payment": "فستلی — راهنمای پرداخت",
+    "fastly_receipt_received": "فستلی — دریافت رسید",
+    "fastly_ready": "فستلی — سفارش آماده دریافت",
+    "fastly_rules": "فستلی — قوانین استفاده",
+    "fastly_claim_created": "فستلی — ثبت درخواست تعویض",
+    "fastly_out_of_stock": "فستلی — کمبود موجودی پس از پرداخت",
+    "fastly_rejected": "فستلی — رد رسید",
+})
