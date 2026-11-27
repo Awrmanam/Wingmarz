@@ -67,6 +67,7 @@ SCREENS: dict[str, ScreenDef] = {
     "access.forced_join": ScreenDef("access.forced_join", "customer", "main", "بررسی عضویت کانال‌ها", 3),
     "reseller.navigation": ScreenDef("reseller.navigation", "customer", "main", "بازگشت به صفحه اصلی نماینده", 90),
     "purchase.entry": ScreenDef("purchase.entry", "customer", "sales", "شروع خرید", 0),
+    "fastly.shop": ScreenDef("fastly.shop", "customer", "sales", "فروشگاه اکانت Fastly", 6),
     "purchase.duration": ScreenDef("purchase.duration", "customer", "sales", "انتخاب مدت", 1),
     "purchase.plan": ScreenDef("purchase.plan", "customer", "sales", "انتخاب پلن", 2),
     "purchase.summary": ScreenDef("purchase.summary", "customer", "sales", "خلاصه خرید", 3),
@@ -90,6 +91,7 @@ SCREENS: dict[str, ScreenDef] = {
     "admin.panel_import": ScreenDef("admin.panel_import", "manage", "products", "افزودن پنل قبلی", 2),
     "admin.panel_cleanup": ScreenDef("admin.panel_cleanup", "manage", "products", "پاکسازی و نگهداری پنل‌ها", 3),
     "admin.products": ScreenDef("admin.products", "manage", "products", "محصولات و پلن‌ها", 4),
+    "admin.fastly": ScreenDef("admin.fastly", "manage", "products", "مدیریت فروشگاه Fastly", 6),
     "admin.rebecca": ScreenDef("admin.rebecca", "manage", "products", "سرویس‌های Rebecca", 5),
     "admin.orders": ScreenDef("admin.orders", "manage", "orders", "سفارش‌ها", 0),
     "admin.users": ScreenDef("admin.users", "manage", "users", "کاربران", 0),
@@ -115,6 +117,9 @@ def _clean(value: str | None) -> str:
 
 BUTTONS: tuple[ButtonDef, ...] = (
     ButtonDef("public.home.buy", "public.home", "خرید پنل نمایندگی", "public_buy_reseller", rank=0),
+    ButtonDef("public.home.fastly", "fastly.shop", "خرید اکانت Fastly", "fastly:home", rank=1),
+    ButtonDef("fastly.shop.orders", "fastly.shop", "سفارش‌های من", "fastly:orders", rank=2),
+    ButtonDef("fastly.shop.claims", "fastly.shop", "درخواست تعویض", "fastly:claimitems", rank=3),
     ButtonDef("reseller.home.info", "reseller.home", "اطلاعات من", "my_info", rank=0),
     ButtonDef("reseller.home.report", "reseller.home", "گزارش من", "my_report", rank=1),
     ButtonDef("reseller.home.users", "reseller.home", "کاربران من", "my_users", rank=2),
@@ -144,6 +149,12 @@ BUTTONS: tuple[ButtonDef, ...] = (
     ButtonDef("payment.kyc.resume", "payment.kyc", "ادامه پرداخت سفارش قبلی", "ckyc:resume", rank=0),
     ButtonDef("payment.kyc.advanced", "payment.kyc", "احراز هویت پیشرفته", "kyc:level:2", rank=1),
 
+    ButtonDef("admin.fastly.home", "admin.fastly", "مدیریت فروشگاه Fastly", "fastlyadmin:home", rank=0),
+    ButtonDef("admin.fastly.products", "admin.fastly", "محصولات Fastly", "fastlyadmin:products", rank=1),
+    ButtonDef("admin.fastly.new", "admin.fastly", "افزودن محصول", "fastlyadmin:new", rank=2),
+    ButtonDef("admin.fastly.orders", "admin.fastly", "رسیدهای در انتظار", "fastlyadmin:orders", rank=3),
+    ButtonDef("admin.fastly.claims", "admin.fastly", "درخواست‌های تعویض", "fastlyadmin:claims", rank=4),
+    ButtonDef("admin.fastly.stats", "admin.fastly", "آمار فروش", "fastlyadmin:stats", rank=5),
     ButtonDef("admin.dashboard.sales", "admin.dashboard", "فروش و تعرفه‌ها", "sudo_menu_sales", "فروش و تعرفه‌ها", 0),
     ButtonDef("admin.dashboard.panels", "admin.dashboard", "مرکز پنل‌ها", "sudo_menu_panels", rank=1),
     ButtonDef("admin.dashboard.operations", "admin.dashboard", "مرکز عملیات", "gops:home", rank=2),
@@ -287,6 +298,8 @@ _HIDDEN_PREFIX_REASONS: tuple[tuple[str, str], ...] = (
 
 _DYNAMIC_PREFIX_REASONS: tuple[tuple[str, str], ...] = (
     ("buyflow:", "مرحله داخلی جریان خرید"),
+    ("fastly:", "آیتم پویای فروشگاه اکانت"),
+    ("fastlyadmin:", "عملیات پویای مدیریت موجودی"),
     ("planmarket:c:", "نام پنل یا دسته پویا"),
     ("planmarket:d:", "دسته زمانی پویا"),
     ("planmarket:p:", "پلن پویا"),
