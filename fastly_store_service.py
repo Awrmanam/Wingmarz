@@ -144,7 +144,8 @@ class FastlyStore:
         async with aiosqlite.connect(self.db_path) as conn:
             conn.row_factory = aiosqlite.Row
             async with conn.execute(
-                "SELECT p.*,COUNT(CASE WHEN i.state='available' THEN 1 END) AS stock "
+                "SELECT p.*,COUNT(CASE WHEN i.state='available' THEN 1 END) AS stock, "
+                "COUNT(CASE WHEN i.state='quarantined' THEN 1 END) AS quarantined "
                 "FROM fastly_products p LEFT JOIN fastly_inventory i ON i.product_id=p.id "
                 + where + " GROUP BY p.id ORDER BY p.id DESC"
             ) as cur:
@@ -233,6 +234,45 @@ class FastlyStore:
             await self._audit(conn, actor, f"stock.import.{added}", "product", product_id)
             await conn.commit()
         return added, skipped
+
+    async def stock_items(self, product_id: int, state: str = "available",
+                          offset: int = 0, limit: int = 15) -> list[dict]:
+        """Staff inventory listing returns masked login only, never passwords."""
+        if state not in {"available", "quarantined"}:
+            raise FastlyStoreError("وضعیت موجودی نامعتبر است.")
+        cipher = self._cipher()
+        await self.init()
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            async with conn.execute(
+                "SELECT id,login_secret FROM fastly_inventory WHERE product_id=? AND state=? "
+                "ORDER BY id LIMIT ? OFFSET ?",
+                (int(product_id), state, max(1,min(30,int(limit))), max(0,int(offset))),
+            ) as cur:
+                rows = [dict(x) for x in await cur.fetchall()]
+        result = []
+        for row in rows:
+            login = cipher.decrypt(row["login_secret"]).decode()
+            name, sep, domain = login.partition("@")
+            masked = (name[:2] + "***@" + domain) if sep else (login[:2] + "***")
+            result.append({"id": row["id"], "masked": masked})
+        return result
+
+    async def stock_state(self, inventory_id: int, product_id: int,
+                          state: str, actor: int) -> bool:
+        if state not in {"available", "quarantined"}:
+            raise FastlyStoreError("وضعیت نامعتبر است.")
+        prior = "available" if state == "quarantined" else "quarantined"
+        await self.init()
+        async with aiosqlite.connect(self.db_path) as conn:
+            cur = await conn.execute(
+                "UPDATE fastly_inventory SET state=? WHERE id=? AND product_id=? AND state=?",
+                (state,int(inventory_id),int(product_id),prior),
+            )
+            if cur.rowcount:
+                await self._audit(conn,actor,"stock."+state,"inventory",inventory_id)
+            await conn.commit()
+            return bool(cur.rowcount)
 
     async def make_order(self, buyer: int, product_id: int, qty: int, reason: str) -> int:
         product = await self.product(product_id)
