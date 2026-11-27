@@ -20,6 +20,7 @@ from handlers.sudo_handlers import sudo_router
 from handlers.rebecca_services import rebecca_services_router
 from handlers.admin_handlers import admin_router
 from handlers.public_handlers import public_router
+from handlers.fastly_store import fastly_router
 from scheduler import init_scheduler
 from style_engine import style_engine
 from premium_ui_service import premium_ui_service
@@ -117,6 +118,10 @@ class MarzbanAdminBot:
         # Setup routers - IMPORTANT: Register state-specific routers FIRST
         # Style and Rebecca-specific interceptors must be before the legacy sudo router.
         logger.info("=== ROUTER REGISTRATION ORDER (CRITICAL FOR FSM) ===")
+        # The isolated Fastly callback/FSM namespace takes priority over generic
+        # legacy routes. Existing panel and PAYG handlers remain unchanged.
+        self.dp.include_router(fastly_router)
+        logger.info("Fastly store router registered")
         logger.info("Registering style_admin_router...")
         self.dp.include_router(style_admin_router)
         logger.info("✅ style_admin_router registered successfully")
